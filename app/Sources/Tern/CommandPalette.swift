@@ -99,7 +99,7 @@ struct CommandPaletteView: View {
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
             .padding(.top, 80)
         }
-        .onAppear { focused = true }
+        .onAppear { DispatchQueue.main.async { focused = true } }
         .onChange(of: query) { _, _ in selection = 0 }
     }
 

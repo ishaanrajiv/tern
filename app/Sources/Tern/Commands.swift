@@ -26,9 +26,10 @@ final class Command {
     /// SF Symbol for the palette.
     var symbol: String {
         let t = title
-        if t.hasPrefix("New Session in Worktree") { return "arrow.triangle.branch" }
-        if t.hasPrefix("New Session") { return "plus" }
-        if t.hasPrefix("Open Project") { return "folder" }
+        if t.hasPrefix("New Tab in Worktree") { return "arrow.triangle.branch" }
+        if t.hasPrefix("New Tab") { return "plus" }
+        if t.hasPrefix("Open Folder") { return "folder.badge.plus" }
+        if t.hasPrefix("Browse") { return "folder" }
         if t == "Split Right" { return "rectangle.split.2x1" }
         if t == "Split Down" { return "rectangle.split.1x2" }
         if t.hasPrefix("Rename") { return "pencil" }
@@ -81,7 +82,7 @@ final class CommandRunner: NSObject {
 }
 
 enum MenuBuilder {
-    static let order = ["Session", "Edit", "View", "Navigate", "Window"]
+    static let order = ["File", "Edit", "View", "Navigate", "Window"]
 
     static func build(commands: [Command]) -> NSMenu {
         let main = NSMenu()
@@ -105,7 +106,8 @@ enum MenuBuilder {
             let menu = NSMenu(title: name)
             var lastGroup: String?
             for command in commands where command.menu == name {
-                let group = command.title.components(separatedBy: " ").first
+                // Separate runs of related items: Next…/Previous…, Folder N, Tab N, Focus…
+                let group = command.title.components(separatedBy: " ").first.map { $0 == "Previous" ? "Next" : $0 }
                 if let lastGroup, lastGroup != group, name == "Navigate" { menu.addItem(.separator()) }
                 lastGroup = group
                 let item = NSMenuItem(title: command.title, action: #selector(CommandRunner.run(_:)), keyEquivalent: command.key)
@@ -113,7 +115,7 @@ enum MenuBuilder {
                 item.target = CommandRunner.shared
                 item.representedObject = command
                 if !command.inMenu {
-                    // Alias shortcuts (⌘N for ⌘T, ⌃⇥ for ⌘⇧]) work without cluttering the menu.
+                    // Alias shortcuts (⌃⇥ for ⌘⇧]) work without cluttering the menu.
                     item.isHidden = true
                     item.allowsKeyEquivalentWhenHidden = true
                 }

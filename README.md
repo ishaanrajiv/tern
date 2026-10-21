@@ -3,21 +3,43 @@
 A macOS terminal built around coding agents: a sidebar that shows which agent needs you,
 Mac-native keys, and sessions that survive quitting the app.
 
-Status: **v0.1, feature-complete for a first review**. One window holds a sidebar of projects and
-sessions, split panes, a ⌘K command palette and a Mac-native keymap. Claude Code and Codex report
+Status: **v0.1, feature-complete for a first review**. One window holds a sidebar of folders and
+their tabs, split panes, a ⌘K command palette and a Mac-native keymap. Claude Code and Codex report
 whether they're working, waiting for you, or done, and tern notifies you and takes you there with ⌘J.
+
+## Folders and tabs
+
+The sidebar is organized by folder, not by window. Each header is a folder; the tabs under it start
+there.
+
+- **⌘N opens a folder.** The picker lists the folders already open (choosing one jumps to it), then
+  recent ones (tern's own history first, then [zoxide](https://github.com/ajeetdsouza/zoxide)'s if
+  it's installed), then git repositories under `~/dev` (configurable in Settings). Typing ranks them
+  all; typing a path (`/`, `~`, `.`) lists what's there, and ⇥ completes it, also from any selected
+  folder. ⌘↩ opens the choice in a new worktree, and ⌘O browses in Finder. tern starts with the
+  picker when nothing is open.
+- **⌘T opens a tab in the current folder**, in the folder itself. Worktree tabs (⌘⇧T) sit under their
+  repository's header with the worktree's name beside them.
+- A tab that `cd`s somewhere else stays under its folder and shows where it is in grey.
+- A subfolder of an open folder gets its own header. A folder closes with its last tab.
+- **⌘1–9 picks a folder** (at the tab you last used there), **⌘⇧1–9 a tab** within it. Folders stay
+  in the order you opened them, so these keep meaning the same thing; drag a header to reorder, or
+  choose **Most recent first** in Settings.
+- Collapse a folder by clicking its header. A collapsed header shows its agents and its most urgent
+  state; hovering any header shows **+** for a new tab there.
 
 ## Agent status
 
-Each session in the sidebar is one line: its name, how long since it last did something, and a status:
+Each tab in the sidebar is one line: its status, its name, which agent runs in it (**C** for Claude
+Code, **X** for Codex) and how long since it last did something:
 
 | Icon | Meaning |
 |---|---|
-| spinner | Working |
-| amber ring | Needs you: a permission prompt or a question. The project header counts these. |
-| filled check, bold name | Done, and you haven't looked yet |
-| faint check | Done or idle |
-| moon | Nothing for a day |
+| turning arc | Working (blue for an agent) |
+| amber ring with a dot | Needs you: a permission prompt or a question. The folder header counts these. |
+| solid dot, bold name | Done, and you haven't looked yet |
+| hollow ring | Done or idle |
+| dashed ring | Not running: nothing for a day, or waiting to be reopened after a restart |
 
 Sessions running an agent are named after its task (the title Claude Code and Codex give the terminal).
 The header above the terminal shows the session, its folder and branch, its status, and what the agent
@@ -38,17 +60,20 @@ whatever needs you first, then whatever finished.
 
 | Keys | Action |
 |---|---|
-| ⌘K | Command palette: every command, plus jump to any session |
-| ⌘J | Next session needing attention: waiting on you, then finished, then unread output |
-| ⌘T (or ⌘N) | New session in the current project |
-| ⌘⇧T | New session in its own git worktree |
-| ⌘O | Open a folder as a project |
+| ⌘K | Command palette: every command, plus jump to any tab |
+| ⌘J | Next tab needing attention: waiting on you, then finished, then unread output |
+| ⌘N | Open a folder (picker) |
+| ⌘T | New tab in the current folder |
+| ⌘⇧T | New tab in its own git worktree |
+| ⌘O | Browse for a folder in Finder |
 | ⌘D / ⌘⇧D | Split right / split down |
 | ⌘⌥ + arrows, ⌘[ / ⌘] | Move focus between panes |
-| ⌘↩ | Zoom the focused pane |
-| ⌘1–9, ⌘⇧[ / ⌘⇧], ⌃⇥ | Switch session |
-| ⌘W / ⌘⇧W | Close pane / close session (asks first if something is running) |
-| ⌘R | Rename session |
+| ⌘↩ | Zoom the focused pane (in the picker: open in a new worktree) |
+| ⌘1–9 | Folder 1–9 |
+| ⌘⇧1–9 | Tab 1–9 in the current folder |
+| ⌘⇧[ / ⌘⇧], ⌃⇥ | Previous / next tab |
+| ⌘W / ⌘⇧W / ⌘⌥W | Close pane / tab / folder (asks first if something is running) |
+| ⌘R | Rename tab |
 | ⌘\ | Toggle sidebar |
 | ⌘⇧K | Clear screen |
 | ⌘= / ⌘- / ⌘0 | Text size |
@@ -59,9 +84,12 @@ tern's shortcuts take priority over terminal key bindings.
 
 ## Settings
 
-- **Worktrees** (off by default): in a git project, ⌘T gives each new session its own worktree at
+- **Folder order**: as opened (default), or most recent first.
+- **Find repositories in** (`~/dev`): comma-separated folders the picker searches for git
+  repositories, three levels deep.
+- **Worktrees** (off by default): in a git folder, ⌘T gives each new tab its own worktree at
   `<repo>-worktrees/session-N` on a new branch `tern/session-N`, so parallel agents don't edit the
-  same checkout. ⌘⇧T does this regardless. Closing such a session asks whether to remove its
+  same checkout. ⌘⇧T does this regardless. Closing such a tab asks whether to remove its
   worktree (Keep is the default when it has uncommitted changes); the branch is always kept.
 - **Resume agents after a restart** (on): sessions survive quitting tern but not a reboot. If a
   session that was running Claude Code or Codex is gone when tern starts, its pane opens a fresh shell
@@ -84,7 +112,7 @@ ternd (Rust, launchd agent dev.tern.ternd)
 - `crates/tern`: the `tern` CLI and the `ternd` daemon, plus the protocol in `src/lib.rs`
   (one JSON request line, then length-prefixed binary frames).
 - `app/`: SwiftPM app that links `GhosttyKit.xcframework`. `Workspace.swift` holds the model
-  (projects → sessions → split tree), saved to `~/Library/Application Support/tern/layout.json`.
+  (folders → tabs → split tree, each pane a ternd session), saved to `~/Library/Application Support/tern/layout.json`.
   ternd's `watch` stream supplies live data for each session: cwd, foreground process, branch,
   title, unread output, bells, and the agent's reported state.
 - Agent hooks (`crates/tern/src/hooks.rs`) run `tern hook claude|codex`, which maps the hook event

@@ -27,9 +27,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let running = TernClient.listNow() {
             workspace.update(sessions: running)
         }
-        if workspace.allTabs.isEmpty {
-            workspace.newTab(projectPath: NSHomeDirectory(), cwd: NSHomeDirectory())
-        }
 
         let notifier = AgentNotifier(workspace: workspace)
         self.notifier = notifier
@@ -43,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = MenuBuilder.build(commands: controller.commands)
         DebugHooks.install { [weak controller] in controller?.commands ?? [] }
         controller.showWindow(nil)
+        // Nothing open: start by choosing a folder.
+        if workspace.allTabs.isEmpty { controller.showFolderPicker() }
 
         TernClient.watch { [weak self] list in self?.workspace.update(sessions: list) }
         NSApp.activate(ignoringOtherApps: true)

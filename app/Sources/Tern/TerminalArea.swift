@@ -10,6 +10,7 @@ final class TerminalArea: NSView {
     private var dimmers: [String: NSView] = [:]
     private var dividers: [(rect: CGRect, path: [Bool], axis: SplitAxis, parent: CGRect)] = []
     private var dragging: (path: [Bool], axis: SplitAxis, parent: CGRect)?
+    private var reattached: [String: Date] = [:]
 
     static let dividerWidth: CGFloat = 1
     private static let dividerHitSlop: CGFloat = 4
@@ -44,7 +45,7 @@ final class TerminalArea: NSView {
             let view = TerminalView(sessionID: pane, ternBinary: ternBinary, cwd: workspace.cwd(for: pane),
                                     initLine: workspace.resumeCommand(for: pane))
             view.onFocus = { [weak self] in self?.workspace.focus(pane: pane) }
-            view.onClose = { [weak self] in self?.workspace.removePane(pane) }
+            view.onClose = { [weak self] in self?.attachEnded(pane) }
             addSubview(view)
             terminals[pane] = view
             let dim = DimView()
@@ -64,6 +65,24 @@ final class TerminalArea: NSView {
         if focus, let tab, let view = terminals[tab.focusedPane], window?.firstResponder !== view {
             window?.makeFirstResponder(view)
         }
+    }
+
+    /// `tern attach` exited. Normally the session ended with it; if ternd still has the
+    /// session (the client was killed or crashed), attach again rather than lose the tab.
+    private func attachEnded(_ pane: String) {
+        let alive = TernClient.listNow()?.contains { $0.id == pane } == true
+        let recent = reattached[pane].map { -$0.timeIntervalSinceNow < 5 } ?? false
+        guard alive, !recent, let view = terminals[pane] else {
+            reattached[pane] = nil
+            return workspace.removePane(pane)
+        }
+        reattached[pane] = Date()
+        view.detach()
+        view.removeFromSuperview()
+        dimmers[pane]?.removeFromSuperview()
+        terminals[pane] = nil
+        dimmers[pane] = nil
+        refresh(focus: workspace.selectedTab?.focusedPane == pane)
     }
 
     func focusedTerminal() -> TerminalView? {

@@ -6,6 +6,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private let terminalArea: TerminalArea
     private let splitController = NSSplitViewController()
     private var paletteHost: NSView?
+    private var pickerHost: NSView?
+    private var picker: FolderPickerModel?
+    private var emptyState: NSView?
+    private var keyMonitor: Any?
+    /// The window closes when its last tab does, not when it starts out empty.
+    private var hadTabs = false
     private var lastFocusKey = ""
     private let headerLayout = HeaderLayout()
     private var collapseObservation: NSKeyValueObservation?
@@ -38,7 +44,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         workspace.onWorktreeClosed = { [weak self] path in self?.offerWorktreeRemoval(path) }
 
         let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, actions: SidebarActions(
-            newSessionInProject: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path) } },
+            newTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path) } },
+            newWorktreeTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path, worktree: true) } },
+            closeFolder: { [weak self] path in self?.closeFolder(path) },
             setUpHooks: { [weak self] in self?.onOpenSettings?() },
             rename: { [weak self] id in self?.rename(tabID: id) },
             close: { [weak self] id in self?.closeTab(id) }
@@ -61,6 +69,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         content.view.addSubview(header)
         terminalArea.translatesAutoresizingMaskIntoConstraints = false
         content.view.addSubview(terminalArea)
+        let empty = NSHostingView(rootView: EmptyState())
+        empty.translatesAutoresizingMaskIntoConstraints = false
+        content.view.addSubview(empty)
+        emptyState = empty
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.view.topAnchor),
             header.bottomAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.topAnchor),
@@ -70,6 +82,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             terminalArea.bottomAnchor.constraint(equalTo: content.view.bottomAnchor),
             terminalArea.leadingAnchor.constraint(equalTo: content.view.leadingAnchor),
             terminalArea.trailingAnchor.constraint(equalTo: content.view.trailingAnchor),
+            empty.centerXAnchor.constraint(equalTo: terminalArea.centerXAnchor),
+            empty.centerYAnchor.constraint(equalTo: terminalArea.centerYAnchor),
         ])
         header.leadingAnchor.constraint(equalTo: content.view.leadingAnchor).isActive = true
         // With the sidebar hidden, the traffic lights and sidebar buttons sit over the header's left end.
@@ -91,8 +105,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if !window.setFrameUsingName("tern.main") { window.center() }
 
         commands = makeCommands()
+        installKeyMonitor()
         observe()
         sync()
+    }
+
+    /// ⌘⇧1–9 picks a tab in the current folder. A menu key equivalent can't say it:
+    /// with shift held the key reads "!", "@"… depending on the layout.
+    private func installKeyMonitor() {
+        let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9]
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self, event.window === self.window,
+                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
+                  let n = digits[event.keyCode] else { return event }
+            self.workspace.selectTabInFolder(index: n - 1)
+            return nil
+        }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -117,7 +145,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         let focusKey = "\(tab?.id ?? "")/\(tab?.focusedPane ?? "")/\(tab?.zoomed ?? false)"
         let focusChanged = focusKey != lastFocusKey
         lastFocusKey = focusKey
-        terminalArea.refresh(focus: focusChanged && paletteHost == nil)
+        terminalArea.refresh(focus: focusChanged && paletteHost == nil && pickerHost == nil)
 
         if let tab {
             window?.title = workspace.title(for: tab)
@@ -129,10 +157,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             window?.subtitle = ""
         }
 
-        if workspace.allTabs.isEmpty {
+        let empty = workspace.allTabs.isEmpty
+        emptyState?.isHidden = !empty
+        if empty && hadTabs {
             // Last pane closed: like any terminal, the window goes with it.
             window?.close()
         }
+        hadTabs = !empty
         scheduleSave()
         onSync?()
     }
@@ -166,16 +197,22 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         guard id.rawValue == "new" else { return nil }
         let item = NSToolbarItem(itemIdentifier: id)
-        item.image = NSImage(systemSymbolName: "plus", accessibilityDescription: "New Session")
-        item.label = "New Session"
-        item.toolTip = "New Session (⌘T)"
+        item.image = NSImage(systemSymbolName: "folder.badge.plus", accessibilityDescription: "Open Folder")
+        item.label = "Open Folder"
+        item.toolTip = "Open Folder (⌘N)"
         item.isBordered = true
         item.target = self
-        item.action = #selector(newSessionAction)
+        item.action = #selector(openFolderAction)
         return item
     }
 
-    @objc private func newSessionAction() { newSession { $0.newTabInCurrentProject() } }
+    @objc private func openFolderAction() { toggleFolderPicker() }
+
+    /// ⌘T: a tab in the current folder, or the picker when there's no folder yet.
+    private func newTab(worktree: Bool? = nil) {
+        guard workspace.currentProject != nil else { return showFolderPicker() }
+        newSession { $0.newTabInCurrentProject(worktree: worktree) }
+    }
 
     /// Creates a session, explaining if its worktree couldn't be made.
     private func newSession(_ make: (Workspace) -> Worktree.Failure?) {
@@ -192,22 +229,21 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         let w = workspace
         return [
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
-            Command("New Session", menu: "Session", key: "t") { [weak self] in self?.newSession { $0.newTabInCurrentProject() } },
-            Command("New Session", menu: "Session", key: "n", inMenu: false, inPalette: false) { [weak self] in
-                self?.newSession { $0.newTabInCurrentProject() }
-            },
-            Command("New Session in Worktree", menu: "Session", key: "t", [.command, .shift]) { [weak self] in
-                self?.newSession { $0.newTabInCurrentProject(worktree: true) }
-            },
-            Command("Open Project…", menu: "Session", key: "o") { [weak self] in self?.openProject() },
-            Command("Split Right", menu: "Session", key: "d") { w.split(.horizontal) },
-            Command("Split Down", menu: "Session", key: "d", [.command, .shift]) { w.split(.vertical) },
-            Command("Rename Session…", menu: "Session", key: "r") { [weak self] in
+            Command("Open Folder…", menu: "File", key: "n") { [weak self] in self?.toggleFolderPicker() },
+            Command("New Tab", menu: "File", key: "t") { [weak self] in self?.newTab() },
+            Command("New Tab in Worktree", menu: "File", key: "t", [.command, .shift]) { [weak self] in self?.newTab(worktree: true) },
+            Command("Browse for Folder…", menu: "File", key: "o") { [weak self] in self?.browseForFolder() },
+            Command("Split Right", menu: "File", key: "d") { w.split(.horizontal) },
+            Command("Split Down", menu: "File", key: "d", [.command, .shift]) { w.split(.vertical) },
+            Command("Rename Tab…", menu: "File", key: "r") { [weak self] in
                 if let id = w.selectedTabID { self?.rename(tabID: id) }
             },
-            Command("Close Pane", menu: "Session", key: "w") { [weak self] in self?.closeFocusedPane() },
-            Command("Close Session", menu: "Session", key: "w", [.command, .shift]) { [weak self] in
+            Command("Close Pane", menu: "File", key: "w") { [weak self] in self?.closeFocusedPane() },
+            Command("Close Tab", menu: "File", key: "w", [.command, .shift]) { [weak self] in
                 if let id = w.selectedTabID { self?.closeTab(id) }
+            },
+            Command("Close Folder", menu: "File", key: "w", [.command, .option]) { [weak self] in
+                if let path = w.currentProject?.path { self?.closeFolder(path) }
             },
 
             Command("Clear Screen", menu: "Edit", key: "k", [.command, .shift]) { [weak self] in
@@ -218,7 +254,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Toggle Sidebar", menu: "View", key: "\\") { [weak self] in
                 self?.splitController.toggleSidebar(nil)
             },
-            Command("Zoom Pane", menu: "View", key: "\r") { w.toggleZoom() },
+            // ⌘↩ also opens the picker's choice in a worktree: the menu sees the key before the picker does.
+            Command("Zoom Pane", menu: "View", key: "\r") { [weak self] in
+                if let picker = self?.picker { picker.submit(worktree: true) } else { w.toggleZoom() }
+            },
             Command("Bigger Text", menu: "View", key: "=") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("increase_font_size:1")
             },
@@ -232,13 +271,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Next Needing Attention", menu: "Navigate", key: "j") {
                 if !w.jumpToNextUnread() { NSSound.beep() }
             },
-            Command("Next Session", menu: "Navigate", key: "]", [.command, .shift]) { w.cycleTab(1) },
-            Command("Previous Session", menu: "Navigate", key: "[", [.command, .shift]) { w.cycleTab(-1) },
-            Command("Next Session", menu: "Navigate", key: "\t", .control, inMenu: false, inPalette: false) { w.cycleTab(1) },
-            Command("Previous Session", menu: "Navigate", key: "\t", [.control, .shift], inMenu: false, inPalette: false) { w.cycleTab(-1) },
+            Command("Next Tab", menu: "Navigate", key: "]", [.command, .shift]) { w.cycleTab(1) },
+            Command("Previous Tab", menu: "Navigate", key: "[", [.command, .shift]) { w.cycleTab(-1) },
+            Command("Next Tab", menu: "Navigate", key: "\t", .control, inMenu: false, inPalette: false) { w.cycleTab(1) },
+            Command("Previous Tab", menu: "Navigate", key: "\t", [.control, .shift], inMenu: false, inPalette: false) { w.cycleTab(-1) },
         ]
         + (1...9).map { n in
-            Command("Session \(n)", menu: "Navigate", key: "\(n)", inPalette: false) { w.select(index: n - 1) }
+            Command("Folder \(n)", menu: "Navigate", key: "\(n)", inPalette: false) { w.selectFolder(index: n - 1) }
+        }
+        // Listed for reference; the key monitor handles ⌘⇧1–9.
+        + (1...9).map { n in
+            Command("Tab \(n)", menu: "Navigate", key: "\(n)", [.command, .shift], inPalette: false) { w.selectTabInFolder(index: n - 1) }
         }
         + [
             Command("Focus Pane Left", menu: "Navigate", key: Key.left, [.command, .option]) { w.moveFocus(.left) },
@@ -257,24 +300,26 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             closePalette()
             return
         }
+        closeFolderPicker()
         guard let contentView = window?.contentView else { return }
         var items = commands.filter(\.inPalette).map { c in
             PaletteItem(title: c.title, subtitle: "", shortcut: c.shortcutLabel, symbol: c.symbol, action: c.action)
         }
         let tabs = workspace.allTabs
-        items = tabs.enumerated().map { i, tab in
+        items = tabs.map { tab in
             let s = workspace.sessions[tab.focusedPane]
             let title = workspace.title(for: tab)
-            let dir = s?.cwd.map(abbreviateHome)
-            let where_ = [dir == title ? nil : dir, s?.branch].compactMap { $0 }.joined(separator: " · ")
+            let folder = workspace.project(containing: tab.id)?.name
+            let where_ = [folder, workspace.strayCwd(tab), s?.branch].compactMap { $0 }.joined(separator: " · ")
             return PaletteItem(
                 title: title, subtitle: where_,
-                shortcut: i < 9 ? "⌘\(i + 1)" : "",
+                shortcut: "",
                 symbol: Workspace.agents.contains(s?.process ?? "") ? "sparkles" : "terminal",
                 action: { [weak self] in self?.workspace.select(tab.id) })
         } + items
 
         let host = NSHostingView(rootView: CommandPaletteView(items: items, dismiss: { [weak self] in self?.closePalette() }))
+        window?.makeFirstResponder(nil)
         host.frame = contentView.bounds
         host.autoresizingMask = [.width, .height]
         contentView.addSubview(host)
@@ -288,26 +333,66 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         sync()
     }
 
+    // MARK: Folder picker
+
+    func toggleFolderPicker() {
+        if pickerHost != nil { closeFolderPicker() } else { showFolderPicker() }
+    }
+
+    func showFolderPicker() {
+        guard pickerHost == nil, let contentView = window?.contentView else { return }
+        if paletteHost != nil { closePalette() }
+        let model = FolderPickerModel(workspace: workspace)
+        model.onDismiss = { [weak self] in self?.closeFolderPicker() }
+        model.onOpen = { [weak self] path, worktree in
+            self?.closeFolderPicker()
+            self?.newSession { $0.openFolder(path, worktree: worktree) }
+        }
+        let host = NSHostingView(rootView: FolderPickerView(model: model))
+        // The terminal lets go of the keyboard, or it can keep it from the picker's field.
+        window?.makeFirstResponder(nil)
+        host.frame = contentView.bounds
+        host.autoresizingMask = [.width, .height]
+        contentView.addSubview(host)
+        pickerHost = host
+        picker = model
+    }
+
+    private func closeFolderPicker() {
+        guard pickerHost != nil else { return }
+        pickerHost?.removeFromSuperview()
+        pickerHost = nil
+        picker = nil
+        lastFocusKey = ""
+        sync()
+    }
+
     // MARK: Actions
 
-    private func openProject() {
+    private func browseForFolder() {
+        closeFolderPicker()
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         panel.prompt = "Open"
-        panel.message = "Choose a project folder"
+        panel.message = "Choose a folder"
         guard let window else { return }
         panel.beginSheetModal(for: window) { [weak self] response in
             guard response == .OK, let url = panel.url else { return }
-            self?.workspace.newTab(projectPath: url.path, cwd: url.path)
+            self?.workspace.openFolder(url.path)
         }
+    }
+
+    private func closeFolder(_ path: String) {
+        guard let project = workspace.project(at: path) else { return }
+        confirmClose(panes: project.tabs.flatMap(\.root.panes))
     }
 
     private func rename(tabID: String) {
         guard let tab = workspace.allTabs.first(where: { $0.id == tabID }), let window else { return }
         let alert = NSAlert()
-        alert.messageText = "Rename Session"
+        alert.messageText = "Rename Tab"
         alert.informativeText = "Leave empty to name it after what's running."
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
@@ -399,6 +484,23 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         alert.addButton(withTitle: "Cancel")
         alert.beginSheetModal(for: window) { response in
             if response == .alertFirstButtonReturn { close() }
+        }
+    }
+}
+
+/// The terminal area with nothing open.
+private struct EmptyState: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 28, weight: .light))
+                .foregroundStyle(.tertiary)
+            Text("Open a folder to start")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text("⌘N")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
         }
     }
 }

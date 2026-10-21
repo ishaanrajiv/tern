@@ -59,6 +59,8 @@ struct SettingsView: View {
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.worktrees) private var worktrees = false
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
+    @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
+    @AppStorage(Prefs.repoRoots) private var repoRoots = "~/dev"
 
     var body: some View {
         Form {
@@ -82,10 +84,27 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Sessions") {
+            Section("Folders") {
+                Picker(selection: $folderOrder) {
+                    Text("As opened").tag(FolderOrder.manual.rawValue)
+                    Text("Most recent first").tag(FolderOrder.recent.rawValue)
+                } label: {
+                    Labeled("Order", caption: folderOrder == FolderOrder.manual.rawValue
+                            ? "Folders stay where they are, so ⌘1–9 always mean the same folder. Drag to reorder." : nil)
+                }
+                LabeledContent {
+                    TextField("", text: $repoRoots, prompt: Text("~/dev"))
+                        .frame(width: 180)
+                        .multilineTextAlignment(.trailing)
+                } label: {
+                    Labeled("Find repositories in", caption: "Offered when you open a folder (⌘N). Separate folders with commas.")
+                }
+            }
+
+            Section("Tabs") {
                 Toggle(isOn: $worktrees) {
-                    Labeled("Give each new session its own git worktree",
-                            caption: "⌘T in a git project creates <repo>-worktrees/session-N on branch tern/session-N. ⌘⇧T always does.")
+                    Labeled("Give each new tab its own git worktree",
+                            caption: "⌘T in a git folder creates <repo>-worktrees/session-N on branch tern/session-N. ⌘⇧T always does.")
                 }
                 Toggle(isOn: $resumeAgents) {
                     Labeled("Resume agent conversations after a restart",

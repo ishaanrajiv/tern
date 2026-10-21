@@ -91,3 +91,23 @@ enum Worktree {
         return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
+
+extension Worktree {
+    /// The checked-out branch at `path`, read from git's HEAD file (cheap enough for
+    /// every redraw); nil outside a repository's top level or on a detached HEAD.
+    static func headBranch(at path: String) -> String? {
+        var gitDir = path + "/.git"
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: gitDir, isDirectory: &isDir) else { return nil }
+        if !isDir.boolValue {
+            // A worktree: ".git" names its real git directory.
+            guard let link = try? String(contentsOfFile: gitDir, encoding: .utf8),
+                  link.hasPrefix("gitdir: ") else { return nil }
+            let target = link.dropFirst(8).trimmingCharacters(in: .whitespacesAndNewlines)
+            gitDir = target.hasPrefix("/") ? target : path + "/" + target
+        }
+        guard let head = try? String(contentsOfFile: gitDir + "/HEAD", encoding: .utf8),
+              head.hasPrefix("ref: refs/heads/") else { return nil }
+        return head.dropFirst(16).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}

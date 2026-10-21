@@ -2,8 +2,9 @@ import AppKit
 
 /// Development aid, on only when launched with TERN_DEBUG=1:
 ///   kill -USR1 <pid>   saves a PNG of each window to <support>/tern/debug/window-N.png
-///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title,
-///                      Escape / Return to press that key, or Button N to answer an alert sheet)
+///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title;
+///                      Escape, Return, Tab, Up or Down to press that key; Type <text>; or
+///                      Button N to answer an alert sheet)
 /// An app may capture its own windows without screen-recording permission.
 enum DebugHooks {
     private static var sources: [DispatchSourceSignal] = []
@@ -22,7 +23,17 @@ enum DebugHooks {
                 parent.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + n - 1))
                 return
             }
-            let keys: [String: (String, UInt16)] = ["Escape": ("\u{1b}", 53), "Return": ("\r", 36)]
+            // "Type <text>" enters text into whatever has focus (say, the folder picker).
+            if title.hasPrefix("Type ") {
+                let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
+                (window?.firstResponder as? NSTextView)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
+                return
+            }
+            let arrow = { (k: Int) in String(UnicodeScalar(UInt16(k))!) }
+            let keys: [String: (String, UInt16)] = [
+                "Escape": ("\u{1b}", 53), "Return": ("\r", 36), "Tab": ("\t", 48),
+                "Down": (arrow(NSDownArrowFunctionKey), 125), "Up": (arrow(NSUpArrowFunctionKey), 126),
+            ]
             if let (chars, code) = keys[title] {
                 // A real key event, so it reaches whatever view (or sheet) has focus.
                 // Straight to the window: NSApp routes keys to the key window, and there's

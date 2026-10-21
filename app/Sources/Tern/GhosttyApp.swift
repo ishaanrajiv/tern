@@ -100,6 +100,11 @@ final class GhosttyApp {
         case GHOSTTY_ACTION_QUIT:
             DispatchQueue.main.async { NSApp.terminate(nil) }
             return true
+        case GHOSTTY_ACTION_SHOW_CHILD_EXITED:
+            // `tern attach` ended abnormally. Rather than Ghostty's "press any key", the
+            // tab closes if its session is gone, or attaches again if it isn't.
+            DispatchQueue.main.async { view?.surfaceClosed() }
+            return true
         case GHOSTTY_ACTION_RING_BELL:
             DispatchQueue.main.async { NSSound.beep() }
             return true

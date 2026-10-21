@@ -80,15 +80,26 @@ struct Tab: Codable, Identifiable, Equatable {
     var worktree: String?
 }
 
+/// A folder header in the sidebar. Its tabs start in the folder; it goes away with its last tab.
 struct Project: Codable, Identifiable, Equatable {
     var id: String { path }
     var path: String
     var tabs: [Tab]
     var collapsed = false
+    /// The tab last selected here, which ⌘1–9 and reopening the folder return to.
+    var lastTab: String?
 
     var name: String {
-        path == NSHomeDirectory() ? "~" : (path as NSString).lastPathComponent
+        path == NSHomeDirectory() ? "Home" : (path as NSString).lastPathComponent
     }
+}
+
+/// How the sidebar orders folders.
+enum FolderOrder: String {
+    /// As opened, then dragged: positions stay put, for muscle memory.
+    case manual
+    /// The folder used last on top.
+    case recent
 }
 
 enum FocusDirection { case left, right, up, down }
@@ -134,11 +145,19 @@ enum Prefs {
     static let worktrees = "worktreePerSession"
     static let resumeAgents = "resumeAgents"
     static let hooksPromptDismissed = "hooksPromptDismissed"
+    static let folderOrder = "folderOrder"
+    /// Folders searched for git repositories to offer in the folder picker, comma-separated.
+    static let repoRoots = "repoRoots"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
+            folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev",
         ])
+    }
+
+    static var order: FolderOrder {
+        FolderOrder(rawValue: UserDefaults.standard.string(forKey: folderOrder) ?? "") ?? .manual
     }
 }
 
@@ -156,6 +175,8 @@ final class Workspace {
     private struct Seen { var output: UInt64; var bells: UInt64; var agent: UInt64 }
     /// The agent conversation last seen in each pane, so it can be resumed after a reboot.
     private var paneAgent: [String: AgentRef] = [:]
+    /// When each folder was last used in tern, for the folder picker and recent-first order.
+    private(set) var recents: [String: Date] = [:]
     private var adoptedOrphans = false
     /// Whether the user can see the window; nothing is "seen" while tern is in the background.
     var isActive = true {
@@ -172,12 +193,43 @@ final class Workspace {
 
     // MARK: Lookup
 
-    var allTabs: [Tab] { projects.flatMap(\.tabs) }
+    /// Folders in sidebar order.
+    var orderedProjects: [Project] {
+        guard Prefs.order == .recent else { return projects }
+        let indexed = projects.enumerated().map { ($0.offset, $0.element) }
+        return indexed.sorted { a, b in
+            let ra = recents[a.1.path] ?? .distantPast, rb = recents[b.1.path] ?? .distantPast
+            return ra != rb ? ra > rb : a.0 < b.0
+        }.map(\.1)
+    }
+
+    var allTabs: [Tab] { orderedProjects.flatMap(\.tabs) }
 
     var selectedTab: Tab? { allTabs.first { $0.id == selectedTabID } }
 
     func project(containing tabID: String) -> Project? {
         projects.first { $0.tabs.contains { $0.id == tabID } }
+    }
+
+    func project(at path: String) -> Project? {
+        projects.first { $0.path == path }
+    }
+
+    /// The agent a tab runs (or ran, if it hasn't been reopened since a restart).
+    func agent(for tab: Tab) -> String? {
+        let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
+        return panes.lazy.compactMap { self.sessions[$0]?.agent }.first
+            ?? panes.lazy.compactMap { self.sessions[$0] == nil ? self.paneAgent[$0]?.agent : nil }.first
+    }
+
+    /// Where the tab is, when that's not the folder (or worktree) it started in:
+    /// relative inside the folder, otherwise from home.
+    func strayCwd(_ tab: Tab) -> String? {
+        guard let cwd = sessions[tab.focusedPane]?.cwd, let project = project(containing: tab.id) else { return nil }
+        let base = tab.worktree ?? project.path
+        if cwd == base { return nil }
+        if cwd.hasPrefix(base + "/") { return String(cwd.dropFirst(base.count + 1)) }
+        return abbreviateHome(cwd)
     }
 
     func cwd(for pane: String) -> String {
@@ -255,17 +307,14 @@ final class Workspace {
         if let name = tab.name, !name.isEmpty { return name }
         guard let s = sessions[tab.focusedPane] else {
             // Not running yet (say, after a reboot): name it after what it was.
-            if let agent = paneAgent[tab.focusedPane]?.agent { return agent }
-            guard let cwd = paneCwd[tab.focusedPane] else { return "shell" }
-            return cwd == NSHomeDirectory() ? "~" : (cwd as NSString).lastPathComponent
+            return paneAgent[tab.focusedPane]?.agent ?? "shell"
         }
         // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
         if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
             return task
         }
         if let agent = s.agent { return agent }
-        if !Self.shells.contains(s.process) { return s.process }
-        if let cwd = s.cwd { return cwd == NSHomeDirectory() ? "~" : (cwd as NSString).lastPathComponent }
+        // The folder header says where; a shell is just its name, with any stray directory beside it.
         return s.process
     }
 
@@ -306,24 +355,44 @@ final class Workspace {
         if let i = projects.firstIndex(where: { $0.path == projectPath }) {
             projects[i].tabs.append(tab)
             projects[i].collapsed = false
+            projects[i].lastTab = tab.id
         } else {
-            projects.append(Project(path: projectPath, tabs: [tab]))
+            projects.append(Project(path: projectPath, tabs: [tab], lastTab: tab.id))
         }
         selectedTabID = tab.id
+        recents[projectPath] = Date()
         changed()
         return tab
     }
 
-    /// New tab next to the current one, starting where the focused pane is.
-    /// A new session next to the current one. With `worktree` (or the setting on, in a
-    /// git project) it gets its own worktree; failures come back for the caller to show.
+    /// Opens a folder: back to it if it's already in the sidebar, otherwise a new header
+    /// with one tab there (in a fresh worktree with `worktree`).
     @discardableResult
-    func newTabInCurrentProject(worktree: Bool? = nil) -> Worktree.Failure? {
-        guard let tab = selectedTab, let project = project(containing: tab.id) else {
-            newTab(projectPath: NSHomeDirectory(), cwd: NSHomeDirectory())
+    func openFolder(_ path: String, worktree: Bool = false) -> Worktree.Failure? {
+        let path = Self.normalize(path)
+        if !worktree, let project = project(at: path) {
+            if project.collapsed { setCollapsed(path, false) }
+            if let id = project.lastTab ?? project.tabs.first?.id { select(id) }
             return nil
         }
-        return newSession(projectPath: project.path, cwd: cwd(for: tab.focusedPane), worktree: worktree)
+        return newSession(projectPath: path, cwd: path, worktree: worktree)
+    }
+
+    static func normalize(_ path: String) -> String {
+        let p = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
+        return p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p
+    }
+
+    /// The folder of the selected tab.
+    var currentProject: Project? { selectedTabID.flatMap { project(containing: $0) } }
+
+    /// A new tab in the current folder, starting in the folder itself. With `worktree`
+    /// (or the setting on, in a git project) it gets its own worktree; failures come back
+    /// for the caller to show.
+    @discardableResult
+    func newTabInCurrentProject(worktree: Bool? = nil) -> Worktree.Failure? {
+        guard let project = currentProject else { return nil }
+        return newSession(projectPath: project.path, cwd: project.path, worktree: worktree)
     }
 
     @discardableResult
@@ -380,12 +449,19 @@ final class Workspace {
                 let order = allTabs.map(\.id)
                 let worktree = projects[p].tabs[t].worktree
                 projects[p].tabs.remove(at: t)
+                if projects[p].lastTab == tabID { projects[p].lastTab = nil }
                 if let worktree { DispatchQueue.main.async { self.onWorktreeClosed?(worktree) } }
+                // The neighbour in the same folder takes over, else the next tab in the sidebar.
+                let sibling = projects[p].tabs.isEmpty ? nil : projects[p].tabs[min(t, projects[p].tabs.count - 1)].id
+                // A folder lasts as long as its tabs.
                 if projects[p].tabs.isEmpty { projects.remove(at: p) }
                 if selectedTabID == tabID {
                     let i = order.firstIndex(of: tabID) ?? 0
                     let remaining = allTabs.map(\.id)
-                    selectedTabID = remaining.isEmpty ? nil : remaining[min(i, remaining.count - 1)]
+                    selectedTabID = sibling ?? (remaining.isEmpty ? nil : remaining[min(i, remaining.count - 1)])
+                    if let id = selectedTabID, let q = projects.firstIndex(where: { $0.tabs.contains { $0.id == id } }) {
+                        projects[q].lastTab = id
+                    }
                 }
             }
             paneCwd[pane] = nil
@@ -404,14 +480,36 @@ final class Workspace {
 
     func select(_ tabID: String) {
         selectedTabID = tabID
+        if let p = projects.firstIndex(where: { $0.tabs.contains { $0.id == tabID } }) {
+            projects[p].lastTab = tabID
+            recents[projects[p].path] = Date()
+        }
         markSeen()
         changed()
     }
 
-    func select(index: Int) {
-        let tabs = allTabs
-        guard tabs.indices.contains(index) else { return }
+    /// ⌘1–9: the nth folder, at the tab last used there.
+    func selectFolder(index: Int) {
+        let folders = orderedProjects
+        guard folders.indices.contains(index) else { return }
+        let folder = folders[index]
+        if folder.collapsed { setCollapsed(folder.path, false) }
+        if let id = folder.lastTab ?? folder.tabs.first?.id { select(id) }
+    }
+
+    /// ⌘⇧1–9: the nth tab in the current folder.
+    func selectTabInFolder(index: Int) {
+        guard let tabs = currentProject?.tabs, tabs.indices.contains(index) else { return }
         select(tabs[index].id)
+    }
+
+    /// Drag to reorder: puts the folder at `path` just before `target` (or last).
+    func moveProject(_ path: String, before target: String?) {
+        guard path != target, let from = projects.firstIndex(where: { $0.path == path }) else { return }
+        let project = projects.remove(at: from)
+        let to = target.flatMap { t in projects.firstIndex { $0.path == t } } ?? projects.endIndex
+        projects.insert(project, at: to)
+        changed()
     }
 
     func cycleTab(_ delta: Int) {
@@ -547,6 +645,7 @@ final class Workspace {
         var selectedTabID: String?
         var paneCwd: [String: String]
         var paneAgent: [String: AgentRef]?
+        var recents: [String: Date]?
     }
 
     static let layoutURL: URL = {
@@ -563,13 +662,15 @@ final class Workspace {
         selectedTabID = saved.selectedTabID ?? projects.first?.tabs.first?.id
         paneCwd = saved.paneCwd
         paneAgent = saved.paneAgent ?? [:]
+        // Folders not used for 90 days drop out of the picker's recents.
+        recents = (saved.recents ?? [:]).filter { $0.value.timeIntervalSinceNow > -90 * 86400 }
         for p in projects.indices {
             for t in projects[p].tabs.indices { projects[p].tabs[t].zoomed = false }
         }
     }
 
     func save() {
-        let saved = Saved(projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd, paneAgent: paneAgent)
+        let saved = Saved(projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd, paneAgent: paneAgent, recents: recents)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(saved) else { return }
