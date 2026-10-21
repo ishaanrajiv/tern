@@ -11,6 +11,9 @@ must agree:
 
 `git tag` names the release. The tag and the version must match: `v0.0.1` for `0.0.1`.
 
+Keep `CFBundleVersion` in `app/Info.plist` increasing when you ship another build of the same
+app version, so macOS can tell them apart.
+
 ## What a release needs
 
 1. **A Developer ID Application certificate** in the keychain, and a notarytool profile. Without
