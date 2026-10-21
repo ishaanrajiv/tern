@@ -6,9 +6,7 @@ Mac-native keys, and sessions that survive quitting the app.
 > [!WARNING]
 > **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
 > anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
-> that don't carry over. Prebuilt downloads, when available, are on the
-> [Releases page](https://github.com/ishaanrajiv/tern/releases). You can also
-> [build from source](#build). The first binary release targets Apple Silicon and macOS 14 or later.
+> that don't carry over. It runs on macOS 14 or later, on Apple Silicon.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
 Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
@@ -16,16 +14,13 @@ and tern notifies you and takes you there with ⌘J.
 
 ## Install
 
-Download `Tern-0.0.1-macos-arm64.zip` and its `.sha256` file from the
-[0.0.1 release](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1), once published.
-Verify the download in Terminal:
+Build it from source: see [Build](#build). It needs Xcode, Rust and the exact Zig version
+`vendor/ghostty` pins, so it takes a while the first time.
 
-```bash
-shasum -a 256 -c Tern-0.0.1-macos-arm64.zip.sha256
-```
+Prebuilt downloads, when there are any, are on the
+[Releases page](https://github.com/ishaanrajiv/tern/releases), with a `.sha256` file to check them
+against.
 
-Unzip it, move `Tern.app` into Applications, and open it. Intel Macs need a separate build;
-the arm64 download does not run on them. The release app is signed and notarized.
 Notification delivery is still a known gap; the Dock badge and ⌘J work without it.
 
 ## Folders and tabs
@@ -308,14 +303,13 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
 ## Privacy
 
 tern is a local tool. It does not have an account, does not send telemetry, and does not phone home.
-It talks to the network in three places, all of them optional or obvious:
+It talks to the network in two places:
 
 - **Agent versions.** tern runs `claude --version` and `codex --version` and compares the result with
   the newest release on npm, to offer you an update. Only the version numbers leave the machine.
 - **Claude Code's usage limits**, if you turn that on in Settings → Agents. tern sends Claude Code's
   sign-in from the Keychain to Anthropic, which is where it belongs, and receives the numbers back.
   Off by default.
-- **The update check** above, which is npm.
 
 Everything else stays on the machine: your sessions, their screens, the commands you ran and the
 folders you opened live in `~/Library/Application Support/tern`, which tern creates `0700` and repairs
@@ -339,3 +333,11 @@ describe.
 
 tern is not affiliated with Ghostty, Anthropic or OpenAI. Claude Code and Codex are their owners'
 products.
+
+## Community
+
+- [CONTRIBUTING.md](CONTRIBUTING.md) — how to build it, what the checks are, and what a pull request
+  should look like.
+- [SECURITY.md](SECURITY.md) — how to report a vulnerability, and what the daemon protects.
+- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) — how people are expected to behave here.
+- [RELEASING.md](RELEASING.md) — how a release is built and published.

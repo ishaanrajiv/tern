@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel an in-flight run when the same branch is pushed again.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/tern
+      - name: Build
+        run: cargo build --locked --all-targets
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --locked
+
+  scripts:
+    name: Scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Test the Zig package fetcher
+        run: python3 -m unittest discover -s scripts/tests -v
+
+  app:
+    name: App
+    runs-on: macos-latest
+    # Building the app needs libghostty, which needs Zig and a long compile.
+    # It is allowed to fail for now while the macOS job is being settled.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.0
+      - name: Build libghostty
+        run: ./scripts/build-ghostty.sh
+      - name: Build the app
+        run: ./scripts/build-app.sh
+      - name: Check the bundle
+        run: |
+          codesign --verify --strict --deep build/Tern.app
+          test -x build/Tern.app/Contents/Helpers/tern
+          test -x build/Tern.app/Contents/Helpers/ternd

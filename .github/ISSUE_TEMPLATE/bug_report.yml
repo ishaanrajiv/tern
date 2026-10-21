@@ -1,0 +1,62 @@
+name: Bug report
+description: Something in tern does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. If the problem is a security issue, please do not post it here —
+        see SECURITY.md instead.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, and what tern did instead.
+      placeholder: I pressed ⌘T in a folder with an agent running, and…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Anything in the log
+      description: |
+        ternd writes to `~/Library/Application Support/tern/ternd.log`. Paste the relevant part
+        if it says anything about this.
+      render: shell
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: 0.0.1
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: 15.6
+    validations:
+      required: true
+
+  - type: input
+    id: agents
+    attributes:
+      label: Agents
+      description: Which of Claude Code and Codex were involved, and their versions.
+      placeholder: Claude Code 2.0.14, Codex 0.48.0
+
+  - type: textarea
+    id: anything-else
+    attributes:
+      label: Anything else

@@ -45,25 +45,16 @@ pub fn is_zsh(shell: &str) -> bool {
 /// Where a session's shell records its commands.
 pub fn command_file(id: &str) -> PathBuf {
     let dir = runtime_dir();
-    std::path::absolute(&dir).unwrap_or(dir).join("commands").join(id)
+    let dir = std::path::absolute(&dir).unwrap_or(dir).join("commands");
+    // The id is a file name here, so it has to stay inside this directory even
+    // if something reaches this function without being validated first.
+    let id = if crate::valid_session_id(id) { id } else { "invalid-session" };
+    dir.join(id)
 }
 
 /// The last command line the session's shell ran, if the integration is active.
 pub fn last_command(id: &str) -> Option<Option<String>> {
     std::fs::read_to_string(command_file(id)).ok().map(|text| telling(&text))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::telling;
-
-    #[test]
-    fn picks_the_telling_part() {
-        assert_eq!(telling("cd api && npm run dev").as_deref(), Some("npm run dev"));
-        assert_eq!(telling("ls -la"), None);
-        assert_eq!(telling("git status; clear").as_deref(), Some("git status"));
-        assert_eq!(telling("cargo test\n  --release").as_deref(), Some("cargo test"));
-    }
 }
 
 /// What a command line says about a tab: its last part that isn't trivial,
@@ -88,4 +79,24 @@ pub fn is_trivial(command: &str) -> bool {
         "" | "cd" | "z" | "zi" | "ls" | "ll" | "la" | "l" | "eza" | "pwd" | "clear" | "cls" | "reset" | "exit"
             | "history" | "echo" | "which" | "type" | "true" | "false" | "source" | "." | "export" | "unset"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::telling;
+
+    #[test]
+    fn picks_the_telling_part() {
+        assert_eq!(telling("cd api && npm run dev").as_deref(), Some("npm run dev"));
+        assert_eq!(telling("ls -la"), None);
+        assert_eq!(telling("git status; clear").as_deref(), Some("git status"));
+        assert_eq!(telling("cargo test\n  --release").as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn a_command_file_stays_inside_its_directory() {
+        let file = super::command_file("../../victim");
+        assert_eq!(file.file_name().unwrap(), "invalid-session");
+        assert!(file.starts_with(super::runtime_dir().join("commands")));
+    }
 }
