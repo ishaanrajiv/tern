@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::path::PathBuf;
@@ -189,6 +190,9 @@ fn main() -> Result<()> {
     }
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+    // The umask already makes this 0700; say so explicitly rather than trust it.
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("securing {}", path.display()))?;
     std::fs::write(dir.join("ternd.pid"), std::process::id().to_string())?;
     eprintln!("ternd listening on {}", path.display());
 
@@ -217,7 +221,21 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// The daemon hands out terminal output and accepts keystrokes, so only the
+/// user who owns it may talk to it. The socket's permissions already keep
+/// other accounts out; this refuses a peer that got in some other way.
+fn verify_peer(conn: &UnixStream) -> Result<()> {
+    verify_peer_as(conn, nix::unistd::geteuid())
+}
+
+fn verify_peer_as(conn: &UnixStream, mine: nix::unistd::Uid) -> Result<()> {
+    let (uid, _) = nix::unistd::getpeereid(conn).context("reading the peer's credentials")?;
+    anyhow::ensure!(uid == mine, "peer uid {} is not this user's ({})", uid, mine);
+    Ok(())
+}
+
 fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
+    verify_peer(&conn)?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
     // Bound the initial JSON request independently of binary frame limits.
@@ -781,6 +799,15 @@ mod tests {
         assert!(client.send(Msg::Output(vec![1])));
         assert!(!client.send(Msg::Output(vec![2])));
         assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn refuses_a_peer_that_is_not_this_user() {
+        let (socket, _peer) = UnixStream::pair().unwrap();
+        assert!(verify_peer_as(&socket, nix::unistd::geteuid()).is_ok());
+        let other = nix::unistd::Uid::from_raw(nix::unistd::geteuid().as_raw() + 1);
+        let error = verify_peer_as(&socket, other).unwrap_err();
+        assert!(error.to_string().contains("not this user's"), "{error}");
     }
 
     #[test]
