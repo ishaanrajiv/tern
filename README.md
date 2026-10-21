@@ -88,6 +88,8 @@ tern's shortcuts take priority over terminal key bindings.
 
 ## Settings
 
+Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, notifications, resume).
+
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal
   (background, foreground, cursor, selection, ANSI 16) on top of your Ghostty config, so fonts and

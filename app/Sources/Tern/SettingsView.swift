@@ -53,52 +53,14 @@ final class AgentHooks {
     }
 }
 
-struct SettingsView: View {
-    let hooks: AgentHooks
-    @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
-    @AppStorage(Prefs.notifyDone) private var notifyDone = true
+/// Folders and tabs.
+struct GeneralSettings: View {
     @AppStorage(Prefs.worktrees) private var worktrees = false
-    @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
     @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
     @AppStorage(Prefs.repoRoots) private var repoRoots = "~/dev"
-    @AppStorage(Prefs.theme) private var theme = Theme.defaultID
 
     var body: some View {
         Form {
-            Section("Theme") {
-                HStack(spacing: 10) {
-                    ForEach(Theme.builtIn + [GhosttyApp.shared.userTheme], id: \.id) { option in
-                        ThemeSwatch(theme: option, selected: theme == option.id) { theme = option.id }
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                if theme == "ghostty" {
-                    Text("Uses the colours from your Ghostty config.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section("Agent status") {
-                AgentToggle(hooks: hooks, agent: "claude", name: "Claude Code",
-                            caption: "Adds hooks to ~/.claude/settings.json.")
-                AgentToggle(hooks: hooks, agent: "codex", name: "Codex",
-                            caption: "Adds hooks to ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
-                if let error = hooks.error {
-                    Text(error).font(.callout).foregroundStyle(.red)
-                }
-            }
-
-            Section("Notifications") {
-                Toggle(isOn: $notifyNeedsYou) {
-                    Labeled("When an agent needs you", caption: AgentNotifier.unavailable
-                            ? "macOS isn't letting tern post notifications yet." : nil)
-                }
-                Toggle(isOn: $notifyDone) {
-                    Labeled("When an agent finishes", caption: "Only for sessions you aren't looking at.")
-                }
-            }
-
             Section("Folders") {
                 Picker(selection: $folderOrder) {
                     Text("As opened").tag(FolderOrder.manual.rawValue)
@@ -121,16 +83,96 @@ struct SettingsView: View {
                     Labeled("Give each new tab its own git worktree",
                             caption: "⌘T in a git folder creates <repo>-worktrees/session-N on branch tern/session-N. ⌘⇧T always does.")
                 }
+            }
+        }
+        .settingsPane()
+    }
+}
+
+/// Theme.
+struct AppearanceSettings: View {
+    @AppStorage(Prefs.theme) private var theme = Theme.defaultID
+
+    var body: some View {
+        Form {
+            Section {
+                HStack(spacing: 10) {
+                    ForEach(Theme.builtIn + [GhosttyApp.shared.userTheme], id: \.id) { option in
+                        ThemeSwatch(theme: option, selected: theme == option.id) { theme = option.id }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+            } header: {
+                Text("Theme")
+            } footer: {
+                Text(theme == "ghostty"
+                     ? "Uses the colours from your Ghostty config."
+                     : "Colours the sidebar and the terminal. Fonts and keys still come from your Ghostty config.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .settingsPane()
+    }
+}
+
+/// Hooks, notifications and resuming conversations.
+struct AgentSettings: View {
+    let hooks: AgentHooks
+    @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
+    @AppStorage(Prefs.notifyDone) private var notifyDone = true
+    @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
+
+    var body: some View {
+        Form {
+            Section {
+                AgentToggle(hooks: hooks, agent: "claude", name: "Claude Code",
+                            caption: "Adds hooks to ~/.claude/settings.json.")
+                AgentToggle(hooks: hooks, agent: "codex", name: "Codex",
+                            caption: "Adds hooks to ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
+                if let error = hooks.error {
+                    Text(error).font(.callout).foregroundStyle(.red)
+                }
+            } header: {
+                Text("Status")
+            } footer: {
+                Text("Hooks tell tern when an agent is working, needs you, or is done.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Section("Notifications") {
+                Toggle(isOn: $notifyNeedsYou) {
+                    Labeled("When an agent needs you", caption: AgentNotifier.unavailable
+                            ? "macOS isn't letting tern post notifications yet." : nil)
+                }
+                Toggle(isOn: $notifyDone) {
+                    Labeled("When an agent finishes", caption: "Only for sessions you aren't looking at.")
+                }
+            }
+
+            Section("After a restart") {
                 Toggle(isOn: $resumeAgents) {
-                    Labeled("Resume agent conversations after a restart",
+                    Labeled("Resume agent conversations",
                             caption: "If a session was lost to a reboot, tern reopens its Claude Code or Codex conversation.")
                 }
             }
         }
-        .formStyle(.grouped)
-        .frame(width: 460)
-        .fixedSize(horizontal: false, vertical: true)
+        .settingsPane()
         .onAppear { hooks.refresh() }
+    }
+}
+
+private extension View {
+    func settingsPane() -> some View {
+        formStyle(.grouped)
+            .frame(width: 500)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -225,14 +267,47 @@ private struct AgentToggle: View {
     }
 }
 
+/// Settings in toolbar panes, as in other Mac apps. The window fits each pane.
 final class SettingsWindowController: NSWindowController {
     convenience init(hooks: AgentHooks) {
-        let host = NSHostingController(rootView: SettingsView(hooks: hooks))
-        host.sizingOptions = [.preferredContentSize]
-        let window = NSWindow(contentViewController: host)
-        window.title = "Settings"
+        // Read before adding panes: adding the first one selects it, which saves its index.
+        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 2)
+        let tabs = SettingsTabs()
+        tabs.tabStyle = .toolbar
+        tabs.canPropagateSelectedChildViewControllerTitle = true
+        func pane<V: View>(_ title: String, _ symbol: String, _ view: V) {
+            let host = NSHostingController(rootView: view)
+            host.sizingOptions = [.preferredContentSize]
+            host.title = title
+            let item = NSTabViewItem(viewController: host)
+            item.label = title
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+            tabs.addTabViewItem(item)
+        }
+        pane("General", "gearshape", GeneralSettings())
+        pane("Appearance", "paintpalette", AppearanceSettings())
+        pane("Agents", "sparkles", AgentSettings(hooks: hooks))
+        let window = NSWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable]
-        window.center()
+        window.toolbarStyle = .preference
         self.init(window: window)
+        tabs.selectedTabViewItemIndex = last
+        window.center()
+    }
+
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        // Otherwise the first text field takes focus, with its text selected.
+        DispatchQueue.main.async { self.window?.makeFirstResponder(nil) }
+    }
+}
+
+/// Opens on the pane last shown.
+private final class SettingsTabs: NSTabViewController {
+    static let key = "settingsPane"
+
+    override func tabView(_ tabView: NSTabView, didSelect item: NSTabViewItem?) {
+        super.tabView(tabView, didSelect: item)
+        UserDefaults.standard.set(selectedTabViewItemIndex, forKey: Self.key)
     }
 }
