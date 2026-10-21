@@ -23,6 +23,22 @@ enum DebugHooks {
                 parent.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + n - 1))
                 return
             }
+            // "Hover X Y" / "Click X Y": mouse events at window point (X, Y), measured from the top left.
+            let parts = title.split(separator: " ")
+            if parts.count == 3, parts[0] == "Hover" || parts[0] == "Click",
+               let x = Double(parts[1]), let y = Double(parts[2]),
+               let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+                let point = NSPoint(x: x, y: window.frame.height - y)
+                let types: [NSEvent.EventType] = parts[0] == "Hover" ? [.mouseMoved] : [.mouseMoved, .leftMouseDown, .leftMouseUp]
+                for type in types {
+                    if let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0,
+                                                  clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                        window.sendEvent(e)
+                    }
+                }
+                return
+            }
             // "Type <text>" enters text into whatever has focus (say, the folder picker).
             if title.hasPrefix("Type ") {
                 let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }

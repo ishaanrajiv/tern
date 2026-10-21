@@ -9,10 +9,19 @@ struct SidebarActions {
     var close: (String) -> Void
 }
 
+/// Number badges shown while ⌘ (folders) or ⌘⇧ (tabs) is held.
+@Observable
+final class ShortcutHints {
+    enum Kind { case folders, tabs }
+    var kind: Kind?
+}
+
 /// A header per folder, its tabs under it: status, name, agent, age.
 struct SidebarView: View {
     @Bindable var workspace: Workspace
     let hooks: AgentHooks
+    let hints: ShortcutHints
+    let layout: HeaderLayout
     let actions: SidebarActions
     @AppStorage(Prefs.hooksPromptDismissed) private var hooksPromptDismissed = false
     // Read so a change in Settings re-sorts the sidebar.
@@ -24,16 +33,22 @@ struct SidebarView: View {
             let manual = folderOrder == FolderOrder.manual.rawValue
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    ForEach(workspace.orderedProjects) { project in
+                    let current = workspace.currentProject?.path
+                    ForEach(Array(workspace.orderedProjects.enumerated()), id: \.element.id) { index, project in
                         FolderSection(workspace: workspace, project: project, now: context.date,
-                                      reorderable: manual, actions: actions)
+                                      reorderable: manual, actions: actions,
+                                      folderHint: hints.kind == .folders && index < 9 ? index + 1 : nil,
+                                      tabHints: hints.kind == .tabs && project.path == current)
                     }
                 }
                 .padding(.horizontal, 8)
-                .padding(.top, 4)
+                .padding(.top, layout.titlebarHeight + 6)
                 .padding(.bottom, 16)
             }
             .scrollIndicators(.never)
+            // Clear the titlebar with padding, not the safe area: with the safe-area inset, rows
+            // were drawn a titlebar lower than where clicks and hovers landed.
+            .ignoresSafeArea(.container, edges: .top)
             // One dark surface with the terminal, as in harp, instead of the system's grey material.
             .background(Color(nsColor: GhosttyApp.shared.chrome).ignoresSafeArea())
             .safeAreaInset(edge: .bottom) {
@@ -78,11 +93,13 @@ private struct FolderSection: View {
     let now: Date
     let reorderable: Bool
     let actions: SidebarActions
+    let folderHint: Int?
+    let tabHints: Bool
     @State private var dropTarget = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            FolderHeader(workspace: workspace, project: project, now: now, actions: actions)
+            FolderHeader(workspace: workspace, project: project, now: now, actions: actions, hint: folderHint)
                 .overlay(alignment: .top) {
                     // Where a dragged folder will land.
                     if dropTarget {
@@ -98,8 +115,8 @@ private struct FolderSection: View {
                     return true
                 } isTargeted: { dropTarget = reorderable && $0 }
             if !project.collapsed {
-                ForEach(project.tabs) { tab in
-                    TabRow(workspace: workspace, tab: tab, now: now)
+                ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
+                    TabRow(workspace: workspace, tab: tab, now: now, hint: tabHints && index < 9 ? "⇧⌘\(index + 1)" : nil)
                         .contextMenu {
                             Button("Rename…") { actions.rename(tab.id) }
                             Button("Close Tab") { actions.close(tab.id) }
@@ -115,6 +132,7 @@ private struct FolderHeader: View {
     let project: Project
     let now: Date
     let actions: SidebarActions
+    let hint: Int?
     @State private var hovering = false
 
     var body: some View {
@@ -153,7 +171,9 @@ private struct FolderHeader: View {
                     .background(Palette.amber, in: Capsule())
                     .help("\(waiting) need\(waiting == 1 ? "s" : "") you")
             }
-            if hovering {
+            if let hint {
+                KeyBadge(text: "⌘\(hint)")
+            } else if hovering {
                 Button { actions.newTab(project.path) } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
@@ -190,6 +210,7 @@ private struct TabRow: View {
     let workspace: Workspace
     let tab: Tab
     let now: Date
+    let hint: String?
     @State private var hovering = false
 
     var body: some View {
@@ -226,10 +247,14 @@ private struct TabRow: View {
             }
             Spacer(minLength: 4)
             if let agent { AgentMark(agent: agent) }
-            Text(relativeAge(workspace.lastActivity(tab), now: now))
-                .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
-                .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
-                .frame(minWidth: 22, alignment: .trailing)
+            if let hint {
+                KeyBadge(text: hint)
+            } else {
+                Text(relativeAge(workspace.lastActivity(tab), now: now))
+                    .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
+                    .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
+                    .frame(minWidth: 22, alignment: .trailing)
+            }
         }
         .padding(.leading, 26)
         .padding(.trailing, 8)
@@ -247,6 +272,22 @@ private struct TabRow: View {
         let s = workspace.sessions[tab.focusedPane]
         let facts = [s?.process, s?.cwd.map(abbreviateHome), s?.branch].compactMap { $0 }.joined(separator: " · ")
         return [workspace.agentMessage(tab), facts].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+/// A shortcut shown while its modifier is held.
+private struct KeyBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold).monospacedDigit())
+            .foregroundStyle(.primary)
+            .padding(.horizontal, 5)
+            .frame(height: 18)
+            .background(Color.primary.opacity(0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .fixedSize()
+            .transition(.opacity)
     }
 }
 

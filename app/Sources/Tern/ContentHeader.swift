@@ -29,7 +29,10 @@ struct ContentHeader: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: 12)
+                    // Only what needs saying: an agent at work or waiting, with how long. An idle
+                    // shell says nothing; the sidebar already shows every tab's age.
                     let status = workspace.status(for: tab, now: context.date)
+                    let agent = workspace.agent(for: tab) != nil
                     if status == .needsYou, let message = workspace.agentMessage(tab) {
                         Text(message)
                             .font(.system(size: 11, weight: .medium))
@@ -37,10 +40,13 @@ struct ContentHeader: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    StatusIcon(status: status)
-                    Text([status.label, relativeAge(workspace.lastActivity(tab), now: context.date)].joined(separator: " · "))
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
+                    if status == .needsYou || (status == .working && agent) {
+                        StatusIcon(status: status, isAgent: agent)
+                        Text([status.label, relativeAge(workspace.stateSince(tab), now: context.date)]
+                                .filter { !$0.isEmpty && $0 != "now" }.joined(separator: " · "))
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
+                    }
                 } else {
                     Spacer()
                 }
@@ -56,10 +62,13 @@ struct ContentHeader: View {
     }
 }
 
-/// Room the header leaves on its left for the traffic lights when the sidebar is hidden.
+/// Window geometry the SwiftUI parts follow.
 @Observable
 final class HeaderLayout {
+    /// Room the header leaves on its left for the traffic lights when the sidebar is hidden.
     var leadingInset: CGFloat = 0
+    /// The titlebar's height, which the sidebar starts below (zero in full screen).
+    var titlebarHeight: CGFloat = 38
 }
 
 /// Lets the header act as titlebar: drag moves the window, double-click zooms.

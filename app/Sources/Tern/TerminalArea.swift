@@ -46,6 +46,7 @@ final class TerminalArea: NSView {
                                     initLine: workspace.resumeCommand(for: pane))
             view.onFocus = { [weak self] in self?.workspace.focus(pane: pane) }
             view.onClose = { [weak self] in self?.attachEnded(pane) }
+            view.onResize = { [weak self] in self?.workspace.noteResize(pane) }
             addSubview(view)
             terminals[pane] = view
             let dim = DimView()

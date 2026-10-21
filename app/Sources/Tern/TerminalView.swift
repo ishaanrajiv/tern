@@ -12,6 +12,7 @@ final class TerminalView: NSView, NSTextInputClient {
     var onTitleChange: ((String) -> Void)?
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
+    var onResize: (() -> Void)?
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
@@ -84,6 +85,7 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+        if newSize != frame.size { onResize?() }
         super.setFrameSize(newSize)
         contentSize = newSize
         updateSurfaceSize()

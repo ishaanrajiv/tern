@@ -14,6 +14,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var hadTabs = false
     private var lastFocusKey = ""
     private let headerLayout = HeaderLayout()
+    private let hints = ShortcutHints()
+    private var hintTimer: DispatchWorkItem?
     private var collapseObservation: NSKeyValueObservation?
     private var saveScheduled = false
     private var savedLayout: ([Project], String?)?
@@ -43,7 +45,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         window.delegate = self
         workspace.onWorktreeClosed = { [weak self] path in self?.offerWorktreeRemoval(path) }
 
-        let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, actions: SidebarActions(
+        let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, hints: hints, layout: headerLayout, actions: SidebarActions(
             newTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path) } },
             newWorktreeTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path, worktree: true) } },
             closeFolder: { [weak self] path in self?.closeFolder(path) },
@@ -105,6 +107,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if !window.setFrameUsingName("tern.main") { window.center() }
 
         commands = makeCommands()
+        measureTitlebar()
         installKeyMonitor()
         observe()
         sync()
@@ -114,8 +117,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// with shift held the key reads "!", "@"… depending on the layout.
     private func installKeyMonitor() {
         let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9]
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window,
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            guard let self else { return event }
+            if event.type == .flagsChanged {
+                self.modifiersChanged(event.modifierFlags.intersection(.deviceIndependentFlagsMask))
+                return event
+            }
+            // Any key press means the user knows what they want; the hints go.
+            self.setHints(nil)
+            guard event.window === self.window,
                   event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
                   let n = digits[event.keyCode] else { return event }
             self.workspace.selectTabInFolder(index: n - 1)
@@ -124,6 +134,39 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
+
+    /// Holding ⌘ for a moment numbers the folders; ⌘⇧ numbers the current folder's tabs.
+    private func modifiersChanged(_ flags: NSEvent.ModifierFlags) {
+        hintTimer?.cancel()
+        let kind: ShortcutHints.Kind? = switch flags {
+        case [.command]: .folders
+        case [.command, .shift]: .tabs
+        default: nil
+        }
+        guard let kind, window?.isKeyWindow == true else { return setHints(nil) }
+        if hints.kind != nil { return setHints(kind) }
+        let work = DispatchWorkItem { [weak self] in self?.setHints(kind) }
+        hintTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+    }
+
+    private func setHints(_ kind: ShortcutHints.Kind?) {
+        if kind == nil { hintTimer?.cancel() }
+        guard hints.kind != kind else { return }
+        withAnimation(.easeOut(duration: 0.12)) { hints.kind = kind }
+    }
+
+    func windowDidResignKey(_ notification: Notification) { setHints(nil) }
+
+    private func measureTitlebar() {
+        guard let window else { return }
+        let height = window.frame.height - window.contentLayoutRect.height
+        if headerLayout.titlebarHeight != height { headerLayout.titlebarHeight = height }
+    }
+
+    func windowDidResize(_ notification: Notification) { measureTitlebar() }
+    func windowDidEnterFullScreen(_ notification: Notification) { measureTitlebar() }
+    func windowDidExitFullScreen(_ notification: Notification) { measureTitlebar() }
 
     // MARK: Model -> views
 
@@ -291,6 +334,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Focus Next Pane", menu: "Navigate", key: "]") { w.cyclePane(1) },
             Command("Focus Previous Pane", menu: "Navigate", key: "[") { w.cyclePane(-1) },
         ]
+        // For the debug harness, which can't hold a modifier down.
+        + (ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" ? [
+            Command("Debug Hints Folders", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.folders) },
+            Command("Debug Hints Tabs", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.tabs) },
+            Command("Debug Hints Off", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(nil) },
+        ] : [])
     }
 
     // MARK: Palette

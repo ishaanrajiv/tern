@@ -177,6 +177,8 @@ final class Workspace {
     private var paneAgent: [String: AgentRef] = [:]
     /// When each folder was last used in tern, for the folder picker and recent-first order.
     private(set) var recents: [String: Date] = [:]
+    /// When each pane was last resized: the shell redraws its prompt then, which isn't news.
+    @ObservationIgnored private var resizedAt: [String: Date] = [:]
     private var adoptedOrphans = false
     /// Whether the user can see the window; nothing is "seen" while tern is in the background.
     var isActive = true {
@@ -281,6 +283,14 @@ final class Workspace {
         if quiet > 24 * 3600 { return .dormant }
         return .idle
     }
+
+    /// Since when the tab's agent has been in its current state (working, waiting).
+    func stateSince(_ tab: Tab) -> Date? {
+        tab.root.panes.compactMap { sessions[$0]?.agentStateMs }.max()
+            .map { Date(timeIntervalSince1970: Double($0) / 1000) }
+    }
+
+    func noteResize(_ pane: String) { resizedAt[pane] = Date() }
 
     /// What the agent in this tab last said, if it's waiting on you or just finished.
     func agentMessage(_ tab: Tab) -> String? {
@@ -592,6 +602,10 @@ final class Workspace {
         for s in list {
             if let cwd = s.cwd { paneCwd[s.id] = cwd }
             if seen[s.id] == nil { seen[s.id] = Seen(output: s.lastOutputMs, bells: s.bells, agent: s.agentStateMs ?? 0) }
+            if let at = resizedAt[s.id], -at.timeIntervalSinceNow < 2, var mark = seen[s.id] {
+                mark.output = max(mark.output, s.lastOutputMs)
+                seen[s.id] = mark
+            }
             if let agent = s.agent, let id = s.agentSession { paneAgent[s.id] = AgentRef(agent: agent, session: id) }
             if s.agent == nil, s.agentState == nil, previous[s.id]?.agentState != nil { paneAgent[s.id] = nil }
             if let old = previous[s.id], s.agentStateMs != old.agentStateMs, s.agentState != old.agentState,
