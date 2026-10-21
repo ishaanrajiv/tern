@@ -45,6 +45,9 @@ struct SidebarView: View {
             }
             .listStyle(.sidebar)
             .environment(\.sidebarRowSize, .small)
+            // One dark surface with the terminal, as in harp, instead of the system's grey material.
+            .scrollContentBackground(.hidden)
+            .background(Color(nsColor: GhosttyApp.shared.chrome).ignoresSafeArea())
             .safeAreaInset(edge: .bottom) {
                 if hooks.anyMissing && !hooksPromptDismissed {
                     HooksPrompt(setUp: actions.setUpHooks, dismiss: { hooksPromptDismissed = true })
@@ -102,6 +105,8 @@ private struct ProjectHeader: View {
                     .foregroundStyle(Palette.amber)
             }
         }
+        // Line up with the rows' trailing edge, clear of the section's collapse chevron.
+        .padding(.trailing, 14)
         .help(project.path)
     }
 }

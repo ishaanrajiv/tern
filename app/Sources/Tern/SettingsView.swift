@@ -35,7 +35,8 @@ final class AgentHooks {
         refresh()
     }
 
-    /// Keeps the stable hook path pointing at this copy of tern.
+    /// Keeps the stable hook path pointing at this copy of tern, and updates hooks
+    /// an older tern installed (never installs them where there were none).
     func link() { _ = run(["hooks", "link"]) }
 
     @discardableResult
@@ -61,70 +62,82 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                AgentRow(hooks: hooks, agent: "claude", name: "Claude Code",
-                         note: "Adds hooks to ~/.claude/settings.json.")
-                AgentRow(hooks: hooks, agent: "codex", name: "Codex",
-                         note: "Adds hooks to ~/.codex/hooks.json. Codex asks you to trust them once: run /hooks in Codex.")
+            Section("Agent status") {
+                AgentToggle(hooks: hooks, agent: "claude", name: "Claude Code",
+                            caption: "Adds hooks to ~/.claude/settings.json.")
+                AgentToggle(hooks: hooks, agent: "codex", name: "Codex",
+                            caption: "Adds hooks to ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
                 if let error = hooks.error {
                     Text(error).font(.callout).foregroundStyle(.red)
                 }
-            } header: {
-                Text("Agent status")
-            } footer: {
-                Text("Hooks tell tern when an agent is working, waiting for you, or done. Outside tern they do nothing.")
-                    .font(.callout).foregroundStyle(.secondary)
             }
 
             Section("Notifications") {
-                Toggle("When an agent needs you", isOn: $notifyNeedsYou)
-                Toggle("When an agent finishes", isOn: $notifyDone)
-                Text("Only for sessions you aren't looking at.")
-                    .font(.callout).foregroundStyle(.secondary)
+                Toggle(isOn: $notifyNeedsYou) {
+                    Labeled("When an agent needs you", caption: AgentNotifier.unavailable
+                            ? "macOS isn't letting tern post notifications yet." : nil)
+                }
+                Toggle(isOn: $notifyDone) {
+                    Labeled("When an agent finishes", caption: "Only for sessions you aren't looking at.")
+                }
             }
 
             Section("Sessions") {
-                Toggle("Give each new session its own git worktree", isOn: $worktrees)
-                Text("In a git project, ⌘T creates `<repo>-worktrees/session-N` on a new branch `tern/session-N`. ⌘⇧T does this whatever the setting.")
-                    .font(.callout).foregroundStyle(.secondary)
-                Toggle("Resume agent conversations after a restart", isOn: $resumeAgents)
-                Text("When a session was lost (for example, to a reboot), tern runs `claude --resume` or `codex resume` in its place.")
-                    .font(.callout).foregroundStyle(.secondary)
+                Toggle(isOn: $worktrees) {
+                    Labeled("Give each new session its own git worktree",
+                            caption: "⌘T in a git project creates <repo>-worktrees/session-N on branch tern/session-N. ⌘⇧T always does.")
+                }
+                Toggle(isOn: $resumeAgents) {
+                    Labeled("Resume agent conversations after a restart",
+                            caption: "If a session was lost to a reboot, tern reopens its Claude Code or Codex conversation.")
+                }
             }
         }
         .formStyle(.grouped)
-        .frame(width: 480)
+        .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { hooks.refresh() }
     }
 }
 
-private struct AgentRow: View {
+/// A setting's name with a quieter explanation under it.
+private struct Labeled: View {
+    let title: String
+    let caption: String?
+
+    init(_ title: String, caption: String?) {
+        self.title = title
+        self.caption = caption
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+            if let caption {
+                Text(caption)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct AgentToggle: View {
     let hooks: AgentHooks
     let agent: String
     let name: String
-    let note: String
+    let caption: String
 
     var body: some View {
         let status = hooks.statuses[agent]
-        HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text(status?.available == false ? "Not installed on this Mac." : note)
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            if status?.installed == true {
-                Label("On", systemImage: "checkmark.circle.fill")
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(.green)
-                Button("Remove") { hooks.set(agent, installed: false) }
-            } else {
-                Button("Set Up") { hooks.set(agent, installed: true) }
-                    .disabled(status?.available == false)
-            }
+        Toggle(isOn: Binding(
+            get: { status?.installed == true },
+            set: { hooks.set(agent, installed: $0) }
+        )) {
+            Labeled(name, caption: status?.available == false ? "Not installed on this Mac." : caption)
         }
+        .disabled(status?.available == false)
     }
 }
 
@@ -133,7 +146,7 @@ final class SettingsWindowController: NSWindowController {
         let host = NSHostingController(rootView: SettingsView(hooks: hooks))
         host.sizingOptions = [.preferredContentSize]
         let window = NSWindow(contentViewController: host)
-        window.title = "tern Settings"
+        window.title = "Settings"
         window.styleMask = [.titled, .closable]
         window.center()
         self.init(window: window)

@@ -15,8 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         _ = GhosttyApp.shared
         Prefs.registerDefaults()
-        // Installed hooks call tern through a stable path; keep it pointing at this app.
-        DispatchQueue.global(qos: .utility).async { [hooks] in hooks.link() }
+        // Installed hooks call tern through a stable path; keep it pointing at this app,
+        // and bring hooks set up by an older tern up to this one's events.
+        DispatchQueue.global(qos: .utility).async { [hooks] in
+            hooks.link()
+            DispatchQueue.main.async { hooks.refresh() }
+        }
 
         // Layout from last time, plus any sessions ternd is running that it doesn't know.
         workspace.load()
@@ -37,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         mainWindow = controller
         NSApp.mainMenu = MenuBuilder.build(commands: controller.commands)
+        DebugHooks.install { [weak controller] in controller?.commands ?? [] }
         controller.showWindow(nil)
 
         TernClient.watch { [weak self] list in self?.workspace.update(sessions: list) }

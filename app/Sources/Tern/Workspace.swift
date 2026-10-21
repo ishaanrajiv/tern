@@ -76,6 +76,8 @@ struct Tab: Codable, Identifiable, Equatable {
     var root: SplitNode
     var focusedPane: String
     var zoomed = false
+    /// The worktree tern made for this tab, offered for removal when the tab closes.
+    var worktree: String?
 }
 
 struct Project: Codable, Identifiable, Equatable {
@@ -165,6 +167,9 @@ final class Workspace {
 
     @ObservationIgnored var onChange: (() -> Void)?
 
+    /// A tab that had its own worktree is gone; the worktree may be left behind.
+    @ObservationIgnored var onWorktreeClosed: ((String) -> Void)?
+
     // MARK: Lookup
 
     var allTabs: [Tab] { projects.flatMap(\.tabs) }
@@ -195,7 +200,8 @@ final class Workspace {
     }
 
     private func status(pane: String, visible: Bool, now: Date) -> SessionStatus {
-        guard let s = sessions[pane] else { return .starting }
+        // No session: being started if it's on screen, otherwise waiting to be opened.
+        guard let s = sessions[pane] else { return selectedTab?.root.panes.contains(pane) == true ? .starting : .dormant }
         let seen = seen[pane]
         let nowMs = UInt64(max(0, now.timeIntervalSince1970 * 1000))
         let quiet = Double(nowMs &- min(nowMs, s.lastOutputMs)) / 1000
@@ -236,9 +242,23 @@ final class Workspace {
             .map { Date(timeIntervalSince1970: Double($0) / 1000) }
     }
 
+    /// The session's name, numbered when another session in its project would show the same one.
     func title(for tab: Tab) -> String {
+        let base = baseTitle(for: tab)
+        guard let project = project(containing: tab.id) else { return base }
+        let same = project.tabs.filter { baseTitle(for: $0) == base }
+        guard same.count > 1, let i = same.firstIndex(where: { $0.id == tab.id }), i > 0 else { return base }
+        return "\(base) \(i + 1)"
+    }
+
+    func baseTitle(for tab: Tab) -> String {
         if let name = tab.name, !name.isEmpty { return name }
-        guard let s = sessions[tab.focusedPane] else { return "shell" }
+        guard let s = sessions[tab.focusedPane] else {
+            // Not running yet (say, after a reboot): name it after what it was.
+            if let agent = paneAgent[tab.focusedPane]?.agent { return agent }
+            guard let cwd = paneCwd[tab.focusedPane] else { return "shell" }
+            return cwd == NSHomeDirectory() ? "~" : (cwd as NSString).lastPathComponent
+        }
         // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
         if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
             return task
@@ -316,7 +336,8 @@ final class Workspace {
         }
         switch Worktree.create(from: cwd) {
         case .success(let created):
-            newTab(projectPath: projectPath, cwd: created.path)
+            let tab = newTab(projectPath: projectPath, cwd: created.path)
+            mutateTab(tab.id) { $0.worktree = created.path }
             return nil
         case .failure(let failure):
             return failure
@@ -357,7 +378,9 @@ final class Workspace {
                 projects[p].tabs[t].zoomed = false
             } else {
                 let order = allTabs.map(\.id)
+                let worktree = projects[p].tabs[t].worktree
                 projects[p].tabs.remove(at: t)
+                if let worktree { DispatchQueue.main.async { self.onWorktreeClosed?(worktree) } }
                 if projects[p].tabs.isEmpty { projects.remove(at: p) }
                 if selectedTabID == tabID {
                     let i = order.firstIndex(of: tabID) ?? 0

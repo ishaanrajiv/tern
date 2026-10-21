@@ -1,8 +1,11 @@
 //! ternd: owns the PTYs so terminal sessions outlive the tern app.
 //!
 //! Each session keeps a headless vt100 screen alongside its PTY. When a client
-//! attaches, it first receives a snapshot of that screen (plain-text history,
-//! then the formatted visible screen), then the live output stream.
+//! attaches, it first receives a snapshot of that screen (history, then the
+//! visible screen), then the live output stream.
+//!
+//! Screens are also saved to disk now and then, and when ternd is told to quit,
+//! so after a reboot a session recreated under the same id shows what it showed.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,7 +13,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -44,6 +48,8 @@ struct SessionState {
     parser: vt100::Parser<TermEvents>,
     clients: Vec<(u64, Sender<Msg>)>,
     last_output_ms: u64,
+    /// `last_output_ms` when the screen was last saved to disk.
+    saved_output_ms: u64,
     agent: Option<AgentReport>,
 }
 
@@ -146,6 +152,15 @@ fn main() -> Result<()> {
     eprintln!("ternd listening on {}", path.display());
 
     let sessions: Sessions = Arc::default();
+    prune_saved();
+    {
+        let sessions = sessions.clone();
+        thread::spawn(move || save_periodically(sessions));
+    }
+    {
+        let sessions = sessions.clone();
+        thread::spawn(move || save_on_quit(sessions));
+    }
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let sessions = sessions.clone();
@@ -187,6 +202,8 @@ fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
                 Some(s) => killpg(Pid::from_raw(s.pid), Signal::SIGHUP).is_ok(),
                 None => false,
             };
+            // Closed on purpose: nothing to bring back after a reboot.
+            forget_saved(&id);
             writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
         }
         Request::Report { id, agent, state, agent_session, message } => {
@@ -213,10 +230,16 @@ fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
             let (session, created) = match existing {
                 Some(s) => (s, false),
                 None => match spawn_session(&id, cols, rows, cwd, cmd, env, &sessions) {
-                    Ok(s) => {
-                        if let Some(line) = init {
+                    Ok((s, restored)) => {
+                        // An agent's resume command wins over retyping what was running.
+                        let typed = match (init, restored.and_then(|m| m.command)) {
+                            (Some(line), _) => Some((line, true)),
+                            (None, Some(command)) => Some((command, false)),
+                            (None, None) => None,
+                        };
+                        if let Some((line, enter)) = typed {
                             let s = s.clone();
-                            thread::spawn(move || type_when_ready(&s, &line));
+                            thread::spawn(move || type_when_ready(&s, &line, enter));
                         }
                         (s, true)
                     }
@@ -243,7 +266,7 @@ fn spawn_session(
     cmd: Option<String>,
     env: Vec<(String, String)>,
     sessions: &Sessions,
-) -> Result<Arc<Session>> {
+) -> Result<(Arc<Session>, Option<SavedMeta>)> {
     let ws = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     let pty = openpty(Some(&ws), None).context("openpty")?;
     let master = File::from(pty.master);
@@ -271,15 +294,23 @@ fn spawn_session(
     // We reap the child ourselves with waitpid once its PTY closes.
     std::mem::forget(child);
 
+    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, TermEvents::default());
+    // Lay the saved screen down before the new shell prints anything.
+    let restored = load_saved(id).map(|(meta, screen)| {
+        parser.process(&screen);
+        parser.process(restored_banner(meta.saved_ms, cols).as_bytes());
+        meta
+    });
     let session = Arc::new(Session {
         id: id.to_string(),
         pid,
         start_cwd: cwd,
         master,
         state: Mutex::new(SessionState {
-            parser: vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, TermEvents::default()),
+            parser,
             clients: Vec::new(),
             last_output_ms: now_ms(),
+            saved_output_ms: 0,
             agent: None,
         }),
     });
@@ -289,7 +320,7 @@ fn spawn_session(
     let reader_session = session.clone();
     let sessions = sessions.clone();
     thread::spawn(move || pump_output(reader_session, sessions));
-    Ok(session)
+    Ok((session, restored))
 }
 
 /// Reads PTY output, feeds the headless screen and fans it out to clients.
@@ -317,6 +348,18 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
         _ => -1,
     };
     eprintln!("session {}: exited with {code}", session.id);
+    // The session is over, so its saved screen goes, unless the machine is going
+    // down: shells die of SIGHUP then too (exiting 1, like "exit 1" would), and
+    // can beat ternd's own SIGTERM by a moment.
+    let id = session.id.clone();
+    let all = sessions.clone();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(5));
+        // Not if a new session took the id meanwhile; that one saves its own.
+        if !QUITTING.load(Ordering::SeqCst) && !all.lock().unwrap().contains_key(&id) {
+            forget_saved(&id);
+        }
+    });
     {
         let mut map = sessions.lock().unwrap();
         if map.get(&session.id).is_some_and(|s| Arc::ptr_eq(s, &session)) {
@@ -390,7 +433,8 @@ fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStr
 
 /// Types `line` into a new session once the shell has drawn its prompt and gone
 /// quiet. Writing earlier risks the shell flushing pending input as it starts.
-fn type_when_ready(session: &Session, line: &str) {
+/// Without `enter` the line is left at the prompt for the user to run.
+fn type_when_ready(session: &Session, line: &str, enter: bool) {
     let started = now_ms();
     loop {
         thread::sleep(Duration::from_millis(100));
@@ -402,7 +446,7 @@ fn type_when_ready(session: &Session, line: &str) {
         }
     }
     let mut master = &session.master;
-    let _ = master.write_all(format!("{line}\r").as_bytes());
+    let _ = master.write_all(format!("{line}{}", if enter { "\r" } else { "" }).as_bytes());
 }
 
 /// A keypress (not a focus report or mouse event) while the agent waits on the
@@ -434,26 +478,13 @@ fn resize_locked(session: &Session, st: &mut SessionState, cols: u16, rows: u16)
 /// Bytes that repaint a fresh terminal to match the session's screen.
 fn snapshot(parser: &mut vt100::Parser<TermEvents>) -> Vec<u8> {
     let mut out = Vec::new();
-    let (rows, cols) = parser.screen().size();
+    let (rows, _) = parser.screen().size();
     if parser.screen().alternate_screen() {
         out.extend_from_slice(b"\x1b[?1049h");
     } else {
-        // Main-screen history goes in as plain text so it lands in the new
-        // terminal's scrollback. Colors in history are dropped for now.
-        let screen = parser.screen_mut();
-        screen.set_scrollback(usize::MAX);
-        let total = screen.scrollback();
-        let mut off = total;
-        while off > 0 {
-            screen.set_scrollback(off);
-            let take = off.min(rows as usize);
-            for row in screen.rows(0, cols).take(take) {
-                out.extend_from_slice(row.trim_end().as_bytes());
-                out.extend_from_slice(b"\r\n");
-            }
-            off -= take;
-        }
-        screen.set_scrollback(0);
+        // Main-screen history is replayed line by line so it lands in the new
+        // terminal's scrollback, colours included.
+        let total = write_lines(parser, &mut out, false);
         if total > 0 {
             // Push the tail of the history off the visible screen before repainting it.
             out.extend(std::iter::repeat_n(b'\n', rows as usize));
@@ -461,4 +492,192 @@ fn snapshot(parser: &mut vt100::Parser<TermEvents>) -> Vec<u8> {
     }
     out.extend(parser.screen().state_formatted());
     out
+}
+
+/// Writes the main screen's history, and the visible rows too if `visible`, as
+/// formatted lines. Each starts and ends with a reset, since vt100 formats every
+/// row as if from default attributes. Returns the number of history lines.
+fn write_lines(parser: &mut vt100::Parser<TermEvents>, out: &mut Vec<u8>, visible: bool) -> usize {
+    let (rows, cols) = parser.screen().size();
+    let mut line = |row: Vec<u8>| {
+        out.extend_from_slice(b"\x1b[m");
+        out.extend_from_slice(&row);
+        out.extend_from_slice(b"\x1b[m\r\n");
+    };
+    let screen = parser.screen_mut();
+    screen.set_scrollback(usize::MAX);
+    let total = screen.scrollback();
+    let mut off = total;
+    while off > 0 {
+        screen.set_scrollback(off);
+        let take = off.min(rows as usize);
+        screen.rows_formatted(0, cols).take(take).for_each(&mut line);
+        off -= take;
+    }
+    screen.set_scrollback(0);
+    if visible {
+        // Up to the last row with anything on it.
+        let used = screen.rows(0, cols).enumerate().filter(|(_, r)| !r.trim().is_empty()).map(|(i, _)| i + 1).last();
+        screen.rows_formatted(0, cols).take(used.unwrap_or(0)).for_each(&mut line);
+    }
+    total
+}
+
+// MARK: Saved screens
+
+/// Set once ternd is told to quit, so sessions dying with it keep their saved screens.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+const SAVE_EVERY: Duration = Duration::from_secs(15);
+const KEEP_SAVED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedMeta {
+    saved_ms: u64,
+    /// What was running in the foreground (an agent's resume command for an
+    /// agent), typed at the prompt after a restore for the user to run again.
+    #[serde(default)]
+    command: Option<String>,
+}
+
+fn saved_dir() -> PathBuf {
+    runtime_dir().join("saved")
+}
+
+/// The saved screen and its details for a session id, if the id is file-safe.
+fn saved_paths(id: &str) -> Option<(PathBuf, PathBuf)> {
+    let safe = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !id.starts_with('.');
+    safe.then(|| {
+        let dir = saved_dir();
+        (dir.join(format!("{id}.screen")), dir.join(format!("{id}.json")))
+    })
+}
+
+fn load_saved(id: &str) -> Option<(SavedMeta, Vec<u8>)> {
+    let (screen, meta) = saved_paths(id)?;
+    let meta: SavedMeta = serde_json::from_slice(&std::fs::read(meta).ok()?).ok()?;
+    Some((meta, std::fs::read(screen).ok()?))
+}
+
+fn forget_saved(id: &str) {
+    if let Some((screen, meta)) = saved_paths(id) {
+        let _ = std::fs::remove_file(screen);
+        let _ = std::fs::remove_file(meta);
+    }
+}
+
+/// A dim rule under the restored screen: "── restored · saved Oct 21 14:02 ──".
+fn restored_banner(saved_ms: u64, cols: u16) -> String {
+    let label = format!(" restored · saved {} ", local_time(saved_ms));
+    let width = (cols as usize).max(label.chars().count() + 4);
+    let rest = width - 2 - label.chars().count();
+    format!("\x1b[m\x1b[2m──{label}{}\x1b[m\r\n", "─".repeat(rest.min(40)))
+}
+
+fn local_time(ms: u64) -> String {
+    use nix::libc;
+    let t = (ms / 1000) as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let mut buf = [0u8; 64];
+    let n = unsafe {
+        libc::localtime_r(&t, &mut tm);
+        libc::strftime(buf.as_mut_ptr().cast(), buf.len(), c"%b %-d %H:%M".as_ptr(), &tm)
+    };
+    String::from_utf8_lossy(&buf[..n]).into_owned()
+}
+
+/// Saves one session's screen if it changed since the last save.
+fn save_session(s: &Session, force: bool) {
+    let Some((screen_path, meta_path)) = saved_paths(&s.id) else { return };
+    let fg = procinfo::foreground(s.master.as_raw_fd(), s.pid);
+    let (screen, agent) = {
+        let mut st = s.state.lock().unwrap();
+        // Full-screen programs own the screen; the main screen behind them isn't
+        // reachable, so the last save from before they started stands.
+        if st.parser.screen().alternate_screen() || (!force && st.saved_output_ms == st.last_output_ms) {
+            return;
+        }
+        st.saved_output_ms = st.last_output_ms;
+        let mut out = Vec::new();
+        write_lines(&mut st.parser, &mut out, true);
+        let agent = st.agent.as_ref().and_then(|a| Some((a.agent.clone(), a.session.clone()?)));
+        (out, agent)
+    };
+    let command = if fg.agent.is_some() {
+        // An agent's conversation picks up where it was, given its session id.
+        agent.and_then(|(agent, session)| match agent.as_str() {
+            "claude" => Some(format!("claude --resume {}", shell_quote(&session))),
+            "codex" => Some(format!("codex resume {}", shell_quote(&session))),
+            _ => None,
+        })
+    } else if fg.pid != s.pid && !is_shell(&fg.name) {
+        procinfo::process_args(fg.pid)
+            .filter(|args| !args.is_empty())
+            .map(|args| args.iter().map(|a| shell_quote(a)).collect::<Vec<_>>().join(" "))
+    } else {
+        None
+    };
+    let meta = SavedMeta { saved_ms: now_ms(), command };
+    let write = || -> Result<()> {
+        std::fs::create_dir_all(saved_dir())?;
+        let tmp = screen_path.with_extension("screen.tmp");
+        std::fs::write(&tmp, &screen)?;
+        std::fs::rename(&tmp, &screen_path)?;
+        std::fs::write(&meta_path, serde_json::to_vec(&meta)?)?;
+        Ok(())
+    };
+    if let Err(e) = write() {
+        eprintln!("session {}: saving screen: {e:#}", s.id);
+    }
+}
+
+fn save_all(sessions: &Sessions, force: bool) {
+    let all: Vec<Arc<Session>> = sessions.lock().unwrap().values().cloned().collect();
+    for s in all {
+        save_session(&s, force);
+    }
+}
+
+fn save_periodically(sessions: Sessions) {
+    loop {
+        thread::sleep(SAVE_EVERY);
+        save_all(&sessions, false);
+    }
+}
+
+/// launchd sends SIGTERM at logout and shutdown: save every screen, then go.
+fn save_on_quit(sessions: Sessions) {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    let Ok(mut signals) = signal_hook::iterator::Signals::new([SIGTERM, SIGINT, SIGHUP]) else { return };
+    if let Some(sig) = signals.forever().next() {
+        QUITTING.store(true, Ordering::SeqCst);
+        save_all(&sessions, true);
+        eprintln!("ternd: saved screens, quitting on signal {sig}");
+        let _ = std::fs::remove_file(socket_path());
+        std::process::exit(0);
+    }
+}
+
+/// Drops saved screens nobody came back for.
+fn prune_saved() {
+    let Ok(entries) = std::fs::read_dir(saved_dir()) else { return };
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > KEEP_SAVED_FOR);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+fn is_shell(name: &str) -> bool {
+    matches!(name, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "login" | "-zsh" | "-bash")
+}
+
+fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
 }

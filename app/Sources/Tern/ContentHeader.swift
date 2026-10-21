@@ -4,6 +4,7 @@ import SwiftUI
 /// The strip above the terminal: what this session is and where, then its state.
 struct ContentHeader: View {
     let workspace: Workspace
+    let layout: HeaderLayout
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -13,7 +14,8 @@ struct ContentHeader: View {
                     Text(workspace.title(for: tab))
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
-                    if let cwd = s?.cwd {
+                    // A tab titled "~" needn't say "~" twice.
+                    if let cwd = s?.cwd, abbreviateHome(cwd) != workspace.baseTitle(for: tab) {
                         Text(abbreviateHome(cwd))
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -43,13 +45,21 @@ struct ContentHeader: View {
                     Spacer()
                 }
             }
-            .padding(.horizontal, 12)
+            .padding(.leading, 14 + layout.leadingInset)
+            .padding(.trailing, 14)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .ignoresSafeArea()
             .overlay(alignment: .bottom) {
-                Rectangle().fill(.separator.opacity(0.6)).frame(height: 1)
+                Rectangle().fill(Color(nsColor: GhosttyApp.shared.foreground).opacity(0.08)).frame(height: 1)
             }
         }
     }
+}
+
+/// Room the header leaves on its left for the traffic lights when the sidebar is hidden.
+@Observable
+final class HeaderLayout {
+    var leadingInset: CGFloat = 0
 }
 
 /// Lets the header act as titlebar: drag moves the window, double-click zooms.

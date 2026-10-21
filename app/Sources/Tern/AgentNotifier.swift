@@ -6,6 +6,8 @@ import UserNotifications
 final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     private let workspace: Workspace
     private var authorized = false
+    /// macOS refused permission (see README: open issue).
+    static var unavailable = false
 
     init(workspace: Workspace) {
         self.workspace = workspace
@@ -15,7 +17,10 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
             if let error { NSLog("tern: notification authorization failed: %@", String(describing: error)) }
             NSLog("tern: notifications authorized: %@", granted ? "yes" : "no")
-            DispatchQueue.main.async { self?.authorized = granted }
+            DispatchQueue.main.async {
+                self?.authorized = granted
+                AgentNotifier.unavailable = !granted
+            }
         }
         workspace.onAgentEvent = { [weak self] tab, info in self?.agentChanged(tab: tab, info: info) }
     }

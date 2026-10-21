@@ -23,6 +23,8 @@ fn events(agent: &str) -> &'static [&'static str] {
             "SessionStart",
             "UserPromptSubmit",
             "PreToolUse",
+            "PostToolUse",
+            "PostToolUseFailure",
             "PermissionRequest",
             "Notification",
             "Stop",
@@ -43,7 +45,12 @@ pub fn state_for(agent: &str, input: &Value) -> Option<(AgentState, Option<Strin
             Some("compact") => return None,
             _ => AgentState::Idle,
         },
-        "UserPromptSubmit" | "PreToolUse" => AgentState::Working,
+        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => AgentState::Working,
+        // Esc during a tool ends the turn without a Stop; other failures go back to the model.
+        "PostToolUseFailure" => match input["is_interrupt"].as_bool() {
+            Some(true) => AgentState::Idle,
+            _ => return None,
+        },
         "PermissionRequest" | "Elicitation" => {
             let tool = input["tool_name"].as_str().map(|t| format!("Allow {t}?"));
             return Some((AgentState::NeedsYou, tool.or_else(|| text("message"))));
@@ -227,13 +234,43 @@ pub fn uninstall(agent: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Whether every event has our hook, and the agent is installed at all.
+/// Which of the agent's events carry our hook.
+fn hooked_events(agent: &str, config: &Map<String, Value>) -> Vec<&'static str> {
+    events(agent)
+        .iter()
+        .copied()
+        .filter(|e| {
+            config.get("hooks").and_then(|h| h.get(*e)).and_then(Value::as_array).is_some_and(|gs| gs.iter().any(|g| is_ours(g, agent)))
+        })
+        .collect()
+}
+
+/// Whether our hooks are installed (from this or an older tern), whether they
+/// cover every event this tern uses, and whether the agent is installed at all.
 pub fn status(agent: &str) -> Result<Value> {
     let path = config_path(agent)?;
     let config = read_config(&path).unwrap_or_default();
-    let installed = events(agent).iter().all(|e| {
-        config.get("hooks").and_then(|h| h.get(*e)).and_then(Value::as_array).is_some_and(|gs| gs.iter().any(|g| is_ours(g, agent)))
-    });
+    let hooked = hooked_events(agent, &config).len();
     let agent_dir = path.parent().is_some_and(Path::exists);
-    Ok(json!({ "agent": agent, "installed": installed, "available": agent_dir, "config": path }))
+    Ok(json!({
+        "agent": agent,
+        "installed": hooked > 0,
+        "current": hooked == events(agent).len(),
+        "available": agent_dir,
+        "config": path,
+    }))
+}
+
+/// Brings hooks an older tern installed up to this tern's events. Hooks that
+/// were never installed stay that way. Returns the agents updated.
+pub fn update_installed() -> Vec<&'static str> {
+    AGENTS
+        .into_iter()
+        .filter(|a| {
+            let Ok(path) = config_path(a) else { return false };
+            let Ok(config) = read_config(&path) else { return false };
+            let hooked = hooked_events(a, &config).len();
+            hooked > 0 && hooked < events(a).len() && install(a).is_ok()
+        })
+        .collect()
 }

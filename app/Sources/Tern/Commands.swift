@@ -23,6 +23,26 @@ final class Command {
         self.action = action
     }
 
+    /// SF Symbol for the palette.
+    var symbol: String {
+        let t = title
+        if t.hasPrefix("New Session in Worktree") { return "arrow.triangle.branch" }
+        if t.hasPrefix("New Session") { return "plus" }
+        if t.hasPrefix("Open Project") { return "folder" }
+        if t == "Split Right" { return "rectangle.split.2x1" }
+        if t == "Split Down" { return "rectangle.split.1x2" }
+        if t.hasPrefix("Rename") { return "pencil" }
+        if t.hasPrefix("Close") { return "xmark" }
+        if t.hasPrefix("Clear") { return "eraser" }
+        if t.hasPrefix("Settings") { return "gearshape" }
+        if t.hasPrefix("Toggle Sidebar") { return "sidebar.left" }
+        if t.hasPrefix("Zoom") { return "arrow.up.left.and.arrow.down.right" }
+        if t.contains("Text") || t.hasPrefix("Actual Size") { return "textformat.size" }
+        if t.hasPrefix("Next Needing") { return "bell" }
+        if t.hasPrefix("Focus") { return "rectangle.inset.filled" }
+        return "arrow.right"
+    }
+
     /// "⌥⌘←" style label.
     var shortcutLabel: String {
         guard !key.isEmpty else { return "" }

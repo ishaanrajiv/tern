@@ -7,6 +7,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private let splitController = NSSplitViewController()
     private var paletteHost: NSView?
     private var lastFocusKey = ""
+    private let headerLayout = HeaderLayout()
+    private var collapseObservation: NSKeyValueObservation?
     private var saveScheduled = false
     private var savedLayout: ([Project], String?)?
     private(set) var commands: [Command] = []
@@ -33,6 +35,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         window.minSize = NSSize(width: 560, height: 320)
         super.init(window: window)
         window.delegate = self
+        workspace.onWorktreeClosed = { [weak self] path in self?.offerWorktreeRemoval(path) }
 
         let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, actions: SidebarActions(
             newSessionInProject: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path) } },
@@ -51,7 +54,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // The strip under the titlebar and the terminal share one colour, so they read as one surface.
         content.view.wantsLayer = true
         content.view.layer?.backgroundColor = GhosttyApp.shared.background.cgColor
-        let header = DraggableHostingView(rootView: ContentHeader(workspace: workspace))
+        let header = DraggableHostingView(rootView: ContentHeader(workspace: workspace, layout: headerLayout))
+        // It lives in the titlebar strip; without this SwiftUI pushes it below the strip, out of sight.
+        header.safeAreaRegions = []
         header.translatesAutoresizingMaskIntoConstraints = false
         content.view.addSubview(header)
         terminalArea.translatesAutoresizingMaskIntoConstraints = false
@@ -59,7 +64,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.view.topAnchor),
             header.bottomAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.topAnchor),
-            header.leadingAnchor.constraint(equalTo: content.view.leadingAnchor),
             header.trailingAnchor.constraint(equalTo: content.view.trailingAnchor),
             // Below the titlebar, not under it.
             terminalArea.topAnchor.constraint(equalTo: content.view.safeAreaLayoutGuide.topAnchor),
@@ -67,6 +71,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             terminalArea.leadingAnchor.constraint(equalTo: content.view.leadingAnchor),
             terminalArea.trailingAnchor.constraint(equalTo: content.view.trailingAnchor),
         ])
+        header.leadingAnchor.constraint(equalTo: content.view.leadingAnchor).isActive = true
+        // With the sidebar hidden, the traffic lights and sidebar buttons sit over the header's left end.
+        collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] item, _ in
+            DispatchQueue.main.async { self?.headerLayout.leadingInset = item.isCollapsed ? 146 : 0 }
+        }
+
         let contentItem = NSSplitViewItem(viewController: content)
         contentItem.minimumThickness = 320
         splitController.addSplitViewItem(contentItem)
@@ -181,8 +191,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private func makeCommands() -> [Command] {
         let w = workspace
         return [
-            Command("Settings…", menu: "tern", key: ",", inPalette: false) { [weak self] in self?.onOpenSettings?() },
-            Command("Agent Status Settings", menu: "tern", key: "", inMenu: false) { [weak self] in self?.onOpenSettings?() },
+            Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
             Command("New Session", menu: "Session", key: "t") { [weak self] in self?.newSession { $0.newTabInCurrentProject() } },
             Command("New Session", menu: "Session", key: "n", inMenu: false, inPalette: false) { [weak self] in
                 self?.newSession { $0.newTabInCurrentProject() }
@@ -250,15 +259,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
         guard let contentView = window?.contentView else { return }
         var items = commands.filter(\.inPalette).map { c in
-            PaletteItem(title: c.title, subtitle: c.menu, shortcut: c.shortcutLabel, symbol: "command", action: c.action)
+            PaletteItem(title: c.title, subtitle: "", shortcut: c.shortcutLabel, symbol: c.symbol, action: c.action)
         }
         let tabs = workspace.allTabs
         items = tabs.enumerated().map { i, tab in
             let s = workspace.sessions[tab.focusedPane]
-            let project = workspace.project(containing: tab.id)?.name ?? ""
-            let where_ = [project, s?.cwd.map(abbreviateHome)].compactMap { $0 }.joined(separator: " · ")
+            let title = workspace.title(for: tab)
+            let dir = s?.cwd.map(abbreviateHome)
+            let where_ = [dir == title ? nil : dir, s?.branch].compactMap { $0 }.joined(separator: " · ")
             return PaletteItem(
-                title: workspace.title(for: tab), subtitle: where_,
+                title: title, subtitle: where_,
                 shortcut: i < 9 ? "⌘\(i + 1)" : "",
                 symbol: Workspace.agents.contains(s?.process ?? "") ? "sparkles" : "terminal",
                 action: { [weak self] in self?.workspace.select(tab.id) })
@@ -309,6 +319,57 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             guard response == .alertFirstButtonReturn else { return }
             self?.workspace.rename(tabID, to: field.stringValue.trimmingCharacters(in: .whitespaces))
         }
+    }
+
+    /// A closed tab leaves its worktree behind: offer to remove it, branch kept.
+    func offerWorktreeRemoval(_ path: String) {
+        guard FileManager.default.fileExists(atPath: path) else { return }
+        let name = URL(fileURLWithPath: path).lastPathComponent
+        let changes = Worktree.changes(in: path)
+        let branch = Worktree.branch(of: path).map { "Branch \($0) is kept." } ?? ""
+        let alert = NSAlert()
+        alert.messageText = "Remove worktree \(name)?"
+        if changes.isEmpty {
+            alert.informativeText = "It has no uncommitted changes. \(branch)"
+            alert.addButton(withTitle: "Remove")
+            alert.addButton(withTitle: "Keep")
+        } else {
+            let n = changes.count
+            alert.informativeText = "It has \(n) uncommitted change\(n == 1 ? "" : "s"), which removing it deletes. \(branch)"
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Keep")
+            alert.addButton(withTitle: "Remove Anyway")
+            alert.buttons[1].hasDestructiveAction = true
+        }
+        let removeButton: NSApplication.ModalResponse = changes.isEmpty ? .alertFirstButtonReturn : .alertSecondButtonReturn
+        presentSheet(alert) { [weak self] response in
+            guard response == removeButton else { return }
+            if let failure = Worktree.remove(path, force: !changes.isEmpty) {
+                self?.showError("Couldn't remove the worktree", failure.description)
+            }
+        }
+    }
+
+    /// Shows an alert once any sheet already up (say, the close confirmation) has gone.
+    private func presentSheet(_ alert: NSAlert, then handler: @escaping (NSApplication.ModalResponse) -> Void) {
+        // The last tab closing takes the window with it, so there's nothing to attach to.
+        guard let window, !workspace.allTabs.isEmpty else {
+            NSApp.activate()
+            return handler(alert.runModal())
+        }
+        guard window.attachedSheet == nil else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.presentSheet(alert, then: handler) }
+            return
+        }
+        alert.beginSheetModal(for: window, completionHandler: handler)
+    }
+
+    private func showError(_ title: String, _ detail: String) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.beginSheetModal(for: window)
     }
 
     private func closeFocusedPane() {

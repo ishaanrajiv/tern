@@ -51,6 +51,28 @@ enum Worktree {
         }
     }
 
+    /// Uncommitted or untracked files in the worktree, as `git status --short` lines.
+    static func changes(in path: String) -> [String] {
+        ((try? git(["-C", path, "status", "--porcelain"])) ?? "").split(separator: "\n").map(String.init)
+    }
+
+    static func branch(of path: String) -> String? {
+        try? git(["-C", path, "symbolic-ref", "--short", "-q", "HEAD"])
+    }
+
+    /// Removes the worktree's directory and git's record of it. The branch stays.
+    static func remove(_ path: String, force: Bool) -> Failure? {
+        guard let root = mainRoot(of: path) else { return .notARepo(path) }
+        do {
+            try git(["-C", root, "worktree", "remove"] + (force ? ["--force"] : []) + [path])
+            return nil
+        } catch let e as Failure {
+            return e
+        } catch {
+            return .git(error.localizedDescription)
+        }
+    }
+
     @discardableResult
     private static func git(_ args: [String]) throws -> String {
         let p = Process()

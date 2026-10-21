@@ -15,6 +15,8 @@ final class GhosttyApp {
 
         // Reuse the user's Ghostty config (font, theme, ...) so tern looks like their terminal.
         let config = ghostty_config_new()
+        // tern's defaults first, so the user's own Ghostty config overrides them.
+        Self.defaultsFile.path.withCString { ghostty_config_load_file(config, $0) }
         ghostty_config_load_default_files(config)
         ghostty_config_finalize(config)
         self.config = config
@@ -45,6 +47,23 @@ final class GhosttyApp {
         }
         self.app = app
     }
+
+    /// Breathing room around the text; Ghostty's own default is 2pt.
+    private static let defaultsFile: URL = {
+        let url = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("ghostty-defaults")
+        let text = """
+        # Written by tern on every launch. Override these in your Ghostty config.
+        window-padding-x = 12
+        window-padding-y = 8
+        window-padding-balance = true
+
+        """
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        return url
+    }()
+
+    /// The sidebar and other chrome: the terminal background, lifted a touch toward the text colour.
+    lazy var chrome: NSColor = background.blended(withFraction: isDark ? 0.045 : 0.035, of: foreground) ?? background
 
     /// The terminal's background colour, so the chrome around it can match.
     lazy var background: NSColor = color("background") ?? NSColor(calibratedWhite: 0.1, alpha: 1)

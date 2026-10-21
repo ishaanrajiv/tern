@@ -6,7 +6,8 @@
 //!   tern ls [--json]                           list sessions
 //!   tern kill <id>                             hang up a session
 //!   tern bench [iterations]                    keystroke round-trip: direct PTY vs through ternd
-//!   tern hooks [status|install|uninstall] [claude|codex]   manage agent hooks
+//!   tern hooks [status|install|uninstall|link] [claude|codex]
+//!                                              manage agent hooks (link also updates installed ones)
 //!   tern hook <agent>                          (run by the agents) report agent state
 
 use std::fs::File;
@@ -42,7 +43,7 @@ fn main() {
         _ => {
             eprintln!(
                 "usage: tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
-                 tern hooks [status|install|uninstall] [claude|codex]"
+                 tern hooks [status|install|uninstall|link] [claude|codex]"
             );
             std::process::exit(2);
         }
@@ -80,7 +81,12 @@ fn manage_hooks(args: &[String]) -> Result<i32> {
                 println!("{a}: hooks removed from {}", hooks::uninstall(a)?.display());
             }
         }
-        "link" => println!("{}", hooks::link_binary()?.display()),
+        "link" => {
+            println!("{}", hooks::link_binary()?.display());
+            for a in hooks::update_installed() {
+                println!("{a}: hooks updated to this tern's events");
+            }
+        }
         _ => bail!("unknown hooks action {action}"),
     }
     Ok(0)
@@ -96,6 +102,13 @@ fn connect() -> Result<UnixStream> {
     }
     let ternd = std::env::current_exe()?.with_file_name("ternd");
     std::fs::create_dir_all(runtime_dir())?;
+    // One client starts ternd at a time: panes reconnecting together after a
+    // restart would otherwise boot out each other's fresh daemon.
+    let lock = File::options().create(true).truncate(false).write(true).open(runtime_dir().join("ternd.lock"))?;
+    let _locked = nix::fcntl::Flock::lock(lock, nix::fcntl::FlockArg::LockExclusive).map_err(|(_, e)| e)?;
+    if let Ok(s) = UnixStream::connect(&path) {
+        return Ok(s);
+    }
     if std::env::var_os("TERN_RUNTIME_DIR").is_some() {
         // Tests and benches get a private daemon, spawned directly.
         spawn_detached(&ternd)?;
@@ -127,6 +140,7 @@ fn start_launch_agent(ternd: &std::path::Path) -> Result<()> {
     <key>Label</key><string>{LAUNCHD_LABEL}</string>
     <key>ProgramArguments</key><array><string>{}</string></array>
     <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
     <key>ProcessType</key><string>Interactive</string>
     <key>StandardOutPath</key><string>{log}</string>
     <key>StandardErrorPath</key><string>{log}</string>
@@ -216,16 +230,20 @@ fn attach(args: &[String]) -> Result<i32> {
     let cwd = cwd.or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()));
     // New sessions inherit this client's environment (PATH, SSH_AUTH_SOCK, TERM...),
     // not the launchd daemon's minimal one.
-    let env = std::env::vars().filter(|(k, _)| k != "TERN_SESSION_ID").collect();
-    let (cols, rows) = tty_size();
-
-    let (sock, mut reader) = request(&Request::Attach { id, cols, rows, cwd, cmd, init, env })?;
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    let reply: AttachReply = serde_json::from_str(&line).context("bad attach reply")?;
-    if !reply.ok {
-        bail!("attach failed: {}", reply.error.unwrap_or_default());
-    }
+    let env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "TERN_SESSION_ID").collect();
+    let open = |init: Option<String>| -> Result<(UnixStream, BufReader<UnixStream>)> {
+        let (cols, rows) = tty_size();
+        let req = Request::Attach { id: id.clone(), cols, rows, cwd: cwd.clone(), cmd: cmd.clone(), init, env: env.clone() };
+        let (sock, mut reader) = request(&req)?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let reply: AttachReply = serde_json::from_str(&line).context("bad attach reply")?;
+        if !reply.ok {
+            bail!("attach failed: {}", reply.error.unwrap_or_default());
+        }
+        Ok((sock, reader))
+    };
+    let (sock, mut reader) = open(init)?;
 
     let _raw = RawMode::enable();
     let sock_w = Arc::new(Mutex::new(sock));
@@ -238,10 +256,9 @@ fn attach(args: &[String]) -> Result<i32> {
         loop {
             match stdin.read(&mut buf) {
                 Ok(0) | Err(_) => break,
+                // While reconnecting, keystrokes have nowhere to go and are dropped.
                 Ok(n) => {
-                    if write_frame(&mut *w.lock().unwrap(), FRAME_INPUT, &buf[..n]).is_err() {
-                        break;
-                    }
+                    let _ = write_frame(&mut *w.lock().unwrap(), FRAME_INPUT, &buf[..n]);
                 }
             }
         }
@@ -253,9 +270,7 @@ fn attach(args: &[String]) -> Result<i32> {
     std::thread::spawn(move || {
         for _ in signals.forever() {
             let (c, r) = tty_size();
-            if write_frame(&mut *w.lock().unwrap(), FRAME_RESIZE, &resize_payload(c, r)).is_err() {
-                break;
-            }
+            let _ = write_frame(&mut *w.lock().unwrap(), FRAME_RESIZE, &resize_payload(c, r));
         }
     });
 
@@ -263,7 +278,8 @@ fn attach(args: &[String]) -> Result<i32> {
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
     let mut buf = Vec::new();
     loop {
-        match read_frame(&mut reader, &mut buf)? {
+        // A reset connection counts as ternd going away, same as a clean close.
+        match read_frame(&mut reader, &mut buf).unwrap_or(None) {
             Some(FRAME_OUTPUT) => stdout.write_all(&buf)?,
             Some(FRAME_EXIT) => {
                 let code = buf.get(..4).map(|b| i32::from_be_bytes(b.try_into().unwrap())).unwrap_or(0);
@@ -271,9 +287,27 @@ fn attach(args: &[String]) -> Result<i32> {
             }
             Some(_) => {}
             None => {
-                drop(_raw);
-                eprintln!("\r\n[tern: lost connection to ternd]");
-                return Ok(1);
+                // ternd went away (restarted, upgraded, crashed). launchd brings it back;
+                // reattach, and the session returns with its saved screen.
+                let deadline = Instant::now() + Duration::from_secs(10);
+                let reattached = loop {
+                    std::thread::sleep(Duration::from_millis(300));
+                    if let Ok(pair) = open(None) {
+                        break Some(pair);
+                    }
+                    if Instant::now() > deadline {
+                        break None;
+                    }
+                };
+                let Some((sock, r)) = reattached else {
+                    drop(_raw);
+                    eprintln!("\r\n[tern: lost connection to ternd]");
+                    return Ok(1);
+                };
+                *sock_w.lock().unwrap() = sock;
+                reader = r;
+                // The snapshot that follows replays the whole screen and history.
+                stdout.write_all(b"\x1b[m\x1b[H\x1b[2J\x1b[3J")?;
             }
         }
     }

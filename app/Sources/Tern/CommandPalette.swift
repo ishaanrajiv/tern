@@ -58,7 +58,7 @@ struct CommandPaletteView: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Type a command or session name", text: $query)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 15))
+                        .font(.system(size: 14))
                         .focused($focused)
                         .onSubmit(run)
                         // On the field itself: its editor would otherwise take arrows and Esc first.
@@ -68,13 +68,13 @@ struct CommandPaletteView: View {
                         .onExitCommand(perform: dismiss)
                 }
                 .padding(.horizontal, 14)
-                .padding(.vertical, 12)
+                .padding(.vertical, 11)
 
                 Divider()
 
                 ScrollViewReader { proxy in
                     ScrollView {
-                        LazyVStack(spacing: 2) {
+                        LazyVStack(spacing: 1) {
                             ForEach(Array(results.enumerated()), id: \.element.id) { i, item in
                                 PaletteRow(item: item, selected: i == selection)
                                     .id(i)
@@ -93,7 +93,7 @@ struct CommandPaletteView: View {
                     .onChange(of: selection) { _, i in proxy.scrollTo(i) }
                 }
             }
-            .frame(width: 560)
+            .frame(width: 600)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator))
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
@@ -121,29 +121,30 @@ private struct PaletteRow: View {
     let selected: Bool
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 9) {
             Image(systemName: item.symbol)
-                .frame(width: 18)
-                .foregroundStyle(selected ? .white : .secondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(item.title).font(.system(size: 13))
-                if !item.subtitle.isEmpty {
-                    Text(item.subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(selected ? .white.opacity(0.8) : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.head)
-                }
+                .font(.system(size: 12))
+                .frame(width: 16)
+                .foregroundStyle(.secondary)
+            Text(item.title)
+                .font(.system(size: 13))
+                .lineLimit(1)
+                .layoutPriority(1)
+            if !item.subtitle.isEmpty {
+                Text(item.subtitle)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+                    .truncationMode(.head)
             }
-            Spacer()
+            Spacer(minLength: 8)
             Text(item.shortcut)
-                .font(.system(size: 12).monospacedDigit())
-                .foregroundStyle(selected ? .white.opacity(0.85) : .secondary)
+                .font(.system(size: 11).monospacedDigit())
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .foregroundStyle(selected ? .white : .primary)
-        .background(selected ? Color.accentColor : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .frame(height: 30)
+        .background(selected ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
     }
 }

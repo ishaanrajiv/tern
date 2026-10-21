@@ -111,7 +111,7 @@ final class TerminalArea: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.separatorColor.setFill()
+        GhosttyApp.shared.foreground.withAlphaComponent(0.14).setFill()
         for d in dividers { d.rect.fill() }
     }
 
@@ -157,12 +157,13 @@ final class TerminalArea: NSView {
     }
 }
 
-/// Translucent veil over unfocused split panes.
+/// Veil over unfocused split panes, in the terminal's own background colour so it
+/// fades the text on dark and light themes alike.
 private final class DimView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        layer?.backgroundColor = GhosttyApp.shared.background.withAlphaComponent(0.45).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }

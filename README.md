@@ -26,8 +26,9 @@ is asking.
 To get these states, open Settings (⌘,) and click **Set Up** for Claude Code and Codex. tern adds a
 `tern hook` command to `~/.claude/settings.json` and `~/.codex/hooks.json`; outside tern it exits
 immediately, and **Remove** takes it out again, leaving the rest of the file as it was. Codex asks you
-to trust new hooks once: run `/hooks` inside Codex. Without hooks, tern still recognizes the agents
-and guesses their state from their output.
+to trust new hooks once: run `/hooks` inside Codex. When a newer tern listens to more events, it
+updates hooks you already set up at launch (never adding them where you haven't). Without hooks, tern
+still recognizes the agents and guesses their state from their output.
 
 When an agent needs you or finishes in a session you aren't looking at, you get a notification
 (click it to go there), the Dock icon shows how many are waiting, and ⌘J jumps to the next one:
@@ -60,8 +61,8 @@ tern's shortcuts take priority over terminal key bindings.
 
 - **Worktrees** (off by default): in a git project, ⌘T gives each new session its own worktree at
   `<repo>-worktrees/session-N` on a new branch `tern/session-N`, so parallel agents don't edit the
-  same checkout. ⌘⇧T does this regardless. tern never deletes worktrees; remove them with
-  `git worktree remove` when you're done.
+  same checkout. ⌘⇧T does this regardless. Closing such a session asks whether to remove its
+  worktree (Keep is the default when it has uncommitted changes); the branch is always kept.
 - **Resume agents after a restart** (on): sessions survive quitting tern but not a reboot. If a
   session that was running Claude Code or Codex is gone when tern starts, its pane opens a fresh shell
   in the same folder and runs `claude --resume <id>` or `codex resume <id>`. This needs the hooks,
@@ -140,7 +141,7 @@ tern attach [--cwd DIR] [--cmd CMD] [--init LINE] <id>
 tern ls [--json]                           list sessions
 tern kill <id>                             hang up a session
 tern bench [n]                             keystroke round trip: direct PTY vs through ternd
-tern hooks [status|install|uninstall] [claude|codex]
+tern hooks [status|install|uninstall|link] [claude|codex]
                                            manage agent hooks (what Settings does)
 tern hook claude|codex                     run by the agents' hooks; reads the event on stdin
 ```
@@ -168,17 +169,20 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
   An outdated CLI fails in confusing ways: Codex 0.154 rejected a model with "not supported".
 - **Notifications** (open; see Known gaps).
 - **Usage-limit rings** for Claude Code and Codex.
-- **Upgrading ternd without ending sessions** (hand the PTYs to the new daemon).
+- **Upgrading ternd without ending sessions** (hand the PTYs to the new daemon). Screens already
+  come back after a restart, and panes reconnect on their own; the processes in them don't survive.
 
 ## Known gaps
 
-- Reattach restores scrollback as plain text: colors in history are dropped, while the
-  visible screen keeps them.
-- Sessions survive the app quitting, but not a reboot. Agent conversations resume (see Settings);
-  other programs don't.
-- Restarting ternd (for example, after upgrading it) ends running sessions.
-- A turn that ends without a Stop hook (an API error, or rejecting a permission prompt) has no
-  "done" event. tern treats a working agent that has been silent for five seconds as finished.
+- Sessions survive the app quitting. A reboot or a ternd restart ends the processes, but not what
+  they showed: ternd saves each screen (every 15s while it changes, and when it's told to quit), and
+  a pane that comes back shows its old screen, colours included, under a "restored" rule. The
+  command that was running is typed at the prompt, not run. Agent conversations resume (see
+  Settings). Full-screen programs (vim, htop) aren't saved while they're up; the screen from before
+  they started is.
+- A turn that ends without a Stop hook has no "done" event. Pressing Esc during a tool call reports
+  one (Claude Code's `PostToolUseFailure` with `is_interrupt`); an API error, or Esc while the model
+  is writing, doesn't. tern treats a working agent that has been silent for five seconds as finished.
 - Without hooks, "unread" means any output or bell in a session you aren't looking at.
 - **Open: notifications don't work yet.** macOS refuses tern's permission request without a prompt
   (`UNErrorDomain` 1, "Notifications are not allowed for this application"). This still happens with
