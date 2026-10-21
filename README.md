@@ -21,7 +21,8 @@ there.
 - **⌘T opens a tab in the current folder**, in the folder itself. Worktree tabs (⌘⇧T) sit under their
   repository's header with the worktree's name beside them.
 - A tab is named after what it runs: an agent's task, the command in the foreground (`npm run dev`),
-  or the last one that ran (`git status`). A shell that hasn't run anything is **New tab**. Trivial
+  or the last one that ran (`git status`). A shell that hasn't run anything is **Tab 1**, **Tab 2**…:
+  the lowest number free in its folder when it opened, kept while it lives. Trivial
   commands (`cd`, `ls`, `clear`) don't rename it; ⌘R names it yourself.
 - A tab that `cd`s somewhere else stays under its folder and shows where it is in grey.
 - A subfolder of an open folder gets its own header. A folder closes with its last tab.

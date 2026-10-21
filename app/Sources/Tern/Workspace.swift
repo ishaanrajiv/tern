@@ -78,6 +78,8 @@ struct Tab: Codable, Identifiable, Equatable {
     var zoomed = false
     /// The worktree tern made for this tab, offered for removal when the tab closes.
     var worktree: String?
+    /// "Tab 3": the lowest number free in its folder when it opened, kept for life.
+    var number: Int?
 }
 
 /// A folder header in the sidebar. Its tabs start in the folder; it goes away with its last tab.
@@ -91,6 +93,17 @@ struct Project: Codable, Identifiable, Equatable {
 
     var name: String {
         path == NSHomeDirectory() ? "Home" : (path as NSString).lastPathComponent
+    }
+
+    /// The lowest tab number not in use here.
+    var freeNumber: Int {
+        let used = Set(tabs.compactMap(\.number))
+        return (1...).first { !used.contains($0) }!
+    }
+
+    /// Numbers tabs saved before tabs had them.
+    mutating func numberTabs() {
+        for i in tabs.indices where tabs[i].number == nil { tabs[i].number = freeNumber }
     }
 }
 
@@ -307,12 +320,12 @@ final class Workspace {
 
     /// The session's name, numbered when another session in its project would show the same one.
     /// A tab goes by what it runs: an agent's task, the command in the foreground, or the
-    /// last one that ran ("npm run dev"). A shell that has run nothing yet is a "New tab".
+    /// last one that ran ("npm run dev"). A shell that has run nothing yet is "Tab 2".
     func title(for tab: Tab) -> String {
         if let name = tab.name, !name.isEmpty { return name }
         guard let s = sessions[tab.focusedPane] else {
             // Not running yet (say, after a reboot): name it after what it was.
-            return paneAgent[tab.focusedPane]?.agent ?? "New tab"
+            return paneAgent[tab.focusedPane]?.agent ?? fallbackTitle(tab)
         }
         // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
         if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
@@ -321,7 +334,11 @@ final class Workspace {
         if let agent = s.agent { return agent }
         if let command = s.command, !command.isEmpty { return command }
         // The folder header says where; a stray directory shows beside the name.
-        return Self.shells.contains(s.process) ? "New tab" : s.process
+        return Self.shells.contains(s.process) ? fallbackTitle(tab) : s.process
+    }
+
+    private func fallbackTitle(_ tab: Tab) -> String {
+        "Tab \(tab.number ?? 1)"
     }
 
     /// Drops the spinner or status glyphs agents put in front of the title.
@@ -357,8 +374,9 @@ final class Workspace {
     func newTab(projectPath: String, cwd: String, paneID: String? = nil) -> Tab {
         let pane = paneID ?? Self.newID("p")
         paneCwd[pane] = cwd
-        let tab = Tab(id: Self.newID("t"), root: .pane(pane), focusedPane: pane)
+        var tab = Tab(id: Self.newID("t"), root: .pane(pane), focusedPane: pane, number: 1)
         if let i = projects.firstIndex(where: { $0.path == projectPath }) {
+            tab.number = projects[i].freeNumber
             projects[i].tabs.append(tab)
             projects[i].collapsed = false
             projects[i].lastTab = tab.id
@@ -669,6 +687,7 @@ final class Workspace {
         guard let data = try? Data(contentsOf: Self.layoutURL),
               let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
         projects = saved.projects.filter { !$0.tabs.isEmpty }
+        for i in projects.indices { projects[i].numberTabs() }
         selectedTabID = saved.selectedTabID ?? projects.first?.tabs.first?.id
         paneCwd = saved.paneCwd
         paneAgent = saved.paneAgent ?? [:]

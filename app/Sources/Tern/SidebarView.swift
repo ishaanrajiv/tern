@@ -44,7 +44,10 @@ struct SidebarView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, layout.titlebarHeight + 6)
                 .padding(.bottom, 16)
+                // Full width even with no folders, or the sidebar shrinks to its padding.
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .scrollIndicators(.never)
             // Clear the titlebar with padding, not the safe area: with the safe-area inset, rows
             // were drawn a titlebar lower than where clicks and hovers landed.
