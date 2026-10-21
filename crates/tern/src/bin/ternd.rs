@@ -51,6 +51,10 @@ struct SessionState {
     /// `last_output_ms` when the screen was last saved to disk.
     saved_output_ms: u64,
     agent: Option<AgentReport>,
+    /// The foreground command, by its process, for shells without tern's integration.
+    command: Option<String>,
+    /// The last telling command line typed, from the zsh integration.
+    typed: Option<String>,
 }
 
 /// The last thing an agent's hooks told us.
@@ -85,8 +89,21 @@ fn now_ms() -> u64 {
 fn session_info(s: &Session) -> SessionInfo {
     // Read terminal state under the lock, but query the OS for process details outside it.
     let fg = procinfo::foreground(s.master.as_raw_fd(), s.pid);
-    let (cols, rows, clients, title, bells, last_output_ms, report) = {
+    let typed = shell::last_command(&s.id);
+    let running = if typed.is_some() || fg.pid == s.pid || fg.agent.is_some() {
+        None
+    } else {
+        procinfo::command_line(fg.pid).and_then(|c| shell::telling(&c))
+    };
+    let (cols, rows, clients, title, bells, last_output_ms, report, command) = {
         let mut st = s.state.lock().unwrap();
+        if running.is_some() {
+            st.command = running;
+        }
+        if let Some(Some(line)) = &typed {
+            st.typed = Some(line.clone());
+        }
+        let command = if typed.is_some() { st.typed.clone() } else { st.command.clone() };
         // Back at the shell: the agent is gone, whether or not it said goodbye.
         let gone = st.agent.as_ref().is_some_and(|a| {
             a.state == AgentState::Ended || (fg.pid == s.pid && fg.agent.is_none() && now_ms() - a.at_ms > 3000)
@@ -97,7 +114,7 @@ fn session_info(s: &Session) -> SessionInfo {
         let report = st.agent.as_ref().map(|a| (a.agent.clone(), a.state, a.at_ms, a.session.clone(), a.message.clone()));
         let (rows, cols) = st.parser.screen().size();
         let cb = st.parser.callbacks();
-        (cols, rows, st.clients.len(), cb.title.clone(), cb.bells, st.last_output_ms, report)
+        (cols, rows, st.clients.len(), cb.title.clone(), cb.bells, st.last_output_ms, report, command)
     };
     let cwd = fg.cwd.or_else(|| procinfo::process_cwd(s.pid)).or_else(|| s.start_cwd.clone());
     let git = cwd.as_deref().and_then(|d| procinfo::git_info(std::path::Path::new(d)));
@@ -119,6 +136,7 @@ fn session_info(s: &Session) -> SessionInfo {
         agent_state_ms: report.as_ref().map_or(0, |r| r.2),
         agent_session: report.as_ref().and_then(|r| r.3.clone()),
         agent_message: report.and_then(|r| r.4),
+        command,
     }
 }
 
@@ -153,6 +171,9 @@ fn main() -> Result<()> {
 
     let sessions: Sessions = Arc::default();
     prune_saved();
+    if let Err(e) = shell::install_zsh().and_then(|_| std::fs::create_dir_all(shell::command_file("x").parent().unwrap())) {
+        eprintln!("installing the zsh integration: {e}");
+    }
     {
         let sessions = sessions.clone();
         thread::spawn(move || save_periodically(sessions));
@@ -288,7 +309,17 @@ fn spawn_session(
     if let Some(dir) = &cwd {
         command.current_dir(dir);
     }
+    let zsh = cmd.is_none() && shell::is_zsh(&std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()));
+    let user_zdotdir = env.iter().find(|(k, _)| k == "ZDOTDIR").map(|(_, v)| v.clone());
     command.envs(env).env("TERN_SESSION_ID", id);
+    let commands = shell::command_file(id);
+    let _ = std::fs::remove_file(&commands);
+    if zsh && runtime_dir().join("zsh/.zshenv").exists() {
+        if let Some(dir) = user_zdotdir {
+            command.env("TERN_ZDOTDIR", dir);
+        }
+        command.env("ZDOTDIR", commands.parent().unwrap().with_file_name("zsh")).env("TERN_COMMAND_FILE", &commands);
+    }
     let child = spawn_on_pty(command, slave).context("spawning session process")?;
     let pid = child.id() as i32;
     // We reap the child ourselves with waitpid once its PTY closes.
@@ -312,6 +343,8 @@ fn spawn_session(
             last_output_ms: now_ms(),
             saved_output_ms: 0,
             agent: None,
+            command: None,
+            typed: None,
         }),
     });
     sessions.lock().unwrap().insert(id.to_string(), session.clone());
@@ -327,12 +360,27 @@ fn spawn_session(
 fn pump_output(session: Arc<Session>, sessions: Sessions) {
     let mut master = session.master.try_clone().expect("clone master");
     let mut buf = vec![0u8; 64 * 1024];
+    // Checked on output too, not only when listed, so quick commands (`git status`) are seen.
+    let mut seen_pgid = session.pid;
     loop {
         match master.read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
                 let bytes = &buf[..n];
+                let pgid = unsafe { nix::libc::tcgetpgrp(master.as_raw_fd()) };
+                let command = if pgid > 0 && pgid != seen_pgid {
+                    seen_pgid = pgid;
+                    (pgid != session.pid && procinfo::agent_of(pgid).is_none())
+                        .then(|| procinfo::command_line(pgid))
+                        .flatten()
+                        .and_then(|c| shell::telling(&c))
+                } else {
+                    None
+                };
                 let mut st = session.state.lock().unwrap();
+                if command.is_some() {
+                    st.command = command;
+                }
                 st.parser.process(bytes);
                 st.last_output_ms = now_ms();
                 st.clients.retain(|(_, tx)| tx.send(Msg::Output(bytes.to_vec())).is_ok());
@@ -348,6 +396,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
         _ => -1,
     };
     eprintln!("session {}: exited with {code}", session.id);
+    let _ = std::fs::remove_file(shell::command_file(&session.id));
     // The session is over, so its saved screen goes, unless the machine is going
     // down: shells die of SIGHUP then too (exiting 1, like "exit 1" would), and
     // can beat ternd's own SIGTERM by a moment.

@@ -41,6 +41,7 @@ final class Command {
         if t.contains("Text") || t.hasPrefix("Actual Size") { return "textformat.size" }
         if t.hasPrefix("Next Needing") { return "bell" }
         if t.hasPrefix("Focus") { return "rectangle.inset.filled" }
+        if t.hasPrefix("Theme") { return "paintpalette" }
         return "arrow.right"
     }
 

@@ -148,11 +148,12 @@ enum Prefs {
     static let folderOrder = "folderOrder"
     /// Folders searched for git repositories to offer in the folder picker, comma-separated.
     static let repoRoots = "repoRoots"
+    static let theme = "theme"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
-            folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev",
+            folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
         ])
     }
 
@@ -305,27 +306,22 @@ final class Workspace {
     }
 
     /// The session's name, numbered when another session in its project would show the same one.
+    /// A tab goes by what it runs: an agent's task, the command in the foreground, or the
+    /// last one that ran ("npm run dev"). A shell that has run nothing yet is a "New tab".
     func title(for tab: Tab) -> String {
-        let base = baseTitle(for: tab)
-        guard let project = project(containing: tab.id) else { return base }
-        let same = project.tabs.filter { baseTitle(for: $0) == base }
-        guard same.count > 1, let i = same.firstIndex(where: { $0.id == tab.id }), i > 0 else { return base }
-        return "\(base) \(i + 1)"
-    }
-
-    func baseTitle(for tab: Tab) -> String {
         if let name = tab.name, !name.isEmpty { return name }
         guard let s = sessions[tab.focusedPane] else {
             // Not running yet (say, after a reboot): name it after what it was.
-            return paneAgent[tab.focusedPane]?.agent ?? "shell"
+            return paneAgent[tab.focusedPane]?.agent ?? "New tab"
         }
         // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
         if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
             return task
         }
         if let agent = s.agent { return agent }
-        // The folder header says where; a shell is just its name, with any stray directory beside it.
-        return s.process
+        if let command = s.command, !command.isEmpty { return command }
+        // The folder header says where; a stray directory shows beside the name.
+        return Self.shells.contains(s.process) ? "New tab" : s.process
     }
 
     /// Drops the spinner or status glyphs agents put in front of the title.

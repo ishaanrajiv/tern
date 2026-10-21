@@ -9,13 +9,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var pickerHost: NSView?
     private var picker: FolderPickerModel?
     private var emptyState: NSView?
+    private var contentView: NSView?
+    private var themeObserver: Any?
     private var keyMonitor: Any?
     /// The window closes when its last tab does, not when it starts out empty.
     private var hadTabs = false
     private var lastFocusKey = ""
     private let headerLayout = HeaderLayout()
     private let hints = ShortcutHints()
-    private var hintTimer: DispatchWorkItem?
     private var collapseObservation: NSKeyValueObservation?
     private var saveScheduled = false
     private var savedLayout: ([Project], String?)?
@@ -38,7 +39,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         window.titlebarAppearsTransparent = true
         window.toolbarStyle = .unifiedCompact
         window.titlebarSeparatorStyle = .none
-        window.appearance = NSAppearance(named: GhosttyApp.shared.isDark ? .darkAqua : .aqua)
         window.tabbingMode = .disallowed
         window.minSize = NSSize(width: 560, height: 320)
         super.init(window: window)
@@ -53,6 +53,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             rename: { [weak self] id in self?.rename(tabID: id) },
             close: { [weak self] id in self?.closeTab(id) }
         )))
+        let split = ThemedSplitView()
+        split.isVertical = true
+        split.dividerStyle = .thin
+        splitController.splitView = split
         let sidebarItem = NSSplitViewItem(sidebarWithViewController: sidebar)
         sidebarItem.minimumThickness = 200
         sidebarItem.maximumThickness = 420
@@ -63,7 +67,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         content.view = NSView()
         // The strip under the titlebar and the terminal share one colour, so they read as one surface.
         content.view.wantsLayer = true
-        content.view.layer?.backgroundColor = GhosttyApp.shared.background.cgColor
+        contentView = content.view
         let header = DraggableHostingView(rootView: ContentHeader(workspace: workspace, layout: headerLayout))
         // It lives in the titlebar strip; without this SwiftUI pushes it below the strip, out of sight.
         header.safeAreaRegions = []
@@ -107,6 +111,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if !window.setFrameUsingName("tern.main") { window.center() }
 
         commands = makeCommands()
+        applyTheme()
+        themeObserver = NotificationCenter.default.addObserver(forName: ThemeStore.didChange, object: nil, queue: .main) {
+            [weak self] _ in self?.applyTheme()
+        }
         measureTitlebar()
         installKeyMonitor()
         observe()
@@ -135,28 +143,36 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    /// Holding ⌘ for a moment numbers the folders; ⌘⇧ numbers the current folder's tabs.
+    /// Holding ⌘ numbers the folders; ⌘⇧ numbers the current folder's tabs.
     private func modifiersChanged(_ flags: NSEvent.ModifierFlags) {
-        hintTimer?.cancel()
         let kind: ShortcutHints.Kind? = switch flags {
         case [.command]: .folders
         case [.command, .shift]: .tabs
         default: nil
         }
-        guard let kind, window?.isKeyWindow == true else { return setHints(nil) }
-        if hints.kind != nil { return setHints(kind) }
-        let work = DispatchWorkItem { [weak self] in self?.setHints(kind) }
-        hintTimer = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        guard window?.isKeyWindow == true else { return setHints(nil) }
+        setHints(kind)
     }
 
     private func setHints(_ kind: ShortcutHints.Kind?) {
-        if kind == nil { hintTimer?.cancel() }
         guard hints.kind != kind else { return }
-        withAnimation(.easeOut(duration: 0.12)) { hints.kind = kind }
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { hints.kind = kind }
     }
 
     func windowDidResignKey(_ notification: Notification) { setHints(nil) }
+
+    /// The AppKit side of the theme; SwiftUI views read it themselves.
+    private func applyTheme() {
+        let theme = ThemeStore.shared.theme
+        window?.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
+        window?.backgroundColor = theme.sidebar
+        // The strip under the titlebar and the terminal share one colour, so they read as one surface.
+        contentView?.layer?.backgroundColor = theme.terminal.cgColor
+        (splitController.splitView as? ThemedSplitView)?.needsDisplay = true
+        terminalArea.themeChanged()
+    }
 
     private func measureTitlebar() {
         guard let window else { return }
@@ -334,6 +350,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Focus Next Pane", menu: "Navigate", key: "]") { w.cyclePane(1) },
             Command("Focus Previous Pane", menu: "Navigate", key: "[") { w.cyclePane(-1) },
         ]
+        // Palette-only: "theme" finds them all.
+        + (Theme.builtIn.map { ($0.id, $0.name) } + [("ghostty", "Ghostty Colours")]).map { id, name in
+            Command("Theme: \(name)", menu: "View", inMenu: false) {
+                UserDefaults.standard.set(id, forKey: Prefs.theme)
+            }
+        }
         // For the debug harness, which can't hold a modifier down.
         + (ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" ? [
             Command("Debug Hints Folders", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.folders) },
@@ -551,5 +573,11 @@ private struct EmptyState: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
         }
+        .themedText()
     }
+}
+
+/// The line between sidebar and terminal, in the theme's border colour.
+final class ThemedSplitView: NSSplitView {
+    override var dividerColor: NSColor { ThemeStore.shared.theme.border }
 }

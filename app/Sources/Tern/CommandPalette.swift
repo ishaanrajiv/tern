@@ -70,7 +70,7 @@ struct CommandPaletteView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
 
-                Divider()
+                Rectangle().fill(Palette.border).frame(height: 1)
 
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -94,8 +94,9 @@ struct CommandPaletteView: View {
                 }
             }
             .frame(width: 600)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator))
+            .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.border))
+            .themedText()
             .shadow(color: .black.opacity(0.25), radius: 24, y: 10)
             .padding(.top, 80)
         }
@@ -144,7 +145,7 @@ private struct PaletteRow: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 30)
-        .background(selected ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
     }
 }

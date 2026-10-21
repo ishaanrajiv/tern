@@ -61,9 +61,24 @@ struct SettingsView: View {
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
     @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
     @AppStorage(Prefs.repoRoots) private var repoRoots = "~/dev"
+    @AppStorage(Prefs.theme) private var theme = Theme.defaultID
 
     var body: some View {
         Form {
+            Section("Theme") {
+                HStack(spacing: 10) {
+                    ForEach(Theme.builtIn + [GhosttyApp.shared.userTheme], id: \.id) { option in
+                        ThemeSwatch(theme: option, selected: theme == option.id) { theme = option.id }
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                if theme == "ghostty" {
+                    Text("Uses the colours from your Ghostty config.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section("Agent status") {
                 AgentToggle(hooks: hooks, agent: "claude", name: "Claude Code",
                             caption: "Adds hooks to ~/.claude/settings.json.")
@@ -116,6 +131,56 @@ struct SettingsView: View {
         .frame(width: 460)
         .fixedSize(horizontal: false, vertical: true)
         .onAppear { hooks.refresh() }
+    }
+}
+
+/// A theme in miniature: sidebar, terminal and its colours, with the name under it.
+private struct ThemeSwatch: View {
+    let theme: Theme
+    let selected: Bool
+    let choose: () -> Void
+
+    var body: some View {
+        Button(action: choose) {
+            VStack(spacing: 6) {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        RoundedRectangle(cornerRadius: 1.5).fill(Color(nsColor: theme.text)).frame(width: 16, height: 3)
+                        RoundedRectangle(cornerRadius: 1.5).fill(Color(nsColor: theme.selection)).frame(width: 20, height: 6)
+                        RoundedRectangle(cornerRadius: 1.5).fill(Color(nsColor: theme.text3)).frame(width: 14, height: 3)
+                    }
+                    .padding(5)
+                    .frame(width: 30, height: 48, alignment: .topLeading)
+                    .background(Color(nsColor: theme.sidebar))
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 3) {
+                            Circle().fill(Color(nsColor: theme.amber)).frame(width: 5, height: 5)
+                            Circle().fill(Color(nsColor: theme.working)).frame(width: 5, height: 5)
+                        }
+                        ForEach(0..<3) { i in
+                            RoundedRectangle(cornerRadius: 1.5)
+                                .fill(Color(nsColor: line(i)))
+                                .frame(width: [26, 18, 22][i], height: 3)
+                        }
+                    }
+                    .padding(5)
+                    .frame(width: 42, height: 48, alignment: .topLeading)
+                    .background(Color(nsColor: theme.terminal))
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(selected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: selected ? 2 : 1))
+                Text(theme.name)
+                    .font(.system(size: 11, weight: selected ? .semibold : .regular))
+            }
+        }
+        .buttonStyle(.plain)
+        .help(theme.id == "ghostty" ? "Your Ghostty colours" : theme.name)
+    }
+
+    private func line(_ i: Int) -> NSColor {
+        guard let palette = theme.terminalColors?.palette else { return [theme.text, theme.text2, theme.text3][i] }
+        return NSColor(hex: [palette[4], palette[2], palette[5]][i])
     }
 }
 

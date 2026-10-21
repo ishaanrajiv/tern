@@ -7,19 +7,18 @@ final class GhosttyApp {
 
     private(set) var app: ghostty_app_t?
     private var config: ghostty_config_t?
+    /// The theme the config was built with.
+    private(set) var theme: Theme = .graphite
+    var themeID: String { theme.id }
 
     private init() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
             fatalError("ghostty_init failed")
         }
 
-        // Reuse the user's Ghostty config (font, theme, ...) so tern looks like their terminal.
-        let config = ghostty_config_new()
-        // tern's defaults first, so the user's own Ghostty config overrides them.
-        Self.defaultsFile.path.withCString { ghostty_config_load_file(config, $0) }
-        ghostty_config_load_default_files(config)
-        ghostty_config_finalize(config)
+        let config = makeConfig()
         self.config = config
+        ThemeStore.shared.set(theme)
 
         var runtime = ghostty_runtime_config_s()
         runtime.userdata = Unmanaged.passUnretained(self).toOpaque()
@@ -62,19 +61,48 @@ final class GhosttyApp {
         return url
     }()
 
-    /// The sidebar and other chrome: the terminal background, lifted a touch toward the text colour.
-    lazy var chrome: NSColor = background.blended(withFraction: isDark ? 0.045 : 0.035, of: foreground) ?? background
-
-    /// The terminal's background colour, so the chrome around it can match.
-    lazy var background: NSColor = color("background") ?? NSColor(calibratedWhite: 0.1, alpha: 1)
-    lazy var foreground: NSColor = color("foreground") ?? .textColor
-
-    var isDark: Bool {
-        guard let c = background.usingColorSpace(.sRGB) else { return true }
-        return 0.299 * c.redComponent + 0.587 * c.greenComponent + 0.114 * c.blueComponent < 0.5
+    /// The user's Ghostty config (font, keys, ...) with tern's theme on top. Load order: tern's
+    /// defaults, which the user's config overrides, then the theme's colours, which win.
+    private func makeConfig() -> ghostty_config_t? {
+        let id = ThemeStore.selectedID
+        let chosen = Theme.builtIn.first { $0.id == id }
+        let config = ghostty_config_new()
+        Self.defaultsFile.path.withCString { ghostty_config_load_file(config, $0) }
+        ghostty_config_load_default_files(config)
+        if let text = chosen?.ghosttyConfig {
+            let url = Self.defaultsFile.deletingLastPathComponent().appendingPathComponent("ghostty-theme")
+            try? text.write(to: url, atomically: true, encoding: .utf8)
+            url.path.withCString { ghostty_config_load_file(config, $0) }
+        }
+        ghostty_config_finalize(config)
+        theme = chosen ?? .ghostty(
+            background: Self.color("background", in: config) ?? NSColor(calibratedWhite: 0.1, alpha: 1),
+            foreground: Self.color("foreground", in: config) ?? .white)
+        return config
     }
 
-    private func color(_ key: String) -> NSColor? {
+    /// The chrome tern builds around the user's own Ghostty colours, for the Settings preview.
+    lazy var userTheme: Theme = {
+        let config = ghostty_config_new()
+        ghostty_config_load_default_files(config)
+        ghostty_config_finalize(config)
+        defer { ghostty_config_free(config) }
+        return .ghostty(background: Self.color("background", in: config) ?? NSColor(calibratedWhite: 0.1, alpha: 1),
+                        foreground: Self.color("foreground", in: config) ?? .white)
+    }()
+
+    /// Rebuilds the config for the theme setting and hands it to every terminal.
+    func applyTheme() {
+        guard let app, let new = makeConfig() else { return }
+        ghostty_app_update_config(app, new)
+        for view in TerminalView.all.allObjects {
+            if let surface = view.surface { ghostty_surface_update_config(surface, new) }
+        }
+        // The old config stays allocated: surfaces may still point into it, and a theme change is rare.
+        config = new
+    }
+
+    private static func color(_ key: String, in config: ghostty_config_t?) -> NSColor? {
         guard let config else { return nil }
         var c = ghostty_config_color_s()
         guard ghostty_config_get(config, &c, key, UInt(key.utf8.count)) else { return nil }

@@ -13,8 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         .appendingPathComponent("Contents/Helpers/tern").path
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        _ = GhosttyApp.shared
         Prefs.registerDefaults()
+        _ = GhosttyApp.shared
         // Installed hooks call tern through a stable path; keep it pointing at this app,
         // and bring hooks set up by an older tern up to this one's events.
         DispatchQueue.global(qos: .utility).async { [hooks] in

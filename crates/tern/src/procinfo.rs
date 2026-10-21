@@ -83,6 +83,30 @@ pub fn process_args(pid: i32) -> Option<Vec<String>> {
     )
 }
 
+/// A process's command line for display: "npm run dev", not
+/// "node /opt/homebrew/bin/npm run dev". None for a shell.
+pub fn command_line(pid: i32) -> Option<String> {
+    let args = process_args(pid)?;
+    let base = |a: &str| a.rsplit('/').next().unwrap_or(a).to_string();
+    let mut words: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let first = base(words.first()?).trim_start_matches('-').to_string();
+    if SHELLS.contains(&first.as_str()) && words.len() == 1 {
+        return None;
+    }
+    // A script run by its interpreter goes by the script's name.
+    let interpreter = ["node", "python", "Python", "ruby", "perl", "bun", "deno", "bash", "sh", "zsh"]
+        .iter()
+        .any(|i| first == *i || first.starts_with(&format!("{i}3")) || first.starts_with(&format!("{i}2")));
+    if interpreter && words.len() > 1 && words[1].contains('/') && !words[1].starts_with('-') {
+        words.remove(0);
+    }
+    words[0] = base(&words[0]);
+    let line = words.join(" ");
+    Some(if line.chars().count() > 80 { line.chars().take(80).collect() } else { line })
+}
+
+pub const SHELLS: &[&str] = &["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login"];
+
 pub fn process_name(pid: i32) -> Option<String> {
     let mut buf = [0u8; 256];
     let n = unsafe { libc::proc_name(pid, buf.as_mut_ptr().cast(), buf.len() as u32) };

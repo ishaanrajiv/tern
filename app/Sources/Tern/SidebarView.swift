@@ -50,7 +50,8 @@ struct SidebarView: View {
             // were drawn a titlebar lower than where clicks and hovers landed.
             .ignoresSafeArea(.container, edges: .top)
             // One dark surface with the terminal, as in harp, instead of the system's grey material.
-            .background(Color(nsColor: GhosttyApp.shared.chrome).ignoresSafeArea())
+            .background(Palette.sidebar.ignoresSafeArea())
+            .themedText()
             .safeAreaInset(edge: .bottom) {
                 if hooks.anyMissing && !hooksPromptDismissed {
                     HooksPrompt(setUp: actions.setUpHooks, dismiss: { hooksPromptDismissed = true })
@@ -82,7 +83,7 @@ private struct HooksPrompt: View {
             Spacer(minLength: 0)
         }
         .padding(10)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Palette.hover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .padding(8)
     }
 }
@@ -103,7 +104,7 @@ private struct FolderSection: View {
                 .overlay(alignment: .top) {
                     // Where a dragged folder will land.
                     if dropTarget {
-                        Rectangle().fill(Color.accentColor).frame(height: 2).offset(y: -12)
+                        Rectangle().fill(Palette.working).frame(height: 2).offset(y: -12)
                     }
                 }
                 .draggable(project.path) {
@@ -165,7 +166,7 @@ private struct FolderHeader: View {
             if waiting > 0 {
                 Text("\(waiting)")
                     .font(.system(size: 11, weight: .bold).monospacedDigit())
-                    .foregroundStyle(Color.black.opacity(0.85))
+                    .foregroundStyle(Palette.onAmber)
                     .padding(.horizontal, 6)
                     .frame(height: 16)
                     .background(Palette.amber, in: Capsule())
@@ -178,7 +179,7 @@ private struct FolderHeader: View {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
                         .frame(width: 22, height: 22)
-                        .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                        .background(Palette.selection, in: RoundedRectangle(cornerRadius: 5))
                 }
                 .buttonStyle(.plain)
                 .help("New tab in \(project.name) (⌘T)")
@@ -186,7 +187,7 @@ private struct FolderHeader: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 30)
-        .background(hovering ? Color.primary.opacity(0.04) : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(hovering ? Palette.hover : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { workspace.setCollapsed(project.path, !project.collapsed) }
@@ -260,7 +261,7 @@ private struct TabRow: View {
         .padding(.trailing, 8)
         .frame(height: 28)
         .background(
-            selected ? Color.primary.opacity(0.09) : hovering ? Color.primary.opacity(0.04) : .clear,
+            selected ? Palette.selection : hovering ? Palette.hover : .clear,
             in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -285,9 +286,9 @@ private struct KeyBadge: View {
             .foregroundStyle(.primary)
             .padding(.horizontal, 5)
             .frame(height: 18)
-            .background(Color.primary.opacity(0.14), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.border))
             .fixedSize()
-            .transition(.opacity)
     }
 }
 
@@ -296,10 +297,11 @@ struct AgentMark: View {
     let agent: String
 
     var body: some View {
+        let theme = ThemeStore.shared.theme
         let (letter, fg, bg): (String, Color, Color) = switch agent {
-        case "claude": ("C", Color(red: 0.94, green: 0.64, blue: 0.49), Color(red: 0.23, green: 0.16, blue: 0.13))
-        case "codex": ("X", Color(red: 0.55, green: 0.77, blue: 1.0), Color(red: 0.12, green: 0.17, blue: 0.22))
-        default: (String(agent.prefix(1)).uppercased(), .secondary, Color.primary.opacity(0.1))
+        case "claude": ("C", Color(nsColor: theme.claude.fg), Color(nsColor: theme.claude.bg))
+        case "codex": ("X", Color(nsColor: theme.codex.fg), Color(nsColor: theme.codex.bg))
+        default: (String(agent.prefix(1)).uppercased(), Palette.text2, Palette.chip)
         }
         Text(letter)
             .font(.system(size: 9.5, weight: .bold, design: .monospaced))
@@ -320,20 +322,20 @@ struct StatusIcon: View {
         Group {
             switch status {
             case .working:
-                Spinner(color: isAgent ? Palette.working : Color.primary.opacity(0.7))
+                Spinner(color: isAgent ? Palette.working : Palette.text2)
             case .starting:
-                Spinner(color: Color.primary.opacity(0.45))
+                Spinner(color: Palette.ring)
             case .needsYou:
                 ZStack {
                     Circle().strokeBorder(Palette.amber, lineWidth: 1.5)
                     Circle().fill(Palette.amber).frame(width: 4.4, height: 4.4)
                 }
             case .doneUnread:
-                Circle().fill(Color.primary.opacity(0.92)).frame(width: 8, height: 8)
+                Circle().fill(Palette.text).frame(width: 8, height: 8)
             case .idle:
-                Circle().strokeBorder(Color.primary.opacity(0.4), lineWidth: 1.25).frame(width: 7.5, height: 7.5)
+                Circle().strokeBorder(Palette.ring, lineWidth: 1.25).frame(width: 7.5, height: 7.5)
             case .dormant:
-                Circle().strokeBorder(Color.primary.opacity(0.35), style: StrokeStyle(lineWidth: 1.25, dash: [1.6, 1.8]))
+                Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.25, dash: [1.6, 1.8]))
                     .frame(width: 8, height: 8)
             }
         }
@@ -348,7 +350,7 @@ private struct Spinner: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.primary.opacity(0.15), lineWidth: 1.5)
+            Circle().stroke(Palette.border, lineWidth: 1.5)
             Circle().trim(from: 0, to: 0.28)
                 .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(turning ? 360 : 0))
@@ -357,11 +359,6 @@ private struct Spinner: View {
         .padding(0.75)
         .onAppear { turning = true }
     }
-}
-
-enum Palette {
-    static let amber = Color(red: 0.96, green: 0.72, blue: 0.24)
-    static let working = Color(red: 0.49, green: 0.72, blue: 1.0)
 }
 
 func abbreviateHome(_ path: String) -> String {

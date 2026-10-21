@@ -21,6 +21,8 @@ struct SessionInfo: Decodable, Equatable {
     let agentStateMs: UInt64?
     let agentSession: String?
     let agentMessage: String?
+    /// What runs in the foreground, or last ran there ("npm run dev"); nil from an older ternd.
+    let command: String?
 }
 
 /// Talks to ternd over its unix socket (see crates/tern/src/lib.rs for the protocol).

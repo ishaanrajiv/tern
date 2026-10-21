@@ -15,7 +15,7 @@ struct ContentHeader: View {
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                     // A tab titled "~" needn't say "~" twice.
-                    if let cwd = s?.cwd, abbreviateHome(cwd) != workspace.baseTitle(for: tab) {
+                    if let cwd = s?.cwd, abbreviateHome(cwd) != workspace.title(for: tab) {
                         Text(abbreviateHome(cwd))
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
@@ -56,8 +56,9 @@ struct ContentHeader: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .ignoresSafeArea()
             .overlay(alignment: .bottom) {
-                Rectangle().fill(Color(nsColor: GhosttyApp.shared.foreground).opacity(0.08)).frame(height: 1)
+                Rectangle().fill(Palette.border).frame(height: 1)
             }
+            .themedText()
         }
     }
 }

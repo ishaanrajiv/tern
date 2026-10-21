@@ -264,7 +264,7 @@ struct FolderPickerView: View {
                 .padding(.horizontal, 16)
                 .frame(height: 48)
 
-                Divider()
+                Rectangle().fill(Palette.border).frame(height: 1)
 
                 let sections = model.sections
                 ScrollViewReader { proxy in
@@ -304,7 +304,7 @@ struct FolderPickerView: View {
                     .onChange(of: model.selection) { _, i in proxy.scrollTo(i) }
                 }
 
-                Divider()
+                Rectangle().fill(Palette.border).frame(height: 1)
 
                 HStack(spacing: 14) {
                     KeyHint(key: "↩", label: "Open")
@@ -317,8 +317,9 @@ struct FolderPickerView: View {
                 .padding(.vertical, 9)
             }
             .frame(width: 600)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator))
+            .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Palette.border))
+            .themedText()
             .shadow(color: .black.opacity(0.3), radius: 30, y: 12)
             .padding(.top, 80)
         }
@@ -353,7 +354,7 @@ private struct FolderRow: View {
         }
         .padding(.horizontal, 14)
         .frame(height: 34)
-        .background(selected ? Color.primary.opacity(0.1) : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .background(selected ? Palette.selection : .clear, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .padding(.horizontal, 6)
         .contentShape(Rectangle())
     }
@@ -369,7 +370,7 @@ private struct KeyHint: View {
                 .font(.system(size: 10.5))
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
-                .background(Color.primary.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4))
             Text(label)
         }
         .font(.system(size: 11.5))
@@ -390,7 +391,7 @@ struct Chip: View {
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+            .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4))
             .fixedSize()
             .help(text)
     }

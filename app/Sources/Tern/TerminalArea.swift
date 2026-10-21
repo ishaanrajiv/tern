@@ -86,6 +86,11 @@ final class TerminalArea: NSView {
         refresh(focus: workspace.selectedTab?.focusedPane == pane)
     }
 
+    func themeChanged() {
+        dimmers.values.forEach { ($0 as? DimView)?.recolor() }
+        needsDisplay = true
+    }
+
     func focusedTerminal() -> TerminalView? {
         guard let tab = workspace.selectedTab else { return nil }
         return terminals[tab.focusedPane]
@@ -131,7 +136,7 @@ final class TerminalArea: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        GhosttyApp.shared.foreground.withAlphaComponent(0.14).setFill()
+        ThemeStore.shared.theme.border.setFill()
         for d in dividers { d.rect.fill() }
     }
 
@@ -183,7 +188,11 @@ private final class DimView: NSView {
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        layer?.backgroundColor = GhosttyApp.shared.background.withAlphaComponent(0.45).cgColor
+        recolor()
+    }
+
+    func recolor() {
+        layer?.backgroundColor = ThemeStore.shared.theme.terminal.withAlphaComponent(0.45).cgColor
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }

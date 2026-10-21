@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod hooks;
 pub mod procinfo;
+pub mod shell;
 
 /// Client -> daemon: raw bytes typed into the terminal.
 pub const FRAME_INPUT: u8 = 0x01;
@@ -112,6 +113,10 @@ pub struct SessionInfo {
     pub agent_session: Option<String>,
     #[serde(default)]
     pub agent_message: Option<String>,
+    /// The command in the foreground ("npm run dev"), or the last one to run
+    /// there once the shell is back at its prompt.
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 /// Directory holding the daemon socket, log and pid file.

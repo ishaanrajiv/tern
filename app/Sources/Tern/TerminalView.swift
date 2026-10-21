@@ -18,6 +18,9 @@ final class TerminalView: NSView, NSTextInputClient {
     private var keyTextAccumulator: [String]?
     private var contentSize: CGSize = .zero
 
+    /// Every live terminal, for recolouring them when the theme changes.
+    static let all = NSHashTable<TerminalView>.weakObjects()
+
     static func from(_ userdata: UnsafeMutableRawPointer?) -> TerminalView? {
         guard let userdata else { return nil }
         return Unmanaged<TerminalView>.fromOpaque(userdata).takeUnretainedValue()
@@ -46,6 +49,7 @@ final class TerminalView: NSView, NSTextInputClient {
         }
         // Surfaces start out focused; only the first responder should draw a solid cursor.
         if let surface { ghostty_surface_set_focus(surface, false) }
+        Self.all.add(self)
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
