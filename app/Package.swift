@@ -12,6 +12,11 @@ let package = Package(
         .executableTarget(
             name: "Tern",
             dependencies: ["GhosttyKit"],
+            swiftSettings: [
+                // DEBUG gates the development-only harness in DebugHooks.swift, so
+                // release builds leave it out.
+                .define("DEBUG", .when(configuration: .debug)),
+            ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),

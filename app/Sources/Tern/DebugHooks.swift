@@ -1,5 +1,6 @@
 import AppKit
 
+#if DEBUG
 /// Development aid, on only when launched with TERN_DEBUG=1:
 ///   kill -USR1 <pid>   saves a PNG of each window to <support>/tern/debug/window-N.png
 ///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title;
@@ -107,3 +108,10 @@ enum DebugHooks {
         NSLog("tern debug: saved %d window snapshot(s)", windows.count)
     }
 }
+#else
+/// The harness drives the app from outside the process, so it is left out of
+/// release builds entirely. Debug builds (build-app.sh --debug) get the real one.
+enum DebugHooks {
+    static func install(commands: @escaping () -> [Command]) {}
+}
+#endif

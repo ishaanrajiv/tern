@@ -424,7 +424,3 @@ extension NSEvent {
         return characters
     }
 }
-
-private func shellQuote(_ s: String) -> String {
-    "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-}

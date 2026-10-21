@@ -660,8 +660,8 @@ final class Workspace {
         if let line = pendingLines.removeValue(forKey: pane) { return line }
         guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
         switch ref.agent {
-        case "claude": return "claude --resume \(ref.session)"
-        case "codex": return "codex resume \(ref.session)"
+        case "claude": return "claude --resume \(shellQuote(ref.session))"
+        case "codex": return "codex resume \(shellQuote(ref.session))"
         default: return nil
         }
     }
