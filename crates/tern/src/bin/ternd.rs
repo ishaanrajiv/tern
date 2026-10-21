@@ -346,6 +346,15 @@ fn spawn_session(
     let master = File::from(pty.master);
     let slave: OwnedFd = pty.slave;
 
+    // The client's environment wins over the daemon's: the daemon runs under
+    // launchd, whose SHELL is not the shell the user picked in their terminal.
+    let shell = env
+        .iter()
+        .find(|(k, _)| k == "SHELL")
+        .map(|(_, v)| v.clone())
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| "/bin/zsh".into());
+
     let mut command = match &cmd {
         Some(c) => {
             let mut c2 = Command::new("/bin/sh");
@@ -353,7 +362,6 @@ fn spawn_session(
             c2
         }
         None => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
             let mut c2 = Command::new(&shell);
             c2.arg("-l");
             c2
@@ -362,7 +370,7 @@ fn spawn_session(
     if let Some(dir) = &cwd {
         command.current_dir(dir);
     }
-    let zsh = cmd.is_none() && shell::is_zsh(&std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()));
+    let zsh = cmd.is_none() && shell::is_zsh(&shell);
     let user_zdotdir = env.iter().find(|(k, _)| k == "ZDOTDIR").map(|(_, v)| v.clone());
     command.envs(env).env("TERN_SESSION_ID", id);
     let commands = shell::command_file(id);

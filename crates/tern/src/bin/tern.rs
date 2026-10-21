@@ -148,6 +148,7 @@ fn start_launch_agent(ternd: &std::path::Path) -> Result<()> {
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
     <key>ProcessType</key><string>Interactive</string>
+    <key>Umask</key><integer>63</integer>
     <key>StandardOutPath</key><string>{log}</string>
     <key>StandardErrorPath</key><string>{log}</string>
 </dict>
@@ -157,21 +158,36 @@ fn start_launch_agent(ternd: &std::path::Path) -> Result<()> {
         log = xml_escape(&log.display().to_string()),
     );
     std::fs::create_dir_all(plist_path.parent().unwrap())?;
-    std::fs::write(&plist_path, plist)?;
+    // Write it beside the real one and move it into place, so a reader never
+    // sees half a plist and a symlink here is replaced rather than written
+    // through.
+    let tmp = plist_path.with_extension("plist.tmp");
+    std::fs::write(&tmp, plist)?;
+    std::fs::rename(&tmp, &plist_path)?;
 
-    let domain = format!("gui/{}", nix::unistd::getuid());
-    // Drop a stale registration (dead daemon, or one pointing at an old app path).
-    let _ = Command::new("/bin/launchctl")
-        .args(["bootout", &format!("{domain}/{LAUNCHD_LABEL}")])
-        .stderr(Stdio::null())
-        .status();
-    let status = Command::new("/bin/launchctl")
-        .args(["bootstrap", &domain])
-        .arg(&plist_path)
-        .status()
-        .context("running launchctl")?;
-    if !status.success() {
-        bail!("launchctl bootstrap {} failed", plist_path.display());
+    let uid = nix::unistd::getuid();
+    // A GUI session is where the app runs; without one (ssh, a daemon) the
+    // per-user domain is the one that exists.
+    let domains = [format!("gui/{uid}"), format!("user/{uid}")];
+    let mut bootstrapped = false;
+    for domain in &domains {
+        // Drop a stale registration (dead daemon, or one pointing at an old app path).
+        let _ = Command::new("/bin/launchctl")
+            .args(["bootout", &format!("{domain}/{LAUNCHD_LABEL}")])
+            .stderr(Stdio::null())
+            .status();
+        let status = Command::new("/bin/launchctl")
+            .args(["bootstrap", domain])
+            .arg(&plist_path)
+            .status()
+            .context("running launchctl")?;
+        if status.success() {
+            bootstrapped = true;
+            break;
+        }
+    }
+    if !bootstrapped {
+        bail!("launchctl bootstrap failed for {}", domains.join(" and "));
     }
     Ok(())
 }
