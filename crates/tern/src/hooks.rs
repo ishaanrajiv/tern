@@ -150,23 +150,30 @@ pub fn link_binary() -> Result<PathBuf> {
 }
 
 fn command(agent: &str) -> Result<String> {
-    Ok(format!("\"{}\" hook {agent}", stable_binary()?.display()))
+    Ok(format!("{} hook {agent}", crate::shell_quote(&stable_binary()?.display().to_string())))
+}
+
+/// Whether a command is one of ours. Older terns quoted the path with double
+/// quotes and newer ones with single quotes, so match on the path and the
+/// ending rather than on the quoting.
+fn is_our_command(command: &str, ending: &str) -> bool {
+    command.contains("/tern/bin/tern") && command.ends_with(ending)
 }
 
 fn is_ours(group: &Value, agent: &str) -> bool {
     group["hooks"].as_array().is_some_and(|hs| {
         hs.iter().any(|h| {
-            h["command"].as_str().is_some_and(|c| c.contains("/tern/bin/tern\"") && c.ends_with(&format!("hook {agent}")))
+            h["command"].as_str().is_some_and(|c| is_our_command(c, &format!("hook {agent}")))
         })
     })
 }
 
 fn statusline_command() -> Result<String> {
-    Ok(format!("\"{}\" statusline", stable_binary()?.display()))
+    Ok(format!("{} statusline", crate::shell_quote(&stable_binary()?.display().to_string())))
 }
 
 fn is_our_statusline(config: &Map<String, Value>) -> bool {
-    config.get("statusLine").and_then(|s| s["command"].as_str()).is_some_and(|c| c.contains("/tern/bin/tern\" statusline"))
+    config.get("statusLine").and_then(|s| s["command"].as_str()).is_some_and(|c| is_our_command(c, "statusline"))
 }
 
 /// Makes `tern statusline` Claude Code's status line, keeping any the user had to run after it.
@@ -199,9 +206,10 @@ fn uninstall_statusline(config: &mut Map<String, Value>) -> bool {
 
 fn read_config(path: &Path) -> Result<Map<String, Value>> {
     match std::fs::read_to_string(path) {
-        Ok(text) if !text.trim().is_empty() => match serde_json::from_str(&text)? {
-            Value::Object(m) => Ok(m),
-            _ => bail!("{} is not a JSON object", path.display()),
+        Ok(text) if !text.trim().is_empty() => match serde_json::from_str(&text) {
+            Ok(Value::Object(m)) => Ok(m),
+            Ok(_) => bail!("{} is not a JSON object", path.display()),
+            Err(e) => bail!("{} is not valid JSON ({e}); comments are not allowed", path.display()),
         },
         Ok(_) => Ok(Map::new()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Map::new()),
@@ -209,14 +217,41 @@ fn read_config(path: &Path) -> Result<Map<String, Value>> {
     }
 }
 
+/// The same path with a suffix on the whole file name: `settings.json` becomes
+/// `settings.json.tern-backup`, not `settings.tern-backup`.
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// The file to write, following a symlink to the file it points at, so a
+/// settings.json kept in a dotfiles directory is updated in place.
+fn write_target(path: &Path) -> PathBuf {
+    match std::fs::read_link(path) {
+        Ok(target) if target.is_absolute() => target,
+        _ => path.to_path_buf(),
+    }
+}
+
 fn write_config(path: &Path, config: &Map<String, Value>) -> Result<()> {
+    let path = write_target(path);
+    // Keep the mode the file already had; the agent's config is the user's.
+    let mode = std::fs::metadata(&path).ok().map(|m| {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o777
+    });
     if path.exists() {
-        std::fs::copy(path, path.with_extension("json.tern-backup"))?;
+        std::fs::copy(&path, suffixed(&path, ".tern-backup"))?;
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.tern-tmp");
+    let tmp = suffixed(&path, ".tern-tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(config)? + "\n")?;
-    std::fs::rename(&tmp, path)?;
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    }
+    std::fs::rename(&tmp, &path)?;
     Ok(())
 }
 
@@ -267,7 +302,7 @@ pub fn uninstall(agent: &str) -> Result<PathBuf> {
         if config.is_empty() && agent == "codex" {
             // hooks.json held only our hooks, so we created it; leave no trace.
             std::fs::remove_file(&path)?;
-            let _ = std::fs::remove_file(path.with_extension("json.tern-backup"));
+            let _ = std::fs::remove_file(suffixed(&path, ".tern-backup"));
         } else {
             write_config(&path, &config)?;
         }
@@ -318,4 +353,50 @@ pub fn update_installed() -> Vec<&'static str> {
             !hooked_events(a, &config).is_empty() && !is_current(a, &config) && install(a).is_ok()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn recognises_our_hook_in_both_quoting_styles() {
+        let path = "/Users/someone/Library/Application Support/tern/bin/tern";
+        assert!(is_our_command(&format!("\"{path}\" hook claude"), "hook claude"));
+        assert!(is_our_command(&format!("'{path}' hook claude"), "hook claude"));
+        assert!(!is_our_command(&format!("'{path}' hook codex"), "hook claude"));
+        assert!(!is_our_command("'other' hook claude", "hook claude"));
+    }
+
+    #[test]
+    fn suffix_goes_on_the_whole_file_name() {
+        assert_eq!(
+            suffixed(Path::new("/a/settings.json"), ".tern-backup"),
+            PathBuf::from("/a/settings.json.tern-backup")
+        );
+    }
+
+    #[test]
+    fn writing_keeps_the_mode_and_follows_a_symlink() {
+        let root = std::env::temp_dir().join(format!("tern-hooks-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.join("real.json");
+        let link = root.join("settings.json");
+        std::fs::write(&real, "{}").unwrap();
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let mut config = Map::new();
+        config.insert("statusLine".into(), json!({ "type": "command" }));
+        write_config(&link, &config).unwrap();
+
+        // The symlink is still a symlink, and the file it points at was updated.
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let updated: Value = serde_json::from_slice(&std::fs::read(&real).unwrap()).unwrap();
+        assert!(updated.get("statusLine").is_some());
+        assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(root.join("real.json.tern-backup").exists());
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

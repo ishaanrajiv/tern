@@ -120,6 +120,17 @@ pub struct SessionInfo {
     pub command: Option<String>,
 }
 
+/// Quotes a string for a POSIX shell. Plain words are left alone; anything
+/// else is single-quoted, with embedded quotes closed, escaped and reopened.
+pub fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
 /// Directory holding the daemon socket, log and pid file.
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("TERN_RUNTIME_DIR") {
