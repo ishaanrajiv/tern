@@ -61,6 +61,8 @@ cp "$BIN/Tern" "$APP/Contents/MacOS/Tern"
 cp "$ROOT/target/release/tern" "$ROOT/target/release/ternd" "$APP/Contents/Helpers/"
 cp -R "$ROOT/vendor/ghostty/zig-out/share/ghostty" "$ROOT/vendor/ghostty/zig-out/share/terminfo" "$APP/Contents/Resources/"
 cp "$ROOT/app/Info.plist" "$APP/Contents/Info.plist"
+# The licenses of everything bundled above; regenerate with scripts/notices.py.
+cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"
 # Tern.icon has light and dark variants (macOS 26+); actool also writes Tern.icns for older macOS.
 xcrun actool "$ROOT/app/Tern.icon" --compile "$APP/Contents/Resources" --app-icon Tern \
     --platform macosx --minimum-deployment-target 14.0 \

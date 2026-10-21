@@ -3,9 +3,15 @@
 A macOS terminal built around coding agents: a sidebar that shows which agent needs you,
 Mac-native keys, and sessions that survive quitting the app.
 
-Status: **v0.1, feature-complete for a first review**. One window holds a sidebar of folders and
-their tabs, split panes, a ⌘K command palette and a Mac-native keymap. Claude Code and Codex report
-whether they're working, waiting for you, or done, and tern notifies you and takes you there with ⌘J.
+> [!WARNING]
+> **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
+> anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
+> that don't carry over. There are no releases yet: you build it from source (see [Build](#build)).
+> It runs on macOS 14 or later.
+
+One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
+Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
+and tern notifies you and takes you there with ⌘J.
 
 ## Folders and tabs
 
@@ -200,6 +206,14 @@ swap.
 `build-ghostty.sh` downloads Ghostty's Zig dependencies with curl into `.zig-deps/` and builds
 offline with `zig build --system`, because Zig's own fetcher was unreliable here.
 
+`build-app.sh` puts `LICENSE` and `THIRD_PARTY_NOTICES.md` in the app's `Contents/Resources`. After
+updating the Ghostty submodule or the Rust dependencies, regenerate the notices (it reads the license
+files from `.zig-deps/` and the cargo registry):
+
+```bash
+python3 scripts/notices.py
+```
+
 ## CLI
 
 ```
@@ -254,3 +268,17 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
   an Apple Development signature and when run from `~/Applications`. A minimal test app showed the
   same refusal, so the cause is in how macOS treats locally built apps, not in tern's code. The Dock
   badge, Dock bounce and ⌘J don't depend on notifications and work.
+
+## License
+
+tern is released under the [MIT License](LICENSE).
+
+Tern.app also contains [Ghostty](https://github.com/ghostty-org/ghostty)'s libghostty (MIT) and the
+libraries it links, the fonts it embeds, and the Rust crates in `tern` and `ternd`.
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists each one with its license. Almost all are
+MIT, BSD, Apache-2.0 or zlib-style. The exceptions are GNU libintl (LGPL-2.1-or-later) and z2d
+(MPL-2.0), both statically linked by libghostty; their source, and tern's, is available as the notices
+describe.
+
+tern is not affiliated with Ghostty, Anthropic or OpenAI. Claude Code and Codex are their owners'
+products.
