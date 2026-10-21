@@ -7,6 +7,7 @@ struct SidebarActions {
     var setUpHooks: () -> Void
     var rename: (String) -> Void
     var close: (String) -> Void
+    var update: (AgentUpdates.Version) -> Void
 }
 
 /// Number badges shown while ⌘ (folders) or ⌘⇧ (tabs) is held.
@@ -20,6 +21,8 @@ final class ShortcutHints {
 struct SidebarView: View {
     @Bindable var workspace: Workspace
     let hooks: AgentHooks
+    let usage: AgentUsage
+    let updates: AgentUpdates
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
@@ -55,10 +58,18 @@ struct SidebarView: View {
             // One dark surface with the terminal, as in harp, instead of the system's grey material.
             .background(Palette.sidebar.ignoresSafeArea())
             .themedText()
-            .safeAreaInset(edge: .bottom) {
-                if hooks.anyMissing && !hooksPromptDismissed {
-                    HooksPrompt(setUp: actions.setUpHooks, dismiss: { hooksPromptDismissed = true })
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    if hooks.anyMissing && !hooksPromptDismissed {
+                        HooksPrompt(setUp: actions.setUpHooks, dismiss: { hooksPromptDismissed = true })
+                    }
+                    ForEach(updates.offered, id: \.agent) { version in
+                        UpdatePrompt(version: version, update: { actions.update(version) },
+                                     dismiss: { updates.dismiss(version) })
+                    }
+                    UsageFooter(usage: usage, now: context.date)
                 }
+                .themedText()
             }
         }
     }

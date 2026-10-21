@@ -25,8 +25,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// Runs after every model change (the Dock badge follows it).
     var onSync: (() -> Void)?
 
-    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks) {
+    private let updates: AgentUpdates
+
+    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: AgentUpdates) {
         self.workspace = workspace
+        self.updates = updates
         self.terminalArea = TerminalArea(workspace: workspace, ternBinary: ternBinary)
 
         let window = NSWindow(
@@ -45,13 +48,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         window.delegate = self
         workspace.onWorktreeClosed = { [weak self] path in self?.offerWorktreeRemoval(path) }
 
-        let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, hints: hints, layout: headerLayout, actions: SidebarActions(
+        let sidebar = NSHostingController(rootView: SidebarView(workspace: workspace, hooks: hooks, usage: usage, updates: updates, hints: hints, layout: headerLayout, actions: SidebarActions(
             newTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path) } },
             newWorktreeTab: { [weak self] path in self?.newSession { $0.newSession(projectPath: path, cwd: path, worktree: true) } },
             closeFolder: { [weak self] path in self?.closeFolder(path) },
             setUpHooks: { [weak self] in self?.onOpenSettings?() },
             rename: { [weak self] id in self?.rename(tabID: id) },
-            close: { [weak self] id in self?.closeTab(id) }
+            close: { [weak self] id in self?.closeTab(id) },
+            update: { [weak self] version in self?.runUpdate(version) }
         )))
         let split = ThemedSplitView()
         split.isVertical = true
@@ -162,6 +166,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     func windowDidResignKey(_ notification: Notification) { setHints(nil) }
+
+    /// Runs the agent's own updater in a new tab in Home, where its output stays readable.
+    func runUpdate(_ version: AgentUpdates.Version) {
+        workspace.run(version.updateCommand, in: NSHomeDirectory())
+        updates.recheckSoon()
+        window?.makeKeyAndOrderFront(nil)
+    }
 
     /// The AppKit side of the theme; SwiftUI views read it themselves.
     private func applyTheme() {
@@ -355,6 +366,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Theme: \(name)", menu: "View", inMenu: false) {
                 UserDefaults.standard.set(id, forKey: Prefs.theme)
             }
+        }
+        // Each agent's own updater, whether or not tern has seen a newer version yet.
+        + ["claude", "codex"].map { AgentUpdates.Version(agent: $0) }.map { version in
+            Command("Update \(version.name)", menu: "tern", inMenu: false) { [weak self] in self?.runUpdate(version) }
         }
         // For the debug harness, which can't hold a modifier down.
         + (ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" ? [

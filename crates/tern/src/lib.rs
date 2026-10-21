@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 pub mod hooks;
 pub mod procinfo;
 pub mod shell;
+pub mod usage;
 
 /// Client -> daemon: raw bytes typed into the terminal.
 pub const FRAME_INPUT: u8 = 0x01;

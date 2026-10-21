@@ -160,6 +160,42 @@ fn is_ours(group: &Value, agent: &str) -> bool {
     })
 }
 
+fn statusline_command() -> Result<String> {
+    Ok(format!("\"{}\" statusline", stable_binary()?.display()))
+}
+
+fn is_our_statusline(config: &Map<String, Value>) -> bool {
+    config.get("statusLine").and_then(|s| s["command"].as_str()).is_some_and(|c| c.contains("/tern/bin/tern\" statusline"))
+}
+
+/// Makes `tern statusline` Claude Code's status line, keeping any the user had to run after it.
+fn install_statusline(config: &mut Map<String, Value>) -> Result<()> {
+    if !is_our_statusline(config) {
+        if let Some(previous) = config.get("statusLine") {
+            let saved = crate::usage::saved_statusline_file();
+            std::fs::create_dir_all(saved.parent().unwrap())?;
+            std::fs::write(&saved, json!({ "statusLine": previous }).to_string())?;
+        }
+    }
+    config.insert("statusLine".into(), json!({ "type": "command", "command": statusline_command()?, "padding": 0 }));
+    Ok(())
+}
+
+/// Puts back the user's own status line, if they had one.
+fn uninstall_statusline(config: &mut Map<String, Value>) -> bool {
+    if !is_our_statusline(config) {
+        return false;
+    }
+    let saved = crate::usage::saved_statusline_file();
+    let previous = std::fs::read(&saved).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+    match previous.map(|p| p["statusLine"].clone()).filter(|p| !p.is_null()) {
+        Some(p) => config.insert("statusLine".into(), p),
+        None => config.remove("statusLine"),
+    };
+    let _ = std::fs::remove_file(saved);
+    true
+}
+
 fn read_config(path: &Path) -> Result<Map<String, Value>> {
     match std::fs::read_to_string(path) {
         Ok(text) if !text.trim().is_empty() => match serde_json::from_str(&text)? {
@@ -215,6 +251,9 @@ pub fn install(agent: &str) -> Result<PathBuf> {
         // Codex caps some events at 3s and warns above that; the hook takes a few ms anyway.
         groups.push(json!({ "hooks": [{ "type": "command", "command": cmd, "timeout": 3 }] }));
     }
+    if agent == "claude" {
+        install_statusline(&mut config)?;
+    }
     write_config(&path, &config)?;
     Ok(path)
 }
@@ -222,7 +261,8 @@ pub fn install(agent: &str) -> Result<PathBuf> {
 pub fn uninstall(agent: &str) -> Result<PathBuf> {
     let path = config_path(agent)?;
     let mut config = read_config(&path)?;
-    if strip(&mut config, agent) {
+    let statusline = agent == "claude" && uninstall_statusline(&mut config);
+    if strip(&mut config, agent) || statusline {
         if config.is_empty() && agent == "codex" {
             // hooks.json held only our hooks, so we created it; leave no trace.
             std::fs::remove_file(&path)?;
@@ -255,10 +295,15 @@ pub fn status(agent: &str) -> Result<Value> {
     Ok(json!({
         "agent": agent,
         "installed": hooked > 0,
-        "current": hooked == events(agent).len(),
+        "current": is_current(agent, &config),
         "available": agent_dir,
         "config": path,
     }))
+}
+
+/// Every event hooked, and for Claude Code the status line that reports usage limits.
+fn is_current(agent: &str, config: &Map<String, Value>) -> bool {
+    hooked_events(agent, config).len() == events(agent).len() && (agent != "claude" || is_our_statusline(config))
 }
 
 /// Brings hooks an older tern installed up to this tern's events. Hooks that
@@ -269,8 +314,7 @@ pub fn update_installed() -> Vec<&'static str> {
         .filter(|a| {
             let Ok(path) = config_path(a) else { return false };
             let Ok(config) = read_config(&path) else { return false };
-            let hooked = hooked_events(a, &config).len();
-            hooked > 0 && hooked < events(a).len() && install(a).is_ok()
+            !hooked_events(a, &config).is_empty() && !is_current(a, &config) && install(a).is_ok()
         })
         .collect()
 }

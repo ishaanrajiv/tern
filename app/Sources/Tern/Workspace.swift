@@ -189,6 +189,8 @@ final class Workspace {
     private struct Seen { var output: UInt64; var bells: UInt64; var agent: UInt64 }
     /// The agent conversation last seen in each pane, so it can be resumed after a reboot.
     private var paneAgent: [String: AgentRef] = [:]
+    /// Lines to type into a new pane's shell when it starts (`codex update`).
+    @ObservationIgnored private var pendingLines: [String: String] = [:]
     /// When each folder was last used in tern, for the folder picker and recent-first order.
     private(set) var recents: [String: Date] = [:]
     /// When each pane was last resized: the shell redraws its prompt then, which isn't news.
@@ -437,6 +439,13 @@ final class Workspace {
         }
     }
 
+    /// Opens a tab in `folder` that runs `line` in its shell, so its output stays in view.
+    func run(_ line: String, in folder: String) {
+        let pane = Self.newID("p")
+        pendingLines[pane] = line
+        newTab(projectPath: folder, cwd: folder, paneID: pane)
+    }
+
     func split(_ axis: SplitAxis) {
         guard let tab = selectedTab else { return }
         let pane = Self.newID("p")
@@ -645,6 +654,7 @@ final class Workspace {
     /// The command that resumes the agent conversation a pane had before its session ended
     /// (after a reboot), typed into the fresh shell.
     func resumeCommand(for pane: String) -> String? {
+        if let line = pendingLines.removeValue(forKey: pane) { return line }
         guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
         switch ref.agent {
         case "claude": return "claude --resume \(ref.session)"

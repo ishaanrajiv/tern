@@ -7,6 +7,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindow: SettingsWindowController?
     private var notifier: AgentNotifier?
     private lazy var hooks = AgentHooks(ternBinary: ternBinary)
+    private lazy var usage = AgentUsage()
+    private lazy var updates = AgentUpdates()
 
     /// `tern` and `ternd` ship in Contents/Helpers.
     private lazy var ternBinary: String = Bundle.main.bundleURL
@@ -30,7 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let notifier = AgentNotifier(workspace: workspace)
         self.notifier = notifier
-        let controller = MainWindowController(workspace: workspace, ternBinary: ternBinary, hooks: hooks)
+        let controller = MainWindowController(workspace: workspace, ternBinary: ternBinary, hooks: hooks,
+                                              usage: usage, updates: updates)
         controller.onOpenSettings = { [weak self] in self?.openSettings() }
         controller.onSync = { [weak self] in
             notifier.updateBadge()
@@ -51,7 +54,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidResignActive(_ notification: Notification) { workspace.isActive = false }
 
     private func openSettings() {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks) }
+        if settingsWindow == nil {
+            settingsWindow = SettingsWindowController(hooks: hooks, updates: updates) { [weak self] version in
+                self?.mainWindow?.runUpdate(version)
+            }
+        }
         settingsWindow?.showWindow(nil)
         settingsWindow?.window?.makeKeyAndOrderFront(nil)
     }

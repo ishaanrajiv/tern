@@ -61,6 +61,30 @@ When an agent needs you or finishes in a session you aren't looking at, you get 
 (click it to go there), the Dock icon shows how many are waiting, and ⌘J jumps to the next one:
 whatever needs you first, then whatever finished.
 
+### Usage limits
+
+The foot of the sidebar shows how much of each subscription limit is used: one row per agent, with
+two rings (outer: the 5-hour window, inner: the week) and the same two figures as percentages. Both
+turn amber at 80%, and hovering shows when each window resets. A window past its reset reads 0% until
+the agent reports again.
+
+- **Codex** logs its limits in its session files (`~/.codex/sessions/…/rollout-*.jsonl`); tern reads
+  the newest.
+- **Claude Code** passes them only to its status line command, so setting up Claude Code's hooks also
+  sets `statusLine` to `tern statusline`. That records the limits to `usage/claude.json` and prints
+  nothing. If you already had a status line, tern keeps it in `claude-statusline.json`, runs it after
+  recording, and shows what it prints; **Remove** puts it back. The ring appears after Claude Code's
+  next reply.
+
+### Updates
+
+tern compares `claude --version` and `codex --version` (run through your login shell, so the ones a
+tab would run) with the newest release on npm (for Claude Code, the `autoUpdatesChannel` you chose),
+five seconds after launch and every six hours. When one is behind, the sidebar offers it: **Update**
+opens a tab in Home that runs `claude update` or `codex update`, and **Not Now** hides the offer until
+a newer version comes out. Settings → Agents lists both versions with **Check Now**, and the palette
+has "Update Claude Code" and "Update Codex".
+
 ## Keys
 
 | Keys | Action |
@@ -89,7 +113,7 @@ tern's shortcuts take priority over terminal key bindings.
 
 ## Settings
 
-Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, notifications, resume).
+Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, versions, notifications, resume).
 
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal
@@ -188,6 +212,7 @@ tern bench [n]                             keystroke round trip: direct PTY vs t
 tern hooks [status|install|uninstall|link] [claude|codex]
                                            manage agent hooks (what Settings does)
 tern hook claude|codex                     run by the agents' hooks; reads the event on stdin
+tern statusline                            Claude Code's status line: records its usage limits
 ```
 
 `ternd` starts on demand as the launchd agent `dev.tern.ternd`; its log is
@@ -208,11 +233,7 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
 
 ## Todo
 
-- **Agent CLI updates.** Notice when Claude Code or Codex is behind (Codex keeps
-  `~/.codex/version.json`; Claude Code has `claude update`) and offer a one-click update in tern.
-  An outdated CLI fails in confusing ways: Codex 0.154 rejected a model with "not supported".
 - **Notifications** (open; see Known gaps).
-- **Usage-limit rings** for Claude Code and Codex.
 - **Upgrading ternd without ending sessions** (hand the PTYs to the new daemon). Screens already
   come back after a restart, and panes reconnect on their own; the processes in them don't survive.
 

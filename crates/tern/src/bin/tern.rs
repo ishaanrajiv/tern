@@ -9,6 +9,7 @@
 //!   tern hooks [status|install|uninstall|link] [claude|codex]
 //!                                              manage agent hooks (link also updates installed ones)
 //!   tern hook <agent>                          (run by the agents) report agent state
+//!   tern statusline                            (run by Claude Code) record its usage limits
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -40,6 +41,10 @@ fn main() {
             Ok(0)
         }
         Some("hooks") => manage_hooks(&args[1..]),
+        Some("statusline") => {
+            usage::run_statusline();
+            Ok(0)
+        }
         _ => {
             eprintln!(
                 "usage: tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \

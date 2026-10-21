@@ -122,6 +122,8 @@ struct AppearanceSettings: View {
 /// Hooks, notifications and resuming conversations.
 struct AgentSettings: View {
     let hooks: AgentHooks
+    let updates: AgentUpdates
+    let runUpdate: (AgentUpdates.Version) -> Void
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
@@ -139,11 +141,32 @@ struct AgentSettings: View {
             } header: {
                 Text("Status")
             } footer: {
-                Text("Hooks tell tern when an agent is working, needs you, or is done.")
+                Text("Hooks tell tern when an agent is working, needs you, or is done. For Claude Code, tern also sets a status line command, which shows nothing and reports usage limits for the sidebar.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Section {
+                ForEach(["claude", "codex"], id: \.self) { agent in
+                    VersionRow(agent: agent, version: updates.versions[agent], checking: updates.checking,
+                               update: runUpdate)
+                }
+            } header: {
+                Text("Versions")
+            } footer: {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(updates.checking ? "Checking…"
+                         : updates.lastChecked.map {
+                             "Checked at \($0.formatted(date: .omitted, time: .shortened)). Updates run in a new tab."
+                         } ?? "Not checked yet.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check Now") { updates.check() }
+                        .disabled(updates.checking)
+                }
             }
 
             Section("Notifications") {
@@ -173,6 +196,29 @@ private extension View {
         formStyle(.grouped)
             .frame(width: 500)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+/// An agent's installed version, with an Update button when a newer one is out.
+private struct VersionRow: View {
+    let agent: String
+    let version: AgentUpdates.Version?
+    let checking: Bool
+    let update: (AgentUpdates.Version) -> Void
+
+    var body: some View {
+        let name = agent == "claude" ? "Claude Code" : "Codex"
+        LabeledContent {
+            if let version, version.behind {
+                Button("Update to \(version.latest ?? "")") { update(version) }
+            } else if version?.installed != nil {
+                Text(version?.latest == nil ? "Couldn't reach npm" : "Up to date")
+                    .foregroundStyle(.secondary)
+            }
+        } label: {
+            Labeled(name, caption: version?.installed.map { "\($0) installed" }
+                    ?? (checking ? "Looking…" : "Not found in your shell's PATH."))
+        }
     }
 }
 
@@ -269,7 +315,7 @@ private struct AgentToggle: View {
 
 /// Settings in toolbar panes, as in other Mac apps. The window fits each pane.
 final class SettingsWindowController: NSWindowController {
-    convenience init(hooks: AgentHooks) {
+    convenience init(hooks: AgentHooks, updates: AgentUpdates, runUpdate: @escaping (AgentUpdates.Version) -> Void) {
         // Read before adding panes: adding the first one selects it, which saves its index.
         let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 2)
         let tabs = SettingsTabs()
@@ -286,7 +332,7 @@ final class SettingsWindowController: NSWindowController {
         }
         pane("General", "gearshape", GeneralSettings())
         pane("Appearance", "paintpalette", AppearanceSettings())
-        pane("Agents", "sparkles", AgentSettings(hooks: hooks))
+        pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, runUpdate: runUpdate))
         let window = NSWindow(contentViewController: tabs)
         window.styleMask = [.titled, .closable]
         window.toolbarStyle = .preference
