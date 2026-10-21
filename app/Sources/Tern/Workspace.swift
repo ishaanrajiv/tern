@@ -162,11 +162,14 @@ enum Prefs {
     /// Folders searched for git repositories to offer in the folder picker, comma-separated.
     static let repoRoots = "repoRoots"
     static let theme = "theme"
+    /// Read Claude Code's usage limits from the account (needs Claude Code's Keychain item).
+    static let claudeAccountUsage = "claudeAccountUsage"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
+            claudeAccountUsage: true,
         ])
     }
 

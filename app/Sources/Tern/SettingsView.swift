@@ -127,6 +127,7 @@ struct AgentSettings: View {
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
+    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = true
 
     var body: some View {
         Form {
@@ -146,6 +147,13 @@ struct AgentSettings: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Section("Usage limits") {
+                Toggle(isOn: $claudeAccountUsage) {
+                    Labeled("Read Claude Code's limits from your account",
+                            caption: "Uses Claude Code's sign-in from the Keychain, so the sidebar shows your limits wherever Claude Code runs. macOS asks once: choose Always Allow.")
+                }
             }
 
             Section {

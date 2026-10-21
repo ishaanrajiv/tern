@@ -76,11 +76,16 @@ the agent reports again.
 
 - **Codex** logs its limits in its session files (`~/.codex/sessions/…/rollout-*.jsonl`); tern reads
   the newest.
-- **Claude Code** passes them only to its status line command, so setting up Claude Code's hooks also
-  sets `statusLine` to `tern statusline`. That records the limits to `usage/claude.json` and prints
-  nothing. If you already had a status line, tern keeps it in `claude-statusline.json`, runs it after
-  recording, and shows what it prints; **Remove** puts it back. The ring appears after Claude Code's
-  next reply.
+- **Claude Code**: every 5 minutes tern asks the account for the numbers `/usage` shows, using the
+  sign-in Claude Code keeps in the Keychain (macOS asks once; choose Always Allow). This works wherever
+  Claude Code runs, the desktop app included. tern never refreshes that token, so it can't sign Claude
+  Code out; an expired one waits for Claude Code to renew it. Deny the prompt, or turn off Settings →
+  Agents → Usage limits, and tern stops asking.
+- Claude Code also passes its limits to its status line command, so setting up Claude Code's hooks
+  sets `statusLine` to `tern statusline`. That records them to `usage/claude.json` and prints nothing;
+  when it is newer than the account's answer (Claude Code ran in a terminal since), the sidebar uses
+  it. If you already had a status line, tern keeps it in `claude-statusline.json`, runs it after
+  recording, and shows what it prints; **Remove** puts it back.
 
 ### Updates
 
@@ -119,7 +124,7 @@ tern's shortcuts take priority over terminal key bindings.
 
 ## Settings
 
-Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, versions, notifications, resume).
+Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, usage limits, versions, notifications, resume).
 
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal

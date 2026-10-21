@@ -1,28 +1,36 @@
 import AppKit
 import Foundation
+import Security
 
 /// One usage window: how much of it is used, and when it starts over.
 struct UsageWindow: Equatable {
     let usedPercent: Double
-    let resetsAt: Date
+    /// Unknown for a window not yet started.
+    let resetsAt: Date?
 
     /// Past its reset, a window is empty again even if no newer report came.
-    func used(at now: Date) -> Double { now >= resetsAt ? 0 : min(max(usedPercent, 0), 100) }
+    func used(at now: Date) -> Double {
+        if let resetsAt, now >= resetsAt { return 0 }
+        return min(max(usedPercent, 0), 100)
+    }
 }
 
 /// An agent's subscription limits, as last reported.
 struct UsageLimits: Equatable {
     let fiveHour: UsageWindow?
     let weekly: UsageWindow?
+    var reportedAt: Date? = nil
 }
 
-/// Usage limits for Claude Code and Codex, read from what each leaves on disk:
-/// Claude Code's through `tern statusline` (see crates/tern/src/usage.rs), Codex's
-/// from the rate limits it logs in its session files.
+/// Usage limits for Claude Code and Codex. Claude Code's come from its account (see
+/// ClaudeAccount) or, newer if Claude Code ran in a terminal since, from `tern statusline`
+/// (see crates/tern/src/usage.rs). Codex's come from the rate limits it logs in its sessions.
 @Observable
 final class AgentUsage {
     private(set) var limits: [String: UsageLimits] = [:]
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var account: UsageLimits?
+    @ObservationIgnored private var accountAsked = Date.distantPast
 
     init() {
         refresh()
@@ -30,11 +38,38 @@ final class AgentUsage {
     }
 
     func refresh() {
+        if !UserDefaults.standard.bool(forKey: Prefs.claudeAccountUsage) {
+            (account, accountAsked) = (nil, .distantPast)
+        } else if Date().timeIntervalSince(accountAsked) >= 300 {
+            askAccount()
+        }
+        let account = self.account
         DispatchQueue.global(qos: .utility).async {
             var found: [String: UsageLimits] = [:]
-            found["claude"] = Self.claude()
+            found["claude"] = [Self.claude(), account].compactMap { $0 }
+                .max { ($0.reportedAt ?? .distantPast) < ($1.reportedAt ?? .distantPast) }
             found["codex"] = Self.codex()
             DispatchQueue.main.async { if self.limits != found { self.limits = found } }
+        }
+    }
+
+    private func askAccount() {
+        accountAsked = Date()
+        DispatchQueue.global(qos: .utility).async {
+            ClaudeAccount.usage { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .limits(let limits):
+                        self.account = limits
+                        self.refresh()
+                    case .denied:
+                        // Asking again every few minutes would be worse than not showing it.
+                        UserDefaults.standard.set(false, forKey: Prefs.claudeAccountUsage)
+                    case .unavailable:
+                        break
+                    }
+                }
+            }
         }
     }
 
@@ -47,7 +82,8 @@ final class AgentUsage {
                   let resets = w["resets_at"] as? Double else { return nil }
             return UsageWindow(usedPercent: used, resetsAt: Date(timeIntervalSince1970: resets))
         }
-        let limits = UsageLimits(fiveHour: window("five_hour"), weekly: window("seven_day"))
+        let limits = UsageLimits(fiveHour: window("five_hour"), weekly: window("seven_day"),
+                                 reportedAt: (json["updated_at"] as? Double).map(Date.init(timeIntervalSince1970:)))
         return limits.fiveHour == nil && limits.weekly == nil ? nil : limits
     }
 
@@ -104,6 +140,68 @@ final class AgentUsage {
             return UsageLimits(fiveHour: window("primary"), weekly: window("secondary"))
         }
         return nil
+    }
+}
+
+/// Claude Code's limits as its account reports them, the numbers `/usage` shows, wherever
+/// Claude Code runs (the desktop app never runs a status line). It uses the sign-in Claude
+/// Code keeps in the Keychain, which macOS asks before handing over. tern never refreshes
+/// that token, which would sign Claude Code out; an expired one waits for Claude Code to renew it.
+enum ClaudeAccount {
+    enum Result { case limits(UsageLimits), denied, unavailable }
+    private enum Token { case token(String), denied, none }
+
+    static func usage(done: @escaping (Result) -> Void) {
+        let token: String
+        switch accessToken() {
+        case .token(let t): token = t
+        case .denied: return done(.denied)
+        case .none: return done(.unavailable)
+        }
+        guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else { return done(.unavailable) }
+        var request = URLRequest(url: url, timeout: 15)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            guard status == 200, let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                NSLog("tern: Claude usage unavailable (HTTP %d%@)", status, error.map { ", \($0.localizedDescription)" } ?? "")
+                return done(.unavailable)
+            }
+            let window = { (key: String) -> UsageWindow? in
+                guard let w = json[key] as? [String: Any], let used = w["utilization"] as? Double else { return nil }
+                return UsageWindow(usedPercent: used, resetsAt: (w["resets_at"] as? String).flatMap(date))
+            }
+            let limits = UsageLimits(fiveHour: window("five_hour"), weekly: window("seven_day"), reportedAt: Date())
+            done(limits.fiveHour == nil && limits.weekly == nil ? .unavailable : .limits(limits))
+        }.resume()
+    }
+
+    private static func accessToken() -> Token {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "Claude Code-credentials",
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true,
+        ]
+        var item: CFTypeRef?
+        switch SecItemCopyMatching(query as CFDictionary, &item) {
+        case errSecSuccess: break
+        case errSecUserCanceled, errSecAuthFailed: return .denied
+        default: return .none
+        }
+        guard let data = item as? Data,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let oauth = json["claudeAiOauth"] as? [String: Any],
+              let token = oauth["accessToken"] as? String else { return .none }
+        if let expires = oauth["expiresAt"] as? Double, expires / 1000 < Date().timeIntervalSince1970 { return .none }
+        return .token(token)
+    }
+
+    /// "2026-10-21T23:00:00.943648+00:00": more fraction digits than ISO8601DateFormatter takes.
+    private static func date(_ text: String) -> Date? {
+        ISO8601DateFormatter().date(from: text.replacingOccurrences(of: #"\.\d+"#, with: "", options: .regularExpression))
     }
 }
 

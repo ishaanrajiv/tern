@@ -53,7 +53,8 @@ private struct UsageRow: View {
         let name = agent == "claude" ? "Claude Code" : "Codex"
         let line = { (label: String, w: UsageWindow?) -> String? in
             guard let w else { return nil }
-            return "\(label): \(Int(w.used(at: now).rounded()))% used, resets \(resetText(w.resetsAt))"
+            let reset = w.resetsAt.map { ", resets \(resetText($0))" } ?? ""
+            return "\(label): \(Int(w.used(at: now).rounded()))% used\(reset)"
         }
         return ([name] + [line("5-hour limit", limits.fiveHour), line("Weekly limit", limits.weekly)].compactMap { $0 })
             .joined(separator: "\n")
