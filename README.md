@@ -91,16 +91,17 @@ the agent reports again.
 
 - **Codex** logs its limits in its session files (`~/.codex/sessions/…/rollout-*.jsonl`); tern reads
   the newest.
-- **Claude Code**: every 5 minutes tern asks the account for the numbers `/usage` shows, using the
-  sign-in Claude Code keeps in the Keychain (macOS asks once; choose Always Allow). This works wherever
-  Claude Code runs, the desktop app included. tern never refreshes that token, so it can't sign Claude
-  Code out; an expired one waits for Claude Code to renew it. Deny the prompt, or turn off Settings →
-  Agents → Usage limits, and tern stops asking.
-- Claude Code also passes its limits to its status line command, so setting up Claude Code's hooks
-  sets `statusLine` to `tern statusline`. That records them to `usage/claude.json` and prints nothing;
-  when it is newer than the account's answer (Claude Code ran in a terminal since), the sidebar uses
-  it. If you already had a status line, tern keeps it in `claude-statusline.json`, runs it after
-  recording, and shows what it prints; **Remove** puts it back.
+- **Claude Code** also passes its limits to its status line command, so setting up Claude Code's hooks
+  sets `statusLine` to `tern statusline`. That records them to `usage/claude.json` and prints nothing.
+  This works only in tabs running Claude Code. If you already had a status line, tern keeps it in
+  `claude-statusline.json`, runs it after recording, and shows what it prints; **Remove** puts it back.
+- **Claude Code's account**: Settings → Agents → Usage limits can also ask the account for the numbers
+  `/usage` shows, which works wherever Claude Code runs, the desktop app included. This is **off unless
+  you turn it on**, and it is worth knowing what it does: tern reads the sign-in Claude Code keeps in
+  the Keychain and sends it to Anthropic, in a bearer token, to ask for your limits. macOS may ask
+  whether tern may use the Keychain item. tern never refreshes that token, so it cannot sign Claude Code
+  out; an expired one waits for Claude Code to renew it, and the rings go quiet until it does. See
+  [Privacy](#privacy).
 
 ### Updates
 
@@ -303,6 +304,27 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
   callbacks in `GhosttyApp.swift`.
 - A paste Ghostty wants confirmed (text with newlines while the program hasn't turned on bracketed
   paste) is dropped silently: `confirm_read_clipboard_cb` in `GhosttyApp.swift` does nothing.
+
+## Privacy
+
+tern is a local tool. It does not have an account, does not send telemetry, and does not phone home.
+It talks to the network in three places, all of them optional or obvious:
+
+- **Agent versions.** tern runs `claude --version` and `codex --version` and compares the result with
+  the newest release on npm, to offer you an update. Only the version numbers leave the machine.
+- **Claude Code's usage limits**, if you turn that on in Settings → Agents. tern sends Claude Code's
+  sign-in from the Keychain to Anthropic, which is where it belongs, and receives the numbers back.
+  Off by default.
+- **The update check** above, which is npm.
+
+Everything else stays on the machine: your sessions, their screens, the commands you ran and the
+folders you opened live in `~/Library/Application Support/tern`, which tern creates `0700` and repairs
+on every start. The daemon's socket is `0600` and refuses connections from another user. Saved screens
+can hold whatever you scrolled past, so the directory is worth keeping out of backups you share.
+
+Installing Claude Code's or Codex's hooks writes to that agent's own config (`~/.claude/settings.json`,
+`~/.codex/hooks.json`) and, for Claude Code, replaces its status line with one of tern's. tern keeps a
+copy of the old one and puts it back when you remove the hooks.
 
 ## License
 

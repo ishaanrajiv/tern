@@ -127,7 +127,7 @@ struct AgentSettings: View {
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
-    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = true
+    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = false
 
     var body: some View {
         Form {
@@ -149,11 +149,19 @@ struct AgentSettings: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Section("Usage limits") {
+            Section {
                 Toggle(isOn: $claudeAccountUsage) {
                     Labeled("Read Claude Code's limits from your account",
-                            caption: "Uses Claude Code's sign-in from the Keychain, so the sidebar shows your limits wherever Claude Code runs. macOS asks once: choose Always Allow.")
+                            caption: "Off by default. It reads Claude Code's sign-in from the Keychain and sends it to Anthropic for your limits, so the rings show up even where Claude Code runs outside tern. macOS may ask whether tern may use it. tern never refreshes the token, so it cannot sign Claude Code out.")
                 }
+            } header: {
+                Text("Usage limits")
+            } footer: {
+                Text("Without this, the rings come from what Claude Code reports itself, which works only in tabs running Claude Code.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section {
