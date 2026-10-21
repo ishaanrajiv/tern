@@ -2,7 +2,7 @@
 # Builds vendor/ghostty/macos/GhosttyKit.xcframework (libghostty for macOS).
 #
 # Zig's own package fetcher has been flaky here (TLS failures, stalls), so this
-# downloads every dependency with curl into .zig-deps/<hash>/ and builds with
+# downloads dependencies with curl, verifies their hashes with Zig, and builds with
 # `zig build --system`, which never touches the network.
 #
 # Needs: zig matching vendor/ghostty's minimum_zig_version (brew install zig),
@@ -13,6 +13,11 @@ GHOSTTY="$ROOT/vendor/ghostty"
 DEPS="$ROOT/.zig-deps"
 DL="$DEPS/.downloads"
 mkdir -p "$DL"
+REQUIRED_ZIG="$(sed -n 's/.*minimum_zig_version = "\([^"]*\)".*/\1/p' "$GHOSTTY/build.zig.zon")"
+if [ "$(zig version)" != "$REQUIRED_ZIG" ]; then
+    echo "Ghostty requires Zig $REQUIRED_ZIG; install that exact version" >&2
+    exit 1
+fi
 
 # Resolve the dependency tree breadth-first: each fetched package's own
 # build.zig.zon can name more dependencies.
@@ -25,7 +30,7 @@ seen = {}
 for f in zons:
     text = open(f).read()
     for url, h in re.findall(r'\.url\s*=\s*"([^"]+)"\s*,\s*\.hash\s*=\s*"([^"]+)"', text):
-        if not os.path.isdir(os.path.join(deps, h)):
+        if not (os.path.isdir(os.path.join(deps, h)) and os.path.isfile(os.path.join(deps, ".verified", h))):
             seen[h] = url
 for h, u in seen.items():
     print(h, u)
@@ -36,28 +41,7 @@ while true; do
   missing="$(fetch_round)"
   [ -z "$missing" ] && break
   while read -r hash url; do
-    case "$url" in
-      git+https://github.com/*)
-        # git+https://github.com/owner/repo(.git)#commit -> codeload tarball
-        repo="${url#git+}"; commit="${repo##*#}"; repo="${repo%%#*}"; repo="${repo%.git}"
-        url="$repo/archive/$commit.tar.gz" ;;
-      git+*)
-        repo="${url#git+}"; commit="${repo##*#}"; repo="${repo%%#*}"
-        tmp="$DL/git-$hash"; rm -rf "$tmp"
-        git clone -q "$repo" "$tmp" && git -C "$tmp" checkout -q "$commit"
-        rm -rf "$tmp/.git"; mv "$tmp" "$DEPS/$hash"
-        echo "fetched $hash (git)"; continue ;;
-    esac
-    file="$DL/$hash.archive"
-    curl -fsSL --retry 3 -o "$file" "$url"
-    mkdir -p "$DEPS/$hash"
-    # Strip the single top-level directory most archives have.
-    if [ "$(tar tf "$file" | cut -d/ -f1 | sort -u | wc -l | tr -d ' ')" = 1 ]; then
-      tar xf "$file" -C "$DEPS/$hash" --strip-components=1
-    else
-      tar xf "$file" -C "$DEPS/$hash"
-    fi
-    echo "fetched $hash"
+    python3 "$ROOT/scripts/fetch-zig-package.py" "$hash" "$url" "$DEPS"
   done <<< "$missing"
 done
 

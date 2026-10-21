@@ -30,6 +30,7 @@ use tern::*;
 nix::ioctl_read_bad!(get_winsize, nix::libc::TIOCGWINSZ, Winsize);
 
 fn main() {
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
         Some("attach") => attach(&args[1..]),
@@ -106,7 +107,7 @@ fn connect() -> Result<UnixStream> {
         return Ok(s);
     }
     let ternd = std::env::current_exe()?.with_file_name("ternd");
-    std::fs::create_dir_all(runtime_dir())?;
+    prepare_runtime_dir()?;
     // One client starts ternd at a time: panes reconnecting together after a
     // restart would otherwise boot out each other's fresh daemon.
     let lock = File::options().create(true).truncate(false).write(true).open(runtime_dir().join("ternd.lock"))?;
@@ -232,6 +233,7 @@ fn attach(args: &[String]) -> Result<i32> {
         }
     }
     let id = id.context("attach needs a session id")?;
+    anyhow::ensure!(valid_session_id(&id), "invalid session id");
     let cwd = cwd.or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()));
     // New sessions inherit this client's environment (PATH, SSH_AUTH_SOCK, TERM...),
     // not the launchd daemon's minimal one.

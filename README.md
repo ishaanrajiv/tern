@@ -6,12 +6,27 @@ Mac-native keys, and sessions that survive quitting the app.
 > [!WARNING]
 > **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
 > anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
-> that don't carry over. There are no releases yet: you build it from source (see [Build](#build)).
-> It runs on macOS 14 or later.
+> that don't carry over. Prebuilt downloads, when available, are on the
+> [Releases page](https://github.com/ishaanrajiv/tern/releases). You can also
+> [build from source](#build). The first binary release targets Apple Silicon and macOS 14 or later.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
 Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
 and tern notifies you and takes you there with ⌘J.
+
+## Install
+
+Download `Tern-0.0.1-macos-arm64.zip` and its `.sha256` file from the
+[0.0.1 release](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1), once published.
+Verify the download in Terminal:
+
+```bash
+shasum -a 256 -c Tern-0.0.1-macos-arm64.zip.sha256
+```
+
+Unzip it, move `Tern.app` into Applications, and open it. Intel Macs need a separate build;
+the arm64 download does not run on them. The release app is signed and notarized.
+Notification delivery is still a known gap; the Dock badge and ⌘J work without it.
 
 ## Folders and tabs
 
@@ -174,7 +189,9 @@ ternd (Rust, launchd agent dev.tern.ternd)
 
 ## Build
 
-Requirements: Xcode with the Metal toolchain, Rust, and the Zig version Ghostty pins.
+Requirements: Xcode with the Metal toolchain and Icon Composer support, Python 3.9 or later,
+Rust, and the exact Zig version in `vendor/ghostty/build.zig.zon`, currently 0.17.0.
+The macOS 14 minimum is for running the app; building its `.icon` asset needs a newer Xcode.
 
 ```bash
 brew install zig
@@ -208,8 +225,12 @@ open ~/Applications/Tern.app
 otherwise. `--install` copies it to `~/Applications`; a running ternd keeps working through the
 swap.
 
-`build-ghostty.sh` downloads Ghostty's Zig dependencies with curl into `.zig-deps/` and builds
-offline with `zig build --system`, because Zig's own fetcher was unreliable here.
+`build-ghostty.sh` downloads Ghostty's Zig dependencies with curl and checks their package hashes
+with Zig before moving them into `.zig-deps/`. It builds offline with `zig build --system`.
+Existing directories from older builds are fetched and verified again. If a cached archive fails
+verification, remove the named `.zig-deps/.downloads/<hash>.archive` and retry.
+
+For signed release builds, artifact names, and publishing checks, see [RELEASING.md](RELEASING.md).
 
 `build-app.sh` puts `LICENSE` and `THIRD_PARTY_NOTICES.md` in the app's `Contents/Resources`. After
 updating the Ghostty submodule or the Rust dependencies, regenerate the notices (it reads the license

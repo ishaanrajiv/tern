@@ -137,6 +137,7 @@ pub fn stable_binary() -> Result<PathBuf> {
 
 /// Points the stable path at this binary.
 pub fn link_binary() -> Result<PathBuf> {
+    crate::prepare_runtime_dir()?;
     let link = stable_binary()?;
     let exe = std::env::current_exe()?.canonicalize()?;
     if std::fs::read_link(&link).ok().as_deref() == Some(exe.as_path()) {

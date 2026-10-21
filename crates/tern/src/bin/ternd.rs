@@ -15,7 +15,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
+use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -28,6 +28,27 @@ use nix::unistd::Pid;
 use tern::*;
 
 const SCROLLBACK_LINES: usize = 10_000;
+// Output chunks are at most 64 KiB, so each client queues at most 4 MiB.
+const CLIENT_QUEUE_CAPACITY: usize = 64;
+
+struct Client {
+    id: u64,
+    tx: SyncSender<Msg>,
+    socket: UnixStream,
+}
+
+impl Client {
+    fn send(&self, msg: Msg) -> bool {
+        if self.tx.try_send(msg).is_ok() {
+            true
+        } else {
+            // Wake both reader and writer immediately. The client can reattach
+            // from the current screen instead of buffering unlimited output.
+            let _ = self.socket.shutdown(std::net::Shutdown::Both);
+            false
+        }
+    }
+}
 
 nix::ioctl_write_ptr_bad!(set_winsize, nix::libc::TIOCSWINSZ, Winsize);
 
@@ -46,7 +67,7 @@ struct Session {
 
 struct SessionState {
     parser: vt100::Parser<TermEvents>,
-    clients: Vec<(u64, Sender<Msg>)>,
+    clients: Vec<Client>,
     last_output_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
     saved_output_ms: u64,
@@ -152,8 +173,10 @@ type Sessions = Arc<Mutex<HashMap<String, Arc<Session>>>>;
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
 fn main() -> Result<()> {
+    // Set before starting any threads or creating any runtime files.
+    nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     let dir = runtime_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    prepare_runtime_dir().with_context(|| format!("securing {}", dir.display()))?;
     let path = socket_path();
     // sockaddr_un.sun_path is 104 bytes on macOS.
     if path.as_os_str().len() >= 104 {
@@ -197,9 +220,21 @@ fn main() -> Result<()> {
 fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
-    reader.read_line(&mut line)?;
+    // Bound the initial JSON request independently of binary frame limits.
+    reader.by_ref().take(64 * 1024 + 1).read_line(&mut line)?;
+    anyhow::ensure!(line.len() <= 64 * 1024 && line.ends_with('\n'), "request line exceeds 64 KiB or is incomplete");
     let req: Request = serde_json::from_str(&line).context("bad request line")?;
     let mut out = conn.try_clone()?;
+    let id = match &req {
+        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } => Some(id),
+        _ => None,
+    };
+    if id.is_some_and(|id| !valid_session_id(id)) {
+        writeln!(out, "{}", serde_json::to_string(&AttachReply {
+            ok: false, created: false, error: Some("invalid session id".into()),
+        })?)?;
+        return Ok(());
+    }
 
     match req {
         Request::List => {
@@ -383,7 +418,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 }
                 st.parser.process(bytes);
                 st.last_output_ms = now_ms();
-                st.clients.retain(|(_, tx)| tx.send(Msg::Output(bytes.to_vec())).is_ok());
+                st.clients.retain(|client| client.send(Msg::Output(bytes.to_vec())));
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // EIO once the last slave fd closes, i.e. the process exited.
@@ -416,27 +451,29 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
         }
     }
     let st = session.state.lock().unwrap();
-    for (_, tx) in &st.clients {
-        let _ = tx.send(Msg::Exit(code));
+    for client in &st.clients {
+        client.send(Msg::Exit(code));
     }
 }
 
 fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStream, cols: u16, rows: u16) -> Result<()> {
     let client_id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::channel::<Msg>();
+    let (tx, rx) = mpsc::sync_channel::<Msg>(CLIENT_QUEUE_CAPACITY);
+    let cancel = out.try_clone()?;
 
     // Snapshot and registration happen under one lock so no output is lost or doubled.
     let snapshot = {
         let mut st = session.state.lock().unwrap();
         resize_locked(&session, &mut st, cols, rows);
         let snap = snapshot(&mut st.parser);
-        st.clients.push((client_id, tx));
+        st.clients.push(Client { id: client_id, tx, socket: out.try_clone()? });
         snap
     };
 
     let writer = thread::spawn(move || {
         let mut out = out;
         if write_frame(&mut out, FRAME_OUTPUT, &snapshot).is_err() {
+            let _ = out.shutdown(std::net::Shutdown::Both);
             return;
         }
         for msg in rx {
@@ -457,7 +494,7 @@ fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStr
     let mut buf = Vec::new();
     let mut master = &session.master;
     loop {
-        match read_frame(&mut reader, &mut buf) {
+        match read_frame_limited(&mut reader, &mut buf, 64 * 1024) {
             Ok(Some(FRAME_INPUT)) => {
                 if master.write_all(&buf).is_err() {
                     break;
@@ -475,7 +512,8 @@ fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStr
         }
     }
 
-    session.state.lock().unwrap().clients.retain(|(id, _)| *id != client_id);
+    session.state.lock().unwrap().clients.retain(|client| client.id != client_id);
+    let _ = cancel.shutdown(std::net::Shutdown::Both);
     let _ = writer.join();
     Ok(())
 }
@@ -595,8 +633,7 @@ fn saved_dir() -> PathBuf {
 
 /// The saved screen and its details for a session id, if the id is file-safe.
 fn saved_paths(id: &str) -> Option<(PathBuf, PathBuf)> {
-    let safe = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !id.starts_with('.');
-    safe.then(|| {
+    valid_session_id(id).then(|| {
         let dir = saved_dir();
         (dir.join(format!("{id}.screen")), dir.join(format!("{id}.json")))
     })
@@ -728,5 +765,40 @@ fn shell_quote(arg: &str) -> String {
         arg.to_string()
     } else {
         format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn full_client_queue_disconnects_without_blocking() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let client = Client { id: 1, tx, socket };
+        assert!(client.send(Msg::Output(vec![1])));
+        assert!(!client.send(Msg::Output(vec![2])));
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn invalid_attach_does_not_remove_files() {
+        let root = std::env::temp_dir().join(format!("tern-traversal-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let sentinel = root.join("sentinel");
+        std::fs::write(&sentinel, "keep").unwrap();
+        let (server, mut client) = UnixStream::pair().unwrap();
+        writeln!(client, "{}", serde_json::json!({
+            "op": "attach", "id": sentinel.to_str().unwrap(), "cols": 80,
+            "rows": 24, "cwd": null, "cmd": "true", "env": []
+        })).unwrap();
+        handle_conn(server, Arc::default()).unwrap();
+        let mut reply = String::new();
+        BufReader::new(client).read_line(&mut reply).unwrap();
+        assert!(!serde_json::from_str::<AttachReply>(&reply).unwrap().ok);
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "keep");
+        std::fs::remove_dir_all(root).unwrap();
     }
 }
