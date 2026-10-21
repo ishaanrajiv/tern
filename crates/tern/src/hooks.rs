@@ -132,12 +132,12 @@ fn config_path(agent: &str) -> Result<PathBuf> {
 /// A stable path for the hook command, so moving or rebuilding Tern.app
 /// doesn't break installed hooks (or Codex's trust in them).
 pub fn stable_binary() -> Result<PathBuf> {
-    Ok(home()?.join("Library/Application Support/tern/bin/tern"))
+    Ok(crate::runtime_dir().join("bin/tern"))
 }
 
 /// Points the stable path at this binary.
 pub fn link_binary() -> Result<PathBuf> {
-    crate::prepare_runtime_dir()?;
+    crate::ensure_runtime_dir()?;
     let link = stable_binary()?;
     let exe = std::env::current_exe()?.canonicalize()?;
     if std::fs::read_link(&link).ok().as_deref() == Some(exe.as_path()) {
@@ -228,10 +228,15 @@ fn suffixed(path: &Path, suffix: &str) -> PathBuf {
 /// The file to write, following a symlink to the file it points at, so a
 /// settings.json kept in a dotfiles directory is updated in place.
 fn write_target(path: &Path) -> PathBuf {
-    match std::fs::read_link(path) {
-        Ok(target) if target.is_absolute() => target,
-        _ => path.to_path_buf(),
-    }
+    let Ok(target) = std::fs::read_link(path) else { return path.to_path_buf(); };
+    // A relative link is relative to the directory that holds it.
+    let target = if target.is_absolute() {
+        target
+    } else {
+        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+    };
+    // Follow a chain of links to the file itself.
+    std::fs::canonicalize(&target).unwrap_or(target)
 }
 
 fn write_config(path: &Path, config: &Map<String, Value>) -> Result<()> {
@@ -300,9 +305,16 @@ pub fn uninstall(agent: &str) -> Result<PathBuf> {
     let statusline = agent == "claude" && uninstall_statusline(&mut config);
     if strip(&mut config, agent) || statusline {
         if config.is_empty() && agent == "codex" {
-            // hooks.json held only our hooks, so we created it; leave no trace.
-            std::fs::remove_file(&path)?;
-            let _ = std::fs::remove_file(suffixed(&path, ".tern-backup"));
+            // The file held nothing but our hooks. If we created it, remove it;
+            // if it was there before, leave it empty rather than delete the
+            // user's file.
+            let backup = suffixed(&path, ".tern-backup");
+            if backup.exists() {
+                write_config(&path, &config)?;
+            } else {
+                let _ = std::fs::remove_file(write_target(&path));
+            }
+            let _ = std::fs::remove_file(backup);
         } else {
             write_config(&path, &config)?;
         }

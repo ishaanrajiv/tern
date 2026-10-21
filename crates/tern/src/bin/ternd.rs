@@ -7,7 +7,7 @@
 //! Screens are also saved to disk now and then, and when ternd is told to quit,
 //! so after a reboot a session recreated under the same id shows what it showed.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
@@ -16,8 +16,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::Command;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{self, SyncSender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -31,22 +30,94 @@ use tern::*;
 const SCROLLBACK_LINES: usize = 10_000;
 // Output chunks are at most 64 KiB, so each client queues at most 4 MiB.
 const CLIENT_QUEUE_CAPACITY: usize = 64;
+// The largest snapshot a client is willing to read. A session with days of
+// scrollback can have more than this, so the oldest history is dropped.
+const SNAPSHOT_LIMIT: usize = 16 * 1024 * 1024;
 
 struct Client {
     id: u64,
-    tx: SyncSender<Msg>,
+    queue: Arc<ClientQueue>,
     socket: UnixStream,
 }
 
 impl Client {
-    fn send(&self, msg: Msg) -> bool {
-        if self.tx.try_send(msg).is_ok() {
+    fn send(&self, bytes: Vec<u8>) -> bool {
+        if self.queue.push_output(bytes) {
             true
         } else {
             // Wake both reader and writer immediately. The client can reattach
             // from the current screen instead of buffering unlimited output.
             let _ = self.socket.shutdown(std::net::Shutdown::Both);
             false
+        }
+    }
+
+    /// The exit is the last thing a session sends, and the client needs it: it
+    /// is the exit code. So it is kept out of the output queue, which a slow
+    /// client may have filled.
+    fn send_exit(&self, code: i32) {
+        self.queue.push_exit(code);
+    }
+}
+
+/// A client's pending output. Bounded, so a client that stops reading cannot
+/// grow the daemon's memory.
+struct ClientQueue {
+    state: Mutex<QueueState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct QueueState {
+    output: VecDeque<Vec<u8>>,
+    exit: Option<i32>,
+    /// Set when the client is too far behind to keep up.
+    closed: bool,
+}
+
+impl ClientQueue {
+    fn new() -> Arc<ClientQueue> {
+        Arc::new(ClientQueue { state: Mutex::new(QueueState::default()), ready: Condvar::new() })
+    }
+
+    fn push_output(&self, bytes: Vec<u8>) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.closed {
+            return false;
+        }
+        if state.output.len() >= CLIENT_QUEUE_CAPACITY {
+            state.closed = true;
+            self.ready.notify_all();
+            return false;
+        }
+        state.output.push_back(bytes);
+        self.ready.notify_all();
+        true
+    }
+
+    fn push_exit(&self, code: i32) {
+        let mut state = self.state.lock().unwrap();
+        // The session is over; the last screenful is not worth delaying the
+        // exit code for.
+        state.output.clear();
+        state.exit = Some(code);
+        self.ready.notify_all();
+    }
+
+    /// Waits for the next message. The exit comes first: nothing follows it.
+    fn recv(&self) -> Option<Msg> {
+        let mut state = self.state.lock().unwrap();
+        loop {
+            if let Some(code) = state.exit.take() {
+                return Some(Msg::Exit(code));
+            }
+            if let Some(bytes) = state.output.pop_front() {
+                return Some(Msg::Output(bytes));
+            }
+            if state.closed {
+                return None;
+            }
+            state = self.ready.wait(state).unwrap();
         }
     }
 }
@@ -56,6 +127,15 @@ nix::ioctl_write_ptr_bad!(set_winsize, nix::libc::TIOCSWINSZ, Winsize);
 enum Msg {
     Output(Vec<u8>),
     Exit(i32),
+}
+
+impl std::fmt::Debug for Msg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Msg::Output(b) => write!(f, "Output({} bytes)", b.len()),
+            Msg::Exit(code) => write!(f, "Exit({code})"),
+        }
+    }
 }
 
 struct Session {
@@ -238,9 +318,10 @@ fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
     verify_peer(&conn)?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
-    // Bound the initial JSON request independently of binary frame limits.
-    reader.by_ref().take(64 * 1024 + 1).read_line(&mut line)?;
-    anyhow::ensure!(line.len() <= 64 * 1024 && line.ends_with('\n'), "request line exceeds 64 KiB or is incomplete");
+    // Bound the initial JSON request independently of binary frame limits. An
+    // attach carries the client's whole environment, so this has room for it.
+    reader.by_ref().take(1024 * 1024 + 1).read_line(&mut line)?;
+    anyhow::ensure!(line.len() <= 1024 * 1024 && line.ends_with('\n'), "request line exceeds 1 MiB or is incomplete");
     let req: Request = serde_json::from_str(&line).context("bad request line")?;
     let mut out = conn.try_clone()?;
     let id = match &req {
@@ -248,9 +329,15 @@ fn handle_conn(conn: UnixStream, sessions: Sessions) -> Result<()> {
         _ => None,
     };
     if id.is_some_and(|id| !valid_session_id(id)) {
-        writeln!(out, "{}", serde_json::to_string(&AttachReply {
-            ok: false, created: false, error: Some("invalid session id".into()),
-        })?)?;
+        // Answer in the shape the operation uses, so the caller reads the
+        // same thing it would on any other outcome.
+        let reply = match req {
+            Request::Attach { .. } => serde_json::to_string(&AttachReply {
+                ok: false, created: false, error: Some("invalid session id".into()),
+            })?,
+            _ => serde_json::to_string(&serde_json::json!({ "ok": false, "error": "invalid session id" }))?,
+        };
+        writeln!(out, "{reply}")?;
         return Ok(());
     }
 
@@ -444,7 +531,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 }
                 st.parser.process(bytes);
                 st.last_output_ms = now_ms();
-                st.clients.retain(|client| client.send(Msg::Output(bytes.to_vec())));
+                st.clients.retain(|client| client.send(bytes.to_vec()));
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // EIO once the last slave fd closes, i.e. the process exited.
@@ -478,13 +565,13 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
     }
     let st = session.state.lock().unwrap();
     for client in &st.clients {
-        client.send(Msg::Exit(code));
+        client.send_exit(code);
     }
 }
 
 fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStream, cols: u16, rows: u16) -> Result<()> {
     let client_id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::sync_channel::<Msg>(CLIENT_QUEUE_CAPACITY);
+    let queue = ClientQueue::new();
     let cancel = out.try_clone()?;
 
     // Snapshot and registration happen under one lock so no output is lost or doubled.
@@ -492,7 +579,7 @@ fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStr
         let mut st = session.state.lock().unwrap();
         resize_locked(&session, &mut st, cols, rows);
         let snap = snapshot(&mut st.parser);
-        st.clients.push(Client { id: client_id, tx, socket: out.try_clone()? });
+        st.clients.push(Client { id: client_id, queue: queue.clone(), socket: out.try_clone()? });
         snap
     };
 
@@ -502,15 +589,15 @@ fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStr
             let _ = out.shutdown(std::net::Shutdown::Both);
             return;
         }
-        for msg in rx {
-            let res = match msg {
-                Msg::Output(b) => write_frame(&mut out, FRAME_OUTPUT, &b),
-                Msg::Exit(code) => {
-                    let _ = write_frame(&mut out, FRAME_EXIT, &code.to_be_bytes());
-                    break;
-                }
+        while let Some(msg) = queue.recv() {
+            let (kind, payload, last) = match msg {
+                Msg::Output(b) => (FRAME_OUTPUT, b, false),
+                Msg::Exit(code) => (FRAME_EXIT, code.to_be_bytes().to_vec(), true),
             };
-            if res.is_err() {
+            if write_frame(&mut out, kind, &payload).is_err() {
+                break;
+            }
+            if last {
                 break;
             }
         }
@@ -612,26 +699,43 @@ fn snapshot(parser: &mut vt100::Parser<TermEvents>) -> Vec<u8> {
 /// row as if from default attributes. Returns the number of history lines.
 fn write_lines(parser: &mut vt100::Parser<TermEvents>, out: &mut Vec<u8>, visible: bool) -> usize {
     let (rows, cols) = parser.screen().size();
-    let mut line = |row: Vec<u8>| {
-        out.extend_from_slice(b"\x1b[m");
-        out.extend_from_slice(&row);
-        out.extend_from_slice(b"\x1b[m\r\n");
-    };
     let screen = parser.screen_mut();
     screen.set_scrollback(usize::MAX);
     let total = screen.scrollback();
     let mut off = total;
+    // History is written oldest first, but a session that has run for days can
+    // have more of it than a client is willing to read, so the oldest chunks
+    // are dropped once the snapshot is too big.
+    let mut chunks: VecDeque<Vec<u8>> = VecDeque::new();
+    let mut size = 0usize;
     while off > 0 {
         screen.set_scrollback(off);
         let take = off.min(rows as usize);
-        screen.rows_formatted(0, cols).take(take).for_each(&mut line);
+        let mut chunk = Vec::new();
+        for row in screen.rows_formatted(0, cols).take(take) {
+            chunk.extend_from_slice(b"\x1b[m");
+            chunk.extend_from_slice(&row);
+            chunk.extend_from_slice(b"\x1b[m\r\n");
+        }
+        size += chunk.len();
+        chunks.push_back(chunk);
+        while size > SNAPSHOT_LIMIT && chunks.len() > 1 {
+            size -= chunks.pop_front().map(|c| c.len()).unwrap_or(0);
+        }
         off -= take;
+    }
+    for chunk in chunks {
+        out.extend_from_slice(&chunk);
     }
     screen.set_scrollback(0);
     if visible {
         // Up to the last row with anything on it.
         let used = screen.rows(0, cols).enumerate().filter(|(_, r)| !r.trim().is_empty()).map(|(i, _)| i + 1).last();
-        screen.rows_formatted(0, cols).take(used.unwrap_or(0)).for_each(&mut line);
+        for row in screen.rows_formatted(0, cols).take(used.unwrap_or(0)) {
+            out.extend_from_slice(b"\x1b[m");
+            out.extend_from_slice(&row);
+            out.extend_from_slice(b"\x1b[m\r\n");
+        }
     }
     total
 }
@@ -793,11 +897,28 @@ mod tests {
     fn full_client_queue_disconnects_without_blocking() {
         let (socket, mut peer) = UnixStream::pair().unwrap();
         peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
-        let (tx, _rx) = mpsc::sync_channel(1);
-        let client = Client { id: 1, tx, socket };
-        assert!(client.send(Msg::Output(vec![1])));
-        assert!(!client.send(Msg::Output(vec![2])));
+        let queue = ClientQueue::new();
+        let client = Client { id: 1, queue: queue.clone(), socket };
+        // Fill the queue; the client that will not read is dropped.
+        for _ in 0..CLIENT_QUEUE_CAPACITY {
+            assert!(client.send(vec![1]));
+        }
+        assert!(!client.send(vec![2]));
         assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+    }
+
+    #[test]
+    fn the_exit_arrives_even_when_the_output_queue_is_full() {
+        let queue = ClientQueue::new();
+        for _ in 0..CLIENT_QUEUE_CAPACITY {
+            assert!(queue.push_output(vec![1]));
+        }
+        queue.push_exit(7);
+        // The exit comes first, and the pending output is dropped with it.
+        match queue.recv() {
+            Some(Msg::Exit(code)) => assert_eq!(code, 7),
+            other => panic!("expected the exit, got {other:?}"),
+        }
     }
 
     #[test]

@@ -142,17 +142,30 @@ pub fn runtime_dir() -> PathBuf {
 
 /// IDs are also filenames. Keep every protocol operation inside the runtime directory.
 pub fn valid_session_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && !id.starts_with('.')
+    // 255 is the longest name macOS's filesystem takes.
+    !id.is_empty() && id.len() <= 255 && !id.starts_with('.')
         && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+}
+
+/// Create the runtime directory, private to the user.
+pub fn ensure_runtime_dir() -> io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = runtime_dir();
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+    // The mode only applies to what this call creates, so set it either way.
+    set_mode(&dir, 0o700)
 }
 
 /// Create private runtime storage and repair permissions left by earlier versions.
 /// Never follow symlinks, including the stable CLI link in bin/.
 pub fn prepare_runtime_dir() -> io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
-    let dir = runtime_dir();
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
-    secure_runtime_tree(&dir)
+    ensure_runtime_dir()?;
+    secure_runtime_tree(&runtime_dir())
+}
+
+fn set_mode(path: &std::path::Path, mode: u32) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 fn secure_runtime_tree(path: &std::path::Path) -> io::Result<()> {
@@ -162,7 +175,14 @@ fn secure_runtime_tree(path: &std::path::Path) -> io::Result<()> {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "runtime directory must not be a symlink"));
     }
     let mode = if meta.is_dir() { 0o700 } else { 0o600 | (meta.permissions().mode() & 0o100) };
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    // A file we cannot chmod is not a reason to refuse to start: it may not be
+    // ours, or may carry a flag. Say so and carry on.
+    if let Err(e) = set_mode(path, mode) {
+        if e.kind() != io::ErrorKind::PermissionDenied {
+            return Err(e);
+        }
+        eprintln!("tern: not tightening the permissions of {}", path.display());
+    }
     if meta.is_dir() {
         for entry in std::fs::read_dir(path)? {
             let entry = entry?;
@@ -262,7 +282,7 @@ mod tests {
         for id in ["", ".", "..", "../victim", "/tmp/victim", "a/b", "a\\b", ".hidden", "a\n"] {
             assert!(!valid_session_id(id), "accepted {id:?}");
         }
-        assert!(!valid_session_id(&"x".repeat(129)));
+        assert!(!valid_session_id(&"x".repeat(256)));
         for id in ["pane-123", "bench-0", "session_1.2"] {
             assert!(valid_session_id(id));
         }
@@ -286,6 +306,27 @@ mod tests {
         assert_eq!(std::fs::metadata(screen).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(&outside).unwrap().permissions().mode() & 0o777, 0o644);
         assert!(secure_runtime_tree(&root.join("runtime/link")).is_err());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_file_we_cannot_chmod_does_not_stop_the_repair() {
+        let root = std::env::temp_dir().join(format!("tern-permissions-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("locked");
+        std::fs::write(&file, "x").unwrap();
+        // An immutable file cannot be chmod'ed, even by its owner.
+        let flags = std::process::Command::new("/bin/chflags")
+            .args(["uchg", file.to_str().unwrap()])
+            .status();
+        if flags.map(|s| s.success()).unwrap_or(false) {
+            secure_runtime_tree(&root).unwrap();
+            std::process::Command::new("/bin/chflags")
+                .args(["nouchg", file.to_str().unwrap()])
+                .status()
+                .ok();
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 

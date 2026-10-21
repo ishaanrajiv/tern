@@ -46,10 +46,14 @@ fn main() {
             usage::run_statusline();
             Ok(0)
         }
+        Some("--version") | Some("-V") => {
+            println!("tern {}", env!("CARGO_PKG_VERSION"));
+            Ok(0)
+        }
         _ => {
             eprintln!(
                 "usage: tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
-                 tern hooks [status|install|uninstall|link] [claude|codex]"
+                 tern hooks [status|install|uninstall|link] [claude|codex] | tern --version"
             );
             std::process::exit(2);
         }
@@ -107,7 +111,9 @@ fn connect() -> Result<UnixStream> {
         return Ok(s);
     }
     let ternd = std::env::current_exe()?.with_file_name("ternd");
-    prepare_runtime_dir()?;
+    // The daemon repairs the whole tree when it starts. The client only needs
+    // the directory itself to exist and be private.
+    ensure_runtime_dir()?;
     // One client starts ternd at a time: panes reconnecting together after a
     // restart would otherwise boot out each other's fresh daemon.
     let lock = File::options().create(true).truncate(false).write(true).open(runtime_dir().join("ternd.lock"))?;
@@ -302,14 +308,20 @@ fn attach(args: &[String]) -> Result<i32> {
     let mut buf = Vec::new();
     loop {
         // A reset connection counts as ternd going away, same as a clean close.
-        match read_frame(&mut reader, &mut buf).unwrap_or(None) {
-            Some(FRAME_OUTPUT) => stdout.write_all(&buf)?,
-            Some(FRAME_EXIT) => {
+        match read_frame(&mut reader, &mut buf) {
+            Ok(Some(FRAME_OUTPUT)) => stdout.write_all(&buf)?,
+            Ok(Some(FRAME_EXIT)) => {
                 let code = buf.get(..4).map(|b| i32::from_be_bytes(b.try_into().unwrap())).unwrap_or(0);
                 return Ok(code);
             }
-            Some(_) => {}
-            None => {
+            Ok(Some(_)) => {}
+            // A frame too large to read is not something to retry: the same
+            // frame would come again, and the screen would clear forever.
+            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+                eprintln!("\r\n[tern: {e}]");
+                return Ok(1);
+            }
+            Ok(None) | Err(_) => {
                 // ternd went away (restarted, upgraded, crashed). launchd brings it back;
                 // reattach, and the session returns with its saved screen.
                 let deadline = Instant::now() + Duration::from_secs(10);

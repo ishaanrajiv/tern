@@ -74,6 +74,29 @@ class FetchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid package hash"):
             fetcher.fetch("../victim", "https://example.invalid/source.tar.gz", self.deps)
 
+    def test_tgz_is_fetched_as_the_name_zig_expects(self):
+        # Ghostty depends on a .tgz archive; Zig only recognises .tar.gz.
+        seen = []
+
+        def fake_zig(args, **kwargs):
+            if args[0] != "zig":
+                return self.real_run(args, **kwargs)
+            archive = Path(kwargs["env"]["ZIG_GLOBAL_CACHE_DIR"]) / "p" / (self.expected + ".tar.gz")
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive, "w:gz") as tar:
+                data = b"verified source"
+                info = tarfile.TarInfo(self.expected + "/upstream-root/src.txt")
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            seen.append(str(args[-1]))
+            return subprocess.CompletedProcess(args, 0, self.expected + "\n", "")
+
+        with patch.object(fetcher.subprocess, "run", side_effect=fake_zig):
+            fetcher.fetch(self.expected, "https://example.invalid/source.tgz", self.deps)
+        # The first call is the archive itself; the second hashes what was unpacked.
+        self.assertTrue(seen[0].endswith(".tar.gz"), seen[0])
+        self.assertTrue((self.deps / self.expected / "src.txt").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

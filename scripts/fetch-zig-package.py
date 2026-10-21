@@ -13,6 +13,17 @@ import sys
 import tempfile
 from urllib.parse import urlsplit
 
+# The archives a package may come as, and the name Zig knows each by. A .tgz is
+# a gzipped tar, so Zig reads it under the name it expects.
+ARCHIVES = {
+    ".tar.gz": ".tar.gz",
+    ".tgz": ".tar.gz",
+    ".tar.xz": ".tar.xz",
+    ".tar.zst": ".tar.zst",
+    ".tar": ".tar",
+    ".zip": ".zip",
+}
+
 
 def fetch(expected, url, deps):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", expected):
@@ -39,10 +50,12 @@ def fetch(expected, url, deps):
             shutil.rmtree(source / ".git")
         else:
             path = urlsplit(url).path.lower()
-            suffix = next((s for s in (".tar.gz", ".tar.xz", ".tar.zst", ".tar", ".zip") if path.endswith(s)), None)
+            suffix = next((s for s in ARCHIVES if path.endswith(s)), None)
             if suffix is None:
                 raise ValueError(f"unsupported archive URL: {url}")
-            source = stage / ("source" + suffix)
+            # Zig recognises an archive by its name, so .tgz is fetched as .tar.gz.
+            zig_suffix = ARCHIVES[suffix]
+            source = stage / ("source" + zig_suffix)
             # Reuse existing downloads, but verify them just like a fresh download.
             cached = downloads / (expected + ".archive")
             if cached.is_file():
