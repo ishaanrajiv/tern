@@ -29,6 +29,10 @@ cp "$BIN/Tern" "$APP/Contents/MacOS/Tern"
 cp "$ROOT/target/release/tern" "$ROOT/target/release/ternd" "$APP/Contents/Helpers/"
 cp -R "$ROOT/vendor/ghostty/zig-out/share/ghostty" "$ROOT/vendor/ghostty/zig-out/share/terminfo" "$APP/Contents/Resources/"
 cp "$ROOT/app/Info.plist" "$APP/Contents/Info.plist"
+# Tern.icon has light and dark variants (macOS 26+); actool also writes Tern.icns for older macOS.
+xcrun actool "$ROOT/app/Tern.icon" --compile "$APP/Contents/Resources" --app-icon Tern \
+    --platform macosx --minimum-deployment-target 14.0 \
+    --output-partial-info-plist "$(mktemp -t tern-icon)" >/dev/null
 # macOS only lets properly signed apps ask for notification permission, so sign
 # with an Apple Development identity when there is one (override with
 # TERN_SIGN_IDENTITY; "-" means ad-hoc, which works for everything else).
