@@ -273,6 +273,15 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
   an Apple Development signature and when run from `~/Applications`. A minimal test app showed the
   same refusal, so the cause is in how macOS treats locally built apps, not in tern's code. The Dock
   badge, Dock bounce and ⌘J don't depend on notifications and work.
+- **Open: ⌘C/⌘V don't work inside Codex.** They work in a plain shell tab, and the debug log shows
+  both keys reaching tern's Copy and Paste either way. Codex turns on bracketed paste, focus
+  reporting and the kitty keyboard protocol, not mouse capture. Untested guesses: Codex's redraws
+  clear the selection before ⌘C, an image on the clipboard pastes nothing (tern only hands Ghostty
+  text), or a long paste shows as Codex's short placeholder. To narrow it down, try it in the Codex
+  tab of a `TERN_DEBUG=1` build with logging in `TerminalView.copy`/`paste` and the clipboard
+  callbacks in `GhosttyApp.swift`.
+- A paste Ghostty wants confirmed (text with newlines while the program hasn't turned on bracketed
+  paste) is dropped silently: `confirm_read_clipboard_cb` in `GhosttyApp.swift` does nothing.
 
 ## License
 
