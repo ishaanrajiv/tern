@@ -1,0 +1,5 @@
+/target/
+/build/
+/.zig-deps/
+/app/.build/
+.DS_Store
