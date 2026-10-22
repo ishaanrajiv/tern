@@ -83,9 +83,10 @@ struct GeneralSettings: View {
     }
 }
 
-/// Theme.
+/// Theme, and how the sidebar shows work.
 struct AppearanceSettings: View {
     @AppStorage(Prefs.theme) private var theme = Theme.defaultID
+    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
 
     var body: some View {
         Form {
@@ -107,6 +108,17 @@ struct AppearanceSettings: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Section("Sidebar") {
+                Picker(selection: $indicator) {
+                    Text("Spinner at the end of the row").tag(WorkingIndicator.trailing)
+                    Text("Agent logo turns").tag(WorkingIndicator.turning)
+                } label: {
+                    Labeled("While working", caption: indicator == .trailing
+                            ? "Logos hold still; a spinner takes the place of the tab's age."
+                            : "The agent's logo turns; the tab's age stays.")
+                }
             }
         }
         .settingsPane()

@@ -138,6 +138,10 @@ pub struct SessionInfo {
     /// there once the shell is back at its prompt.
     #[serde(default)]
     pub command: Option<String>,
+    /// Unix time in milliseconds when the shell last finished a command; 0 if it
+    /// hasn't, or has no integration.
+    #[serde(default)]
+    pub finished_ms: u64,
 }
 
 /// Directory holding the daemon socket, log and pid file.
@@ -279,6 +283,7 @@ mod tests {
         let info: SessionInfo = serde_json::from_str(json).unwrap();
         assert_eq!(info.agent, None);
         assert_eq!(info.command, None);
+        assert_eq!(info.finished_ms, 0);
     }
 
     #[test]

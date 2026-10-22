@@ -115,6 +115,14 @@ enum FolderOrder: String {
     case recent
 }
 
+/// How the sidebar shows a session at work.
+enum WorkingIndicator: String {
+    /// The glyph holds still; a spinner takes the age's place at the row's end.
+    case trailing
+    /// The glyph itself turns, and the age stays.
+    case turning
+}
+
 enum FocusDirection { case left, right, up, down }
 
 /// Ordered by urgency: a tab shows its most urgent pane.
@@ -164,12 +172,13 @@ enum Prefs {
     static let theme = "theme"
     /// Read Claude Code's usage limits from the account (needs Claude Code's Keychain item).
     static let claudeAccountUsage = "claudeAccountUsage"
+    static let workingIndicator = "workingIndicator"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
-            claudeAccountUsage: true,
+            claudeAccountUsage: true, workingIndicator: WorkingIndicator.trailing.rawValue,
         ])
     }
 
@@ -205,7 +214,16 @@ final class Workspace {
     private var paneCwd: [String: String] = [:]
     /// Output, bell and agent-report times already seen per pane, for unread marks.
     private var seen: [String: Seen] = [:]
-    private struct Seen { var output: UInt64; var bells: UInt64; var agent: UInt64 }
+    private struct Seen {
+        var output: UInt64
+        var bells: UInt64
+        var agent: UInt64
+        var finished: UInt64
+
+        init(_ s: SessionInfo) {
+            output = s.lastOutputMs; bells = s.bells; agent = s.agentStateMs ?? 0; finished = s.finishedMs ?? 0
+        }
+    }
     /// The agent conversation last seen in each pane, so it can be resumed after a reboot.
     private var paneAgent: [String: AgentRef] = [:]
     /// Lines to type into a new pane's shell when it starts (`codex update`).
@@ -314,7 +332,8 @@ final class Workspace {
 
         if !visible, let seen, s.bells > seen.bells { return .needsYou }
         if !Self.shells.contains(s.process), quiet < 4 { return .working }
-        if !visible, let seen, s.lastOutputMs > seen.output { return .doneUnread }
+        // Done when a command finishes, not on any output: a dev server's logs aren't news.
+        if !visible, let seen, s.finishedMs ?? 0 > seen.finished { return .doneUnread }
         if quiet > 24 * 3600 { return .dormant }
         return .idle
     }
@@ -653,7 +672,7 @@ final class Workspace {
         sessions = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for s in list {
             if let cwd = s.cwd { paneCwd[s.id] = cwd }
-            if seen[s.id] == nil { seen[s.id] = Seen(output: s.lastOutputMs, bells: s.bells, agent: s.agentStateMs ?? 0) }
+            if seen[s.id] == nil { seen[s.id] = Seen(s) }
             if let at = resizedAt[s.id], -at.timeIntervalSinceNow < 2, var mark = seen[s.id] {
                 mark.output = max(mark.output, s.lastOutputMs)
                 seen[s.id] = mark
@@ -676,7 +695,7 @@ final class Workspace {
     private func markSeen() {
         guard isActive, let tab = selectedTab else { return }
         for pane in tab.root.panes {
-            if let s = sessions[pane] { seen[pane] = Seen(output: s.lastOutputMs, bells: s.bells, agent: s.agentStateMs ?? 0) }
+            if let s = sessions[pane] { seen[pane] = Seen(s) }
         }
     }
 

@@ -124,7 +124,8 @@ struct UpdatePrompt: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            AgentMark(agent: version.agent)
+            AgentGlyph(agent: version.agent, color: Palette.text2)
+                .frame(width: 14, height: 14)
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(version.name) \(version.latest ?? "") is available")
                     .font(.system(size: 11, weight: .medium))

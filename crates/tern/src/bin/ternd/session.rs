@@ -135,6 +135,7 @@ fn session_info(s: &Session) -> SessionInfo {
         agent_session: report.as_ref().and_then(|r| r.3.clone()),
         agent_message: report.and_then(|r| r.4),
         command,
+        finished_ms: shell::finished_ms(&s.id),
     }
 }
 
@@ -202,6 +203,7 @@ pub fn spawn_session(
     command.envs(env).env("TERN_SESSION_ID", id);
     let commands = shell::command_file(id);
     let _ = std::fs::remove_file(&commands);
+    let _ = std::fs::remove_file(shell::finished_file(id));
     if zsh && runtime_dir().join("zsh/.zshenv").exists() {
         if let Some(dir) = user_zdotdir {
             command.env("TERN_ZDOTDIR", dir);
@@ -285,6 +287,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
     };
     eprintln!("session {}: exited with {code}", session.id);
     let _ = std::fs::remove_file(shell::command_file(&session.id));
+    let _ = std::fs::remove_file(shell::finished_file(&session.id));
     // The session is over, so its saved screen goes, unless the machine is going
     // down: shells die of SIGHUP then too (exiting 1, like "exit 1" would), and
     // can beat ternd's own SIGTERM by a moment.

@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentHeader: View {
     let workspace: Workspace
     let layout: HeaderLayout
+    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -32,7 +33,7 @@ struct ContentHeader: View {
                     // Only what needs saying: an agent at work or waiting, with how long. An idle
                     // shell says nothing; the sidebar already shows every tab's age.
                     let status = workspace.status(for: tab, now: context.date)
-                    let agent = workspace.agent(for: tab) != nil
+                    let agent = workspace.agent(for: tab)
                     if status == .needsYou, let message = workspace.agentMessage(tab) {
                         Text(message)
                             .font(.system(size: 11, weight: .medium))
@@ -40,12 +41,17 @@ struct ContentHeader: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
-                    if status == .needsYou || (status == .working && agent) {
-                        StatusIcon(status: status, isAgent: agent)
-                        Text([status.label, relativeAge(workspace.stateSince(tab), now: context.date)]
+                    if status == .needsYou || (status == .working && agent != nil) {
+                        // The sidebar's glyph, with the agent spelled out: "Codex working · 4m".
+                        StatusIcon(status: status, agent: agent, turning: indicator == .turning)
+                        let label = agent.map { "\(agentName($0)) \(status.label.lowercased())" } ?? status.label
+                        Text([label, relativeAge(workspace.stateSince(tab), now: context.date)]
                                 .filter { !$0.isEmpty && $0 != "now" }.joined(separator: " · "))
                             .font(.system(size: 11).monospacedDigit())
                             .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
+                        if status == .working, indicator == .trailing {
+                            Spinner(color: Palette.working).frame(width: 12, height: 12)
+                        }
                     }
                 } else {
                     Spacer()

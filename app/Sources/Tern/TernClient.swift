@@ -23,6 +23,8 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let agentMessage: String?
     /// What runs in the foreground, or last ran there ("npm run dev"); nil from an older ternd.
     let command: String?
+    /// When the shell last finished a command (Unix ms); nil from an older ternd.
+    let finishedMs: UInt64?
 }
 
 /// How the running ternd compares with this app's, from `tern daemon status`.

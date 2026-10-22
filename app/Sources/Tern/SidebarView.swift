@@ -17,7 +17,7 @@ final class ShortcutHints {
     var kind: Kind?
 }
 
-/// A header per folder, its tabs under it: status, name, agent, age.
+/// A header per folder, its tabs under it: status (the agent's logo for an agent), name, age.
 struct SidebarView: View {
     @Bindable var workspace: Workspace
     let hooks: AgentHooks
@@ -149,6 +149,7 @@ private struct FolderHeader: View {
     let now: Date
     let actions: SidebarActions
     let hint: Int?
+    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
@@ -172,19 +173,19 @@ private struct FolderHeader: View {
                 .lineLimit(1)
                 .truncationMode(.head)
             Spacer(minLength: 4)
-            if project.collapsed {
-                // What's inside, at a glance: its agents and the most urgent state.
-                let agents = project.tabs.compactMap { workspace.agent(for: $0) }
-                ForEach(Array(Set(agents)).sorted(), id: \.self) { AgentMark(agent: $0) }
-                if let worst = statuses.min(), waiting == 0 { StatusIcon(status: worst) }
+            // What's inside, at a glance: the most urgent tab, as its row shows it.
+            if project.collapsed, let worst = zip(project.tabs, statuses).min(by: { $0.1 < $1.1 }) {
+                if indicator == .trailing, worst.1 == .working || worst.1 == .starting {
+                    Spinner(color: worst.1 == .working ? Palette.working : Palette.ring)
+                        .frame(width: 12, height: 12)
+                } else {
+                    StatusIcon(status: worst.1, agent: workspace.agent(for: worst.0), turning: indicator == .turning)
+                }
             }
             if waiting > 0 {
                 Text("\(waiting)")
-                    .font(.system(size: 11, weight: .bold).monospacedDigit())
-                    .foregroundStyle(Palette.onAmber)
-                    .padding(.horizontal, 6)
-                    .frame(height: 16)
-                    .background(Palette.amber, in: Capsule())
+                    .font(.system(size: 11, weight: .semibold).monospacedDigit())
+                    .foregroundStyle(Palette.amber)
                     .help("\(waiting) need\(waiting == 1 ? "s" : "") you")
             }
             if let hint {
@@ -228,22 +229,24 @@ private struct TabRow: View {
     let now: Date
     let actions: SidebarActions
     let hint: String?
+    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
         let status = workspace.status(for: tab, now: now)
         let selected = tab.id == workspace.selectedTabID
+        // Weight is for what wants you; selection shows in the background alone.
         let emphasized = status == .needsYou || status == .doneUnread
-        let agent = workspace.agent(for: tab)
+        let busy = status == .working || status == .starting
         HStack(spacing: 8) {
-            StatusIcon(status: status, isAgent: agent != nil)
+            StatusIcon(status: status, agent: workspace.agent(for: tab), turning: indicator == .turning)
             let title = workspace.title(for: tab)
             if workspace.renamingTabID == tab.id {
                 RenameField(initial: tab.name ?? title) { workspace.finishRename(tab.id, name: $0) }
             } else {
                 Text(title)
-                    .font(.system(size: 13, weight: emphasized ? .semibold : selected ? .medium : .regular))
-                    .foregroundStyle(status == .dormant ? .secondary : .primary)
+                    .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
+                    .foregroundStyle(status == .dormant || status == .starting ? .secondary : .primary)
                     .lineLimit(1)
                     // Short names never truncate; long ones give way last.
                     .fixedSize(horizontal: title.count <= 14, vertical: false)
@@ -267,7 +270,6 @@ private struct TabRow: View {
                     .help("\(tab.root.panes.count) panes")
             }
             Spacer(minLength: 4)
-            if let agent { AgentMark(agent: agent) }
             if let hint {
                 KeyBadge(text: hint)
             } else if hovering {
@@ -281,19 +283,34 @@ private struct TabRow: View {
                 .buttonStyle(.plain)
                 .frame(minWidth: 22, alignment: .trailing)
                 .help("Close tab (⇧⌘W)")
+            } else if indicator == .trailing, busy {
+                Spinner(color: status == .working ? Palette.working : Palette.ring)
+                    .frame(width: 12, height: 12)
+                    .frame(minWidth: 22, alignment: .trailing)
+                    .help(status.label)
             } else {
                 Text(relativeAge(workspace.lastActivity(tab), now: now))
                     .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
-                    .foregroundStyle(status == .needsYou ? Palette.amber : .secondary)
+                    .foregroundStyle(status == .needsYou ? Palette.amber : status == .working ? Palette.working : .secondary)
                     .frame(minWidth: 22, alignment: .trailing)
             }
         }
         .padding(.leading, 26)
         .padding(.trailing, 8)
         .frame(height: 28)
-        .background(
-            selected ? Palette.selection : hovering ? Palette.hover : .clear,
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+            ZStack {
+                shape.fill(selected ? Palette.selection : hovering ? Palette.hover : .clear)
+                if status == .needsYou { shape.fill(Palette.amber.opacity(0.1)) }
+            }
+        }
+        .overlay(alignment: .leading) {
+            // Needs you is the one state that also marks the row's edge.
+            if status == .needsYou {
+                RoundedRectangle(cornerRadius: 1.5).fill(Palette.amber).frame(width: 3, height: 16).padding(.leading, 8)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         // The first click selects at once; the second of a double-click renames.
@@ -361,59 +378,52 @@ private struct KeyBadge: View {
     }
 }
 
-/// Which agent runs in a tab: a small lettered tile.
-struct AgentMark: View {
-    let agent: String
-
-    var body: some View {
-        let theme = ThemeStore.shared.theme
-        let (letter, fg, bg): (String, Color, Color) = switch agent {
-        case "claude": ("C", Color(nsColor: theme.claude.fg), Color(nsColor: theme.claude.bg))
-        case "codex": ("X", Color(nsColor: theme.codex.fg), Color(nsColor: theme.codex.bg))
-        default: (String(agent.prefix(1)).uppercased(), Palette.text2, Palette.chip)
-        }
-        Text(letter)
-            .font(.system(size: 9.5, weight: .bold, design: .monospaced))
-            .foregroundStyle(fg)
-            .frame(width: 16, height: 16)
-            .background(bg, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-            .help(agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent)
-    }
-}
-
-/// Session state as one 12pt glyph: a turning arc while working, an amber ring when it
-/// needs you, a solid dot when done and unread, a hollow ring when idle, dashed when dormant.
+/// Session state as one 12pt glyph. Its shape says who: the agent's mark, or a circle for a
+/// shell. Colour says what: amber when it needs you, the working colour while it works, text
+/// colour when done and unread, grey when idle, fainter when dormant. Solid means there's
+/// something for you to see.
 struct StatusIcon: View {
     let status: SessionStatus
-    var isAgent = true
+    var agent: String?
+    /// Turn while working; otherwise the glyph holds still and a Spinner shows elsewhere.
+    var turning = false
 
     var body: some View {
         Group {
-            switch status {
-            case .working:
-                Spinner(color: isAgent ? Palette.working : Palette.text2)
-            case .starting:
-                Spinner(color: Palette.ring)
-            case .needsYou:
-                ZStack {
-                    Circle().strokeBorder(Palette.amber, lineWidth: 1.5)
-                    Circle().fill(Palette.amber).frame(width: 4.4, height: 4.4)
+            if let agent, status != .starting {
+                AgentGlyph(agent: agent, color: color, turning: turning && status == .working)
+            } else {
+                switch status {
+                case .needsYou, .doneUnread:
+                    Circle().fill(color).frame(width: 8, height: 8)
+                case .working, .starting:
+                    if turning {
+                        Spinner(color: color)
+                    } else {
+                        Circle().strokeBorder(color, lineWidth: 1.5).frame(width: 8.5, height: 8.5)
+                    }
+                case .idle, .dormant:
+                    Circle().strokeBorder(color, lineWidth: 1.25).frame(width: 7.5, height: 7.5)
                 }
-            case .doneUnread:
-                Circle().fill(Palette.text).frame(width: 8, height: 8)
-            case .idle:
-                Circle().strokeBorder(Palette.ring, lineWidth: 1.25).frame(width: 7.5, height: 7.5)
-            case .dormant:
-                Circle().strokeBorder(Palette.ring, style: StrokeStyle(lineWidth: 1.25, dash: [1.6, 1.8]))
-                    .frame(width: 8, height: 8)
             }
         }
         .frame(width: 12, height: 12)
-        .help(status.label)
+        .help(agent.map { "\(agentName($0)) · \(status.label)" } ?? status.label)
+    }
+
+    private var color: Color {
+        switch status {
+        case .needsYou: Palette.amber
+        case .working: Palette.working
+        case .doneUnread: Palette.text
+        case .starting, .idle: Palette.ring
+        case .dormant: Palette.ring.opacity(0.45)
+        }
     }
 }
 
-private struct Spinner: View {
+/// A turning arc on a faint ring, filling its frame.
+struct Spinner: View {
     let color: Color
     @State private var turning = false
 

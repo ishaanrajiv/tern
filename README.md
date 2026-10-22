@@ -181,7 +181,8 @@ ternd (Rust, launchd agent dev.tern.ternd)
   Support/tern/zsh`), which restores yours, sources your `.zshenv`, and adds a `preexec` hook that
   writes each command line to `commands/<session>`; your other startup files load as usual.
   Ghostty's shell integration works the same way. Other shells are named from the foreground
-  process's argv (`crates/tern/src/shell.rs`).
+  process's argv (`crates/tern/src/shell.rs`). A `precmd` hook touches `commands/<session>.done`
+  when a command finishes: a shell tab you aren't looking at shows as done then, not on any output.
 - Agent hooks (`crates/tern/src/hooks.rs`) run `tern hook claude|codex`, which maps the hook event
   to a state and sends it to ternd for the session named by `TERN_SESSION_ID`. ternd recognizes the
   agents themselves by executable path and argv (Claude Code's binary is named after its version, and

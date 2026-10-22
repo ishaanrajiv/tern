@@ -1,6 +1,8 @@
 //! zsh integration: a preexec hook that writes each command line, as typed, to
 //! a file per session, so a tab can be named after what it runs ("npm run dev").
 //! Watching the foreground process alone misses quick commands like `git status`.
+//! A precmd hook touches a second file each time a command finishes, which is when
+//! a shell tab counts as done.
 //!
 //! zsh is pointed at our own ZDOTDIR, whose .zshenv puts the user's ZDOTDIR back,
 //! sources their .zshenv and adds the hook; zsh then reads the rest of the user's
@@ -22,8 +24,14 @@ fi
     [[ ! -r "$_tern_file" ]] || 'builtin' 'source' '--' "$_tern_file"
 } always {
     if [[ -o 'interactive' && -n "$TERN_COMMAND_FILE" ]]; then
-        _tern_preexec() { { 'builtin' 'print' -rn -- "$1" >| "$TERN_COMMAND_FILE" } 2>/dev/null }
-        'builtin' 'autoload' -Uz add-zsh-hook && add-zsh-hook preexec _tern_preexec
+        _tern_preexec() { _tern_ran=1; { 'builtin' 'print' -rn -- "$1" >| "$TERN_COMMAND_FILE" } 2>/dev/null }
+        # Only after a command ran: not for the first prompt, or ↩ on an empty line.
+        _tern_precmd() {
+            [[ -n "$_tern_ran" ]] || 'builtin' 'return' 0
+            _tern_ran=
+            { 'builtin' 'print' -n >| "$TERN_COMMAND_FILE.done" } 2>/dev/null
+        }
+        'builtin' 'autoload' -Uz add-zsh-hook && add-zsh-hook preexec _tern_preexec && add-zsh-hook precmd _tern_precmd
     fi
     'builtin' 'unset' '_tern_file'
 }
@@ -46,6 +54,22 @@ pub fn is_zsh(shell: &str) -> bool {
 pub fn command_file(id: &str) -> PathBuf {
     let dir = runtime_dir();
     std::path::absolute(&dir).unwrap_or(dir).join("commands").join(id)
+}
+
+/// Touched by the session's shell each time a command finishes.
+pub fn finished_file(id: &str) -> PathBuf {
+    let mut path = command_file(id).into_os_string();
+    path.push(".done");
+    path.into()
+}
+
+/// When the session's shell last finished a command, in Unix milliseconds; 0 if it hasn't.
+pub fn finished_ms(id: &str) -> u64 {
+    std::fs::metadata(finished_file(id))
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// The last command line the session's shell ran, if the integration is active.
