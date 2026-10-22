@@ -158,11 +158,33 @@ pub fn socket_path() -> PathBuf {
 }
 
 /// Identifies a binary by its contents (FNV-1a, hex), the same however it got
-/// where it is.
+/// where it is. A Mach-O's code signature is left out: signing with an identity
+/// stamps the signing time into it, so every build would otherwise look new.
 pub fn build_id(path: &std::path::Path) -> io::Result<String> {
     let bytes = std::fs::read(path)?;
+    let bytes = &bytes[..signature_offset(&bytes).unwrap_or(bytes.len())];
     let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
     Ok(format!("{hash:016x}"))
+}
+
+/// Where a 64-bit Mach-O's code signature starts, if it has one.
+fn signature_offset(bytes: &[u8]) -> Option<usize> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_CODE_SIGNATURE: u32 = 0x1d;
+    let u32_at = |at: usize| bytes.get(at..at + 4).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes);
+    if u32_at(0)? != MH_MAGIC_64 {
+        return None;
+    }
+    // Load commands follow the 32-byte header; ncmds is at offset 16.
+    let mut at = 32;
+    for _ in 0..u32_at(16)? {
+        if u32_at(at)? == LC_CODE_SIGNATURE {
+            let offset = u32_at(at + 8)? as usize;
+            return (offset <= bytes.len()).then_some(offset);
+        }
+        at += u32_at(at + 4)? as usize;
+    }
+    None
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
@@ -295,6 +317,29 @@ mod tests {
         std::fs::write(&b, b"one").unwrap();
         assert_eq!(build_id(&a).unwrap(), build_id(&b).unwrap());
         std::fs::write(&b, b"two").unwrap();
+        assert_ne!(build_id(&a).unwrap(), build_id(&b).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_id_ignores_code_signature() {
+        // A header with one load command, LC_CODE_SIGNATURE, pointing at byte 52.
+        let macho = |code: &[u8], signature: &[u8]| {
+            let mut bytes = Vec::new();
+            for word in [0xfeed_facf, 0x0100_000c, 0, 2, 1, 16, 0, 0, 0x1d, 16, 52, signature.len() as u32] {
+                bytes.extend_from_slice(&u32::to_le_bytes(word));
+            }
+            bytes.extend_from_slice(code);
+            bytes.extend_from_slice(signature);
+            bytes
+        };
+        let dir = std::env::temp_dir().join(format!("tern-build-id-sig-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::write(&a, macho(b"code", b"signed at 1")).unwrap();
+        std::fs::write(&b, macho(b"code", b"signed at 2")).unwrap();
+        assert_eq!(build_id(&a).unwrap(), build_id(&b).unwrap());
+        std::fs::write(&b, macho(b"edit", b"signed at 1")).unwrap();
         assert_ne!(build_id(&a).unwrap(), build_id(&b).unwrap());
         let _ = std::fs::remove_dir_all(&dir);
     }
