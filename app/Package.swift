@@ -1,4 +1,4 @@
-// swift-tools-version:5.10
+// swift-tools-version:6.2
 import PackageDescription
 
 let package = Package(
@@ -12,6 +12,8 @@ let package = Package(
         .executableTarget(
             name: "Tern",
             dependencies: ["GhosttyKit"],
+            // An AppKit app: main-thread code unless marked otherwise.
+            swiftSettings: [.defaultIsolation(MainActor.self)],
             linkerSettings: [
                 .linkedFramework("AppKit"),
                 .linkedFramework("Carbon"),
@@ -28,5 +30,6 @@ let package = Package(
             name: "TernTests",
             dependencies: ["Tern"]
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v6]
 )

@@ -14,7 +14,8 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         super.init()
         let center = UNUserNotificationCenter.current()
         center.delegate = self
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { [weak self] granted, error in
+        // Answered on a background queue.
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { @Sendable [weak self] granted, error in
             if let error { NSLog("tern: notification authorization failed: %@", String(describing: error)) }
             NSLog("tern: notifications authorized: %@", granted ? "yes" : "no")
             DispatchQueue.main.async {
@@ -68,7 +69,8 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: [tabID])
     }
 
-    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+    // UserNotifications calls its delegate on a queue of its own.
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler done: @escaping () -> Void) {
         if let id = response.notification.request.content.userInfo["tab"] as? String {
             DispatchQueue.main.async {
@@ -80,7 +82,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     // tern is frontmost but on another session: still show the banner.
-    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler done: @escaping (UNNotificationPresentationOptions) -> Void) {
         done([.banner, .sound])
     }

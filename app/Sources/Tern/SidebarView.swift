@@ -430,7 +430,7 @@ private struct Spinner: View {
     }
 }
 
-func abbreviateHome(_ path: String) -> String {
+nonisolated func abbreviateHome(_ path: String) -> String {
     let home = NSHomeDirectory()
     if path == home { return "~" }
     if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }

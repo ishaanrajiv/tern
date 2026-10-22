@@ -37,10 +37,10 @@ final class AgentHooks {
 
     /// Keeps the stable hook path pointing at this copy of tern, and updates hooks
     /// an older tern installed (never installs them where there were none).
-    func link() { _ = run(["hooks", "link"]) }
+    nonisolated func link() { _ = run(["hooks", "link"]) }
 
     @discardableResult
-    private func run(_ args: [String]) -> String? {
+    nonisolated private func run(_ args: [String]) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: ternBinary)
         p.arguments = args

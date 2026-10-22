@@ -161,7 +161,10 @@ final class ThemeStore {
     private init() {
         defaultsObserver = NotificationCenter.default.addObserver(
             forName: UserDefaults.didChangeNotification, object: nil, queue: .main
-        ) { [weak self] _ in self?.reload() }
+        ) { [weak self] _ in
+            // Delivered on the main queue, as asked.
+            MainActor.assumeIsolated { self?.reload() }
+        }
     }
 
     static var selectedID: String { UserDefaults.standard.string(forKey: Prefs.theme) ?? Theme.defaultID }

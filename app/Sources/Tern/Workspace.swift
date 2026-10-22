@@ -423,7 +423,7 @@ final class Workspace {
         return newSession(projectPath: path, cwd: path, worktree: worktree)
     }
 
-    static func normalize(_ path: String) -> String {
+    nonisolated static func normalize(_ path: String) -> String {
         let p = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
         return p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p
     }
@@ -721,7 +721,7 @@ final class Workspace {
     }
 
     /// With TERN_RUNTIME_DIR set (a private ternd for testing), everything tern keeps goes there instead.
-    static let layoutURL: URL = {
+    nonisolated static let layoutURL: URL = {
         let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/tern", isDirectory: true)

@@ -1,6 +1,7 @@
 import XCTest
 @testable import Tern
 
+@MainActor
 final class LayoutTests: XCTestCase {
     private func decode(_ json: String) -> (Workspace.Saved?, dropped: Int) {
         Workspace.decodeLayout(Data(json.utf8))

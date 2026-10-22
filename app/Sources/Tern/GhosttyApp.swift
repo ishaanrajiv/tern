@@ -23,24 +23,30 @@ final class GhosttyApp {
         var runtime = ghostty_runtime_config_s()
         runtime.userdata = Unmanaged.passUnretained(self).toOpaque()
         runtime.supports_selection_clipboard = false
+        // Wakeup comes from any thread. The rest come from ghostty_app_tick and surface
+        // calls, which tern makes on the main thread (Ghostty's own app relies on this too).
         runtime.wakeup_cb = { _ in
             DispatchQueue.main.async { GhosttyApp.shared.tick() }
         }
         runtime.action_cb = { app, target, action in
-            GhosttyApp.shared.handle(target: target, action: action)
+            MainActor.assumeIsolated { GhosttyApp.shared.handle(target: target, action: action) }
         }
         runtime.read_clipboard_cb = { userdata, location, state, _, _, _ in
-            GhosttyApp.readClipboard(userdata, location: location, state: state)
+            MainActor.assumeIsolated { GhosttyApp.readClipboard(userdata, location: location, state: state) }
         }
         runtime.confirm_read_clipboard_cb = { userdata, confirm, state, request in
-            GhosttyApp.confirmClipboard(userdata, confirm: confirm, state: state, request: request)
+            MainActor.assumeIsolated {
+                GhosttyApp.confirmClipboard(userdata, confirm: confirm, state: state, request: request)
+            }
         }
         runtime.write_clipboard_cb = { _, location, content, len, _ in
-            GhosttyApp.writeClipboard(location: location, content: content, len: len)
+            MainActor.assumeIsolated { GhosttyApp.writeClipboard(location: location, content: content, len: len) }
         }
         runtime.close_surface_cb = { userdata, _ in
-            guard let view = TerminalView.from(userdata) else { return }
-            DispatchQueue.main.async { view.surfaceClosed() }
+            MainActor.assumeIsolated {
+                guard let view = TerminalView.from(userdata) else { return }
+                DispatchQueue.main.async { view.surfaceClosed() }
+            }
         }
 
         guard let app = ghostty_app_new(&runtime, config) else {

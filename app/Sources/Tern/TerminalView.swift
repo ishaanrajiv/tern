@@ -8,7 +8,8 @@ import GhosttyKit
 /// Keyboard handling follows Ghostty's own SurfaceView_AppKit (MIT).
 final class TerminalView: NSView, NSTextInputClient {
     let sessionID: String
-    private(set) var surface: ghostty_surface_t?
+    // Only touched on the main thread; nonisolated so deinit can free it.
+    nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
     var onTitleChange: ((String) -> Void)?
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?

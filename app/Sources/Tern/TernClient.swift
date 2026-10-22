@@ -1,7 +1,7 @@
 import Foundation
 
 /// Live state of one ternd session, as reported by `{"op":"list"}` / `{"op":"watch"}`.
-struct SessionInfo: Decodable, Equatable {
+nonisolated struct SessionInfo: Decodable, Equatable {
     let id: String
     let pid: Int32
     let cols: Int
@@ -26,7 +26,7 @@ struct SessionInfo: Decodable, Equatable {
 }
 
 /// How the running ternd compares with this app's, from `tern daemon status`.
-struct DaemonStatus: Decodable {
+nonisolated struct DaemonStatus: Decodable {
     let running: Bool
     /// Speaks this tern's protocol; an older daemon may misread the app.
     let compatible: Bool
@@ -50,7 +50,7 @@ struct DaemonStatus: Decodable {
 }
 
 /// Talks to ternd over its unix socket (see crates/tern/src/lib.rs for the protocol).
-enum TernClient {
+nonisolated enum TernClient {
     static let socketPath: String = {
         if let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] {
             return dir + "/ternd.sock"
@@ -82,7 +82,7 @@ enum TernClient {
     }
 
     /// Streams session lists to `onUpdate` on the main queue, reconnecting forever.
-    static func watch(_ onUpdate: @escaping ([SessionInfo]) -> Void) {
+    static func watch(_ onUpdate: @escaping @MainActor ([SessionInfo]) -> Void) {
         let thread = Thread {
             while true {
                 if let conn = LineConnection(path: socketPath) {
@@ -102,7 +102,7 @@ enum TernClient {
 }
 
 /// A blocking unix-socket connection that speaks newline-delimited JSON.
-private final class LineConnection {
+private nonisolated final class LineConnection {
     private let fd: Int32
     private var buffer = Data()
 

@@ -20,7 +20,7 @@ struct FolderCandidate: Identifiable, Equatable {
 /// repositories under the configured roots. The slow ones run off the main thread.
 enum FolderSources {
     /// zoxide's database, best first, or nothing if zoxide isn't installed.
-    static func zoxide() -> [(path: String, score: Double)] {
+    nonisolated static func zoxide() -> [(path: String, score: Double)] {
         let candidates = ["/opt/homebrew/bin/zoxide", "/usr/local/bin/zoxide",
                           NSHomeDirectory() + "/.cargo/bin/zoxide", NSHomeDirectory() + "/.local/bin/zoxide",
                           "/run/current-system/sw/bin/zoxide", NSHomeDirectory() + "/.nix-profile/bin/zoxide"]
@@ -42,7 +42,7 @@ enum FolderSources {
     }
 
     /// Git repositories up to three levels under each root, not descending into them.
-    static func repos(roots: [String], limit: Int = 400) -> [String] {
+    nonisolated static func repos(roots: [String], limit: Int = 400) -> [String] {
         var found: [String] = []
         let fm = FileManager.default
         let skip: Set<String> = ["node_modules", "target", "build", "dist", "vendor", "Library", "Pods"]
@@ -94,9 +94,10 @@ final class FolderPickerModel {
 
     init(workspace: Workspace) {
         self.workspace = workspace
+        let roots = FolderSources.roots
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let z = FolderSources.zoxide()
-            let r = FolderSources.repos(roots: FolderSources.roots)
+            let r = FolderSources.repos(roots: roots)
             DispatchQueue.main.async {
                 FolderSources.cachedZoxide = z
                 FolderSources.cachedRepos = r

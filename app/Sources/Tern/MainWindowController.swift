@@ -100,8 +100,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         ])
         header.leadingAnchor.constraint(equalTo: content.view.leadingAnchor).isActive = true
         // With the sidebar hidden, the traffic lights and sidebar buttons sit over the header's left end.
-        collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] item, _ in
-            DispatchQueue.main.async { self?.headerLayout.leadingInset = item.isCollapsed ? 146 : 0 }
+        collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, change in
+            let collapsed = change.newValue ?? false
+            DispatchQueue.main.async { self?.headerLayout.leadingInset = collapsed ? 146 : 0 }
         }
 
         let contentItem = NSSplitViewItem(viewController: content)
@@ -120,7 +121,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         commands = makeCommands()
         applyTheme()
         themeObserver = NotificationCenter.default.addObserver(forName: ThemeStore.didChange, object: nil, queue: .main) {
-            [weak self] _ in self?.applyTheme()
+            [weak self] _ in MainActor.assumeIsolated { self?.applyTheme() }
         }
         measureTitlebar()
         installKeyMonitor()

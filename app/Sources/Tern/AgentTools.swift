@@ -1,9 +1,10 @@
 import AppKit
 import Foundation
 import Security
+import os
 
 /// One usage window: how much of it is used, and when it starts over.
-struct UsageWindow: Equatable {
+nonisolated struct UsageWindow: Equatable, Sendable {
     let usedPercent: Double
     /// Unknown for a window not yet started.
     let resetsAt: Date?
@@ -16,7 +17,7 @@ struct UsageWindow: Equatable {
 }
 
 /// An agent's subscription limits, as last reported.
-struct UsageLimits: Equatable {
+nonisolated struct UsageLimits: Equatable, Sendable {
     let fiveHour: UsageWindow?
     let weekly: UsageWindow?
     var reportedAt: Date? = nil
@@ -34,7 +35,10 @@ final class AgentUsage {
 
     init() {
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in self?.refresh() }
+        // Scheduled on the main run loop, so it fires there.
+        timer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     func refresh() {
@@ -73,7 +77,7 @@ final class AgentUsage {
         }
     }
 
-    private static func claude() -> UsageLimits? {
+    nonisolated private static func claude() -> UsageLimits? {
         let url = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("usage/claude.json")
         guard let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
@@ -88,7 +92,7 @@ final class AgentUsage {
     }
 
     /// The newest `rate_limits` in Codex's most recent session logs.
-    private static func codex() -> UsageLimits? {
+    nonisolated private static func codex() -> UsageLimits? {
         for file in recentCodexSessions().prefix(6) {
             if let limits = lastRateLimits(in: file) { return limits }
         }
@@ -96,7 +100,7 @@ final class AgentUsage {
     }
 
     /// Session logs newest first, from ~/.codex/sessions/YYYY/MM/DD.
-    private static func recentCodexSessions() -> [URL] {
+    nonisolated private static func recentCodexSessions() -> [URL] {
         let fm = FileManager.default
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
         func children(_ url: URL) -> [URL] {
@@ -118,7 +122,7 @@ final class AgentUsage {
         return files.sorted { modified($0) > modified($1) }
     }
 
-    private static func lastRateLimits(in file: URL) -> UsageLimits? {
+    nonisolated private static func lastRateLimits(in file: URL) -> UsageLimits? {
         guard let handle = try? FileHandle(forReadingFrom: file) else { return nil }
         defer { try? handle.close() }
         let size = (try? handle.seekToEnd()) ?? 0
@@ -147,11 +151,11 @@ final class AgentUsage {
 /// Claude Code runs (the desktop app never runs a status line). It uses the sign-in Claude
 /// Code keeps in the Keychain, which macOS asks before handing over. tern never refreshes
 /// that token, which would sign Claude Code out; an expired one waits for Claude Code to renew it.
-enum ClaudeAccount {
-    enum Result { case limits(UsageLimits), denied, unavailable }
+nonisolated enum ClaudeAccount {
+    enum Result: Sendable { case limits(UsageLimits), denied, unavailable }
     private enum Token { case token(String), denied, none }
 
-    static func usage(done: @escaping (Result) -> Void) {
+    static func usage(done: @escaping @Sendable (Result) -> Void) {
         let token: String
         switch accessToken() {
         case .token(let t): token = t
@@ -230,7 +234,9 @@ final class AgentUpdates {
 
     init() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in self?.check() }
-        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in self?.check() }
+        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.check() }
+        }
     }
 
     /// Updates worth offering: behind, and not waved off for that version.
@@ -251,22 +257,22 @@ final class AgentUpdates {
         DispatchQueue.global(qos: .utility).async {
             let installed = Self.installedVersions()
             let group = DispatchGroup()
-            var latest: [String: String] = [:]
-            let lock = NSLock()
+            let latest = OSAllocatedUnfairLock(initialState: [String: String]())
             for (agent, package) in [("claude", "@anthropic-ai/claude-code"), ("codex", "@openai/codex")] {
                 group.enter()
                 Self.latestVersion(package: package, channel: agent == "claude" ? Self.claudeChannel() : "latest") {
-                    if let v = $0 { lock.lock(); latest[agent] = v; lock.unlock() }
+                    if let v = $0 { latest.withLock { $0[agent] = v } }
                     group.leave()
                 }
             }
             group.wait()
+            let newest = latest.withLock { $0 }
             DispatchQueue.main.async {
                 var found: [String: Version] = [:]
                 for agent in ["claude", "codex"] where installed[agent] != nil {
                     // Keep the last known newest version if the registry didn't answer this time.
                     found[agent] = Version(agent: agent, installed: installed[agent],
-                                           latest: latest[agent] ?? self.versions[agent]?.latest)
+                                           latest: newest[agent] ?? self.versions[agent]?.latest)
                 }
                 self.versions = found
                 self.lastChecked = Date()
@@ -283,7 +289,7 @@ final class AgentUpdates {
     }
 
     /// Asks the user's own shell, so the versions are the ones a tern tab runs.
-    private static func installedVersions() -> [String: String] {
+    nonisolated private static func installedVersions() -> [String: String] {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let script = "echo @@claude; claude --version 2>/dev/null; echo @@codex; codex --version 2>/dev/null"
         let p = Process()
@@ -307,13 +313,13 @@ final class AgentUpdates {
         return versions
     }
 
-    private static func firstVersion(in text: String) -> String? {
+    nonisolated private static func firstVersion(in text: String) -> String? {
         guard let r = text.range(of: #"\d+\.\d+\.\d+"#, options: .regularExpression) else { return nil }
         return String(text[r])
     }
 
     /// Claude Code's native updater follows "latest" unless settings say "stable".
-    private static func claudeChannel() -> String {
+    nonisolated private static func claudeChannel() -> String {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/settings.json")
         guard let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -321,7 +327,7 @@ final class AgentUpdates {
         return channel
     }
 
-    private static func latestVersion(package: String, channel: String, done: @escaping (String?) -> Void) {
+    nonisolated private static func latestVersion(package: String, channel: String, done: @escaping @Sendable (String?) -> Void) {
         guard let url = URL(string: "https://registry.npmjs.org/-/package/\(package)/dist-tags") else { return done(nil) }
         var request = URLRequest(url: url, timeout: 15)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -342,7 +348,7 @@ final class AgentUpdates {
     }
 }
 
-private extension URLRequest {
+private nonisolated extension URLRequest {
     init(url: URL, timeout: TimeInterval) {
         self.init(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
     }
