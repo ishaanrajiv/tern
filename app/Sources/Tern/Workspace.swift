@@ -44,6 +44,34 @@ indirect enum SplitNode: Codable, Equatable {
         }
     }
 
+    func mapPanes(_ transform: (String) -> String) -> SplitNode {
+        switch self {
+        case .pane(let id): return .pane(transform(id))
+        case .split(let axis, let ratio, let a, let b):
+            return .split(axis, ratio: ratio, a.mapPanes(transform), b.mapPanes(transform))
+        }
+    }
+
+    func equalized() -> SplitNode {
+        switch self {
+        case .pane: return self
+        case .split(let axis, _, let a, let b):
+            return .split(axis, ratio: 0.5, a.equalized(), b.equalized())
+        }
+    }
+
+    /// Resize the nearest divider on this axis, growing or shrinking the focused pane.
+    func resizing(_ pane: String, axis wanted: SplitAxis, delta: Double) -> SplitNode? {
+        guard case .split(let axis, let ratio, let a, let b) = self else { return nil }
+        let first = a.panes.contains(pane)
+        guard first || b.panes.contains(pane) else { return nil }
+        if let child = (first ? a : b).resizing(pane, axis: wanted, delta: delta) {
+            return .split(axis, ratio: ratio, first ? child : a, first ? b : child)
+        }
+        guard axis == wanted else { return nil }
+        return .split(axis, ratio: min(0.9, max(0.1, ratio + (first ? delta : -delta))), a, b)
+    }
+
     /// Frames of every pane inside `rect`.
     func frames(in rect: CGRect) -> [(String, CGRect)] {
         switch self {
@@ -226,6 +254,7 @@ final class Workspace {
     }
     /// The agent conversation last seen in each pane, so it can be resumed after a reboot.
     private var paneAgent: [String: AgentRef] = [:]
+    private var paneRemote: [String: RemoteConnection] = [:]
     /// Lines to type into a new pane's shell when it starts (`codex update`).
     @ObservationIgnored private var pendingLines: [String: String] = [:]
     /// When each folder was last used in tern, for the folder picker and recent-first order.
@@ -403,7 +432,9 @@ final class Workspace {
         }
     }
 
-    private func changed() { onChange?() }
+    private var batching = false
+    private func changed() { if !batching { onChange?() } }
+    var panesNeedingLaunch: Set<String> { Set(pendingLines.keys).intersection(allTabs.flatMap { $0.root.panes }) }
 
     static func newID(_ prefix: String) -> String {
         prefix + "-" + UUID().uuidString.prefix(8).lowercased()
@@ -488,6 +519,10 @@ final class Workspace {
         guard let tab = selectedTab else { return }
         let pane = Self.newID("p")
         paneCwd[pane] = cwd(for: tab.focusedPane)
+        if let remote = paneRemote[tab.focusedPane] {
+            paneRemote[pane] = remote
+            pendingLines[pane] = remote.command()
+        }
         mutateTab(tab.id) { t in
             t.root = t.root.replacing(t.focusedPane, with: .split(axis, ratio: 0.5, .pane(t.focusedPane), .pane(pane)))
             t.focusedPane = pane
@@ -537,6 +572,7 @@ final class Workspace {
             }
             paneCwd[pane] = nil
             paneAgent[pane] = nil
+            paneRemote[pane] = nil
             seen[pane] = nil
             changed()
             return
@@ -581,6 +617,74 @@ final class Workspace {
         let to = target.flatMap { t in projects.firstIndex { $0.path == t } } ?? projects.endIndex
         projects.insert(project, at: to)
         changed()
+    }
+
+    func moveTab(_ id: String, to project: String, before target: String? = nil) {
+        guard id != target,
+              let source = projects.firstIndex(where: { $0.tabs.contains(where: { $0.id == id }) }),
+              let index = projects[source].tabs.firstIndex(where: { $0.id == id }),
+              projects.contains(where: { $0.path == project }) else { return }
+        var tab = projects[source].tabs.remove(at: index)
+        if projects[source].lastTab == id { projects[source].lastTab = projects[source].tabs.first?.id }
+        guard let destination = projects.firstIndex(where: { $0.path == project }) else { return }
+        if source != destination { tab.number = projects[destination].freeNumber }
+        let at = target.flatMap { target in projects[destination].tabs.firstIndex(where: { $0.id == target }) } ?? projects[destination].tabs.count
+        projects[destination].tabs.insert(tab, at: at)
+        projects[destination].collapsed = false
+        if selectedTabID == id { projects[destination].lastTab = id }
+        projects.removeAll { $0.tabs.isEmpty }
+        changed()
+    }
+
+    func shiftTab(_ delta: Int) {
+        guard let tab = selectedTab, let project = currentProject,
+              let index = project.tabs.firstIndex(where: { $0.id == tab.id }) else { return }
+        let next = index + delta
+        guard project.tabs.indices.contains(next) else { return }
+        let target = delta < 0 ? project.tabs[next].id : (next + 1 < project.tabs.count ? project.tabs[next + 1].id : nil)
+        moveTab(tab.id, to: project.path, before: target)
+    }
+
+    func swapPane(_ delta: Int) {
+        guard let tab = selectedTab, tab.root.panes.count > 1,
+              let index = tab.root.panes.firstIndex(of: tab.focusedPane) else { return }
+        let other = tab.root.panes[(index + delta + tab.root.panes.count) % tab.root.panes.count]
+        mutateTab(tab.id) { t in
+            t.root = t.root.mapPanes { $0 == tab.focusedPane ? other : $0 == other ? tab.focusedPane : $0 }
+        }
+    }
+
+    func equalizePanes() {
+        guard let tab = selectedTab else { return }
+        mutateTab(tab.id) { $0.root = $0.root.equalized(); $0.zoomed = false }
+    }
+
+    func resizePane(axis: SplitAxis, delta: Double) {
+        guard let tab = selectedTab, let root = tab.root.resizing(tab.focusedPane, axis: axis, delta: delta) else { return }
+        mutateTab(tab.id) { $0.root = root; $0.zoomed = false }
+    }
+
+    func detachPane() {
+        guard let tab = selectedTab, let project = currentProject,
+              let root = tab.root.removing(tab.focusedPane) else { return }
+        mutateTab(tab.id) { $0.root = root; $0.focusedPane = root.panes[0]; $0.zoomed = false }
+        let created = newTab(projectPath: project.path, cwd: cwd(for: tab.focusedPane), paneID: tab.focusedPane)
+        mutateTab(created.id) { $0.worktree = tab.worktree }
+    }
+
+    func movePaneToNextTab() {
+        guard let tab = selectedTab, let project = currentProject, project.tabs.count > 1,
+              let index = project.tabs.firstIndex(where: { $0.id == tab.id }),
+              let root = tab.root.removing(tab.focusedPane) else { return }
+        let next = project.tabs[(index + 1) % project.tabs.count]
+        // A worktree remains owned by its tabs, so moves across worktree boundaries use Detach instead.
+        guard tab.worktree == next.worktree else { return }
+        mutateTab(tab.id) { $0.root = root; $0.focusedPane = root.panes[0]; $0.zoomed = false }
+        mutateTab(next.id) { t in
+            t.root = .split(.horizontal, ratio: 0.5, t.root, .pane(tab.focusedPane))
+            t.focusedPane = tab.focusedPane; t.zoomed = false
+        }
+        select(next.id)
     }
 
     func cycleTab(_ delta: Int) {
@@ -703,6 +807,7 @@ final class Workspace {
     /// (after a reboot), typed into the fresh shell.
     func resumeCommand(for pane: String) -> String? {
         if let line = pendingLines.removeValue(forKey: pane) { return line }
+        if sessions[pane] == nil, let remote = paneRemote[pane] { return remote.command() }
         guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
         switch ref.agent {
         case "claude": return "claude --resume \(ref.session)"
@@ -724,6 +829,49 @@ final class Workspace {
         if selectedTabID == nil { selectedTabID = allTabs.first?.id }
     }
 
+    func remote(for pane: String) -> RemoteConnection? { paneRemote[pane] }
+
+    func openRemote(_ remote: RemoteConnection) throws {
+        try remote.validate()
+        let folder = currentProject?.path ?? NSHomeDirectory()
+        let id = Self.newID("p")
+        paneRemote[id] = remote
+        pendingLines[id] = remote.command()
+        let tab = newTab(projectPath: folder, cwd: folder, paneID: id)
+        rename(tab.id, to: remote.host + (remote.tmuxSession.isEmpty ? "" : " · " + remote.tmuxSession))
+    }
+
+    func capturePreset(name: String) -> LaunchPreset {
+        let folder = currentProject?.path ?? NSHomeDirectory()
+        let tabs = (currentProject?.tabs ?? []).map { tab in
+            LaunchTab(name: tab.name, root: tab.root, panes: Dictionary(uniqueKeysWithValues: tab.root.panes.map {
+                ($0, LaunchPane(directory: cwd(for: $0), remote: paneRemote[$0]))
+            }))
+        }
+        return LaunchPreset(name: name, project: folder, tabs: tabs.isEmpty ? [LaunchTab(root: .pane("shell"), panes: ["shell": LaunchPane(directory: folder)])] : tabs)
+    }
+
+    func launch(_ preset: LaunchPreset) throws {
+        try preset.validate() // Validate every pane before changing anything.
+        batching = true
+        defer { batching = false; changed() }
+        for template in preset.tabs {
+            var mapping: [String: String] = [:]
+            for old in template.root.panes {
+                let id = Self.newID("p")
+                mapping[old] = id
+                let pane = template.panes[old]!
+                paneCwd[id] = pane.directory
+                paneRemote[id] = pane.remote
+                if !pane.startup.isEmpty { pendingLines[id] = pane.startup }
+            }
+            let root = template.root.mapPanes { mapping[$0]! }
+            let first = root.panes[0]
+            let tab = newTab(projectPath: preset.project, cwd: paneCwd[first]!, paneID: first)
+            mutateTab(tab.id) { $0.root = root; $0.name = template.name }
+        }
+    }
+
     // MARK: Persistence
 
     /// Bumped when the saved layout changes shape. A file from another version is kept
@@ -737,6 +885,7 @@ final class Workspace {
         var paneCwd: [String: String]
         var paneAgent: [String: AgentRef]?
         var recents: [String: Date]?
+        var paneRemote: [String: RemoteConnection]? = nil
     }
 
     /// With TERN_RUNTIME_DIR set (a private ternd for testing), everything tern keeps goes there instead.
@@ -765,6 +914,7 @@ final class Workspace {
         // Records for panes no tab has any more go.
         paneCwd = saved.paneCwd.filter { panes.contains($0.key) }
         paneAgent = (saved.paneAgent ?? [:]).filter { panes.contains($0.key) }
+        paneRemote = (saved.paneRemote ?? [:]).filter { panes.contains($0.key) }
         // Folders not used for 90 days drop out of the picker's recents.
         recents = (saved.recents ?? [:]).filter { $0.value.timeIntervalSinceNow > -90 * 86400 }
         for p in projects.indices {
@@ -802,7 +952,7 @@ final class Workspace {
 
     func save() {
         let saved = Saved(version: Self.layoutVersion, projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd,
-                          paneAgent: paneAgent, recents: recents)
+                          paneAgent: paneAgent, recents: recents, paneRemote: paneRemote)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(saved) else { return }
@@ -877,7 +1027,7 @@ extension Project {
 }
 
 extension Workspace.Saved {
-    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents }
+    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents, paneRemote }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -886,6 +1036,7 @@ extension Workspace.Saved {
         selectedTabID = c.lenient(String.self, .selectedTabID, decoder: decoder)
         paneCwd = c.lenient([String: String].self, .paneCwd, decoder: decoder) ?? [:]
         paneAgent = c.lenient([String: AgentRef].self, .paneAgent, decoder: decoder)
+        paneRemote = c.lenient([String: RemoteConnection].self, .paneRemote, decoder: decoder)
         recents = c.lenient([String: Date].self, .recents, decoder: decoder)
     }
 }

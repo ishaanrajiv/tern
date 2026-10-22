@@ -14,6 +14,10 @@ final class TerminalView: NSView, NSTextInputClient {
     var onClose: (() -> Void)?
     var onFocus: (() -> Void)?
     var onResize: (() -> Void)?
+    var onSearch: ((String?) -> Void)?
+    var onEndSearch: (() -> Void)?
+    var onSearchTotal: ((Int) -> Void)?
+    var onSearchSelected: ((Int) -> Void)?
 
     private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?

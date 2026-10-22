@@ -10,6 +10,7 @@ final class GhosttyApp {
     /// The theme the config was built with.
     private(set) var theme: Theme = .graphite
     var themeID: String { theme.id }
+    private(set) var diagnostics = ""
 
     private init() {
         guard ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv) == GHOSTTY_SUCCESS else {
@@ -82,7 +83,16 @@ final class GhosttyApp {
             try? text.write(to: url, atomically: true, encoding: .utf8)
             url.path.withCString { ghostty_config_load_file(config, $0) }
         }
+        let preferences = TerminalPreferences.current
+        if FileManager.default.fileExists(atPath: TerminalPreferences.url.path) {
+            let overrides = Self.defaultsFile.deletingLastPathComponent().appendingPathComponent("terminal-overrides")
+            try? preferences.config.write(to: overrides, atomically: true, encoding: .utf8)
+            overrides.path.withCString { ghostty_config_load_file(config, $0) }
+        }
         ghostty_config_finalize(config)
+        diagnostics = (0..<ghostty_config_diagnostics_count(config)).compactMap {
+            ghostty_config_get_diagnostic(config, $0).message.map { String(cString: $0) }
+        }.joined(separator: "\n")
         theme = chosen ?? .ghostty(
             background: Self.color("background", in: config) ?? NSColor(calibratedWhite: 0.1, alpha: 1),
             foreground: Self.color("foreground", in: config) ?? .white)
@@ -132,6 +142,36 @@ final class GhosttyApp {
             guard let ptr = action.action.set_title.title else { return true }
             let title = String(cString: ptr)
             DispatchQueue.main.async { view?.titleChanged(title) }
+            return true
+        case GHOSTTY_ACTION_START_SEARCH:
+            let needle = action.action.start_search.needle.map { String(cString: $0) }
+            DispatchQueue.main.async { view?.onSearch?(needle) }
+            return true
+        case GHOSTTY_ACTION_END_SEARCH:
+            DispatchQueue.main.async { view?.onEndSearch?() }
+            return true
+        case GHOSTTY_ACTION_SEARCH_TOTAL:
+            let value = action.action.search_total.total
+            DispatchQueue.main.async { view?.onSearchTotal?(value) }
+            return true
+        case GHOSTTY_ACTION_SEARCH_SELECTED:
+            let value = action.action.search_selected.selected
+            DispatchQueue.main.async { view?.onSearchSelected?(value) }
+            return true
+        case GHOSTTY_ACTION_OPEN_URL:
+            let link = action.action.open_url
+            guard let ptr = link.url else { return false }
+            let text = String(decoding: UnsafeBufferPointer(start: UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self), count: Int(link.len)), as: UTF8.self)
+            guard let url = TerminalLink.url(text) else { return false }
+            DispatchQueue.main.async { NSWorkspace.shared.open(url) }
+            return true
+        case GHOSTTY_ACTION_RELOAD_CONFIG:
+            DispatchQueue.main.async { self.applyTheme() }
+            return true
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            // Ghostty owns hit testing; AppKit supplies the native cursor.
+            let shape = action.action.mouse_shape
+            DispatchQueue.main.async { (shape == GHOSTTY_MOUSE_SHAPE_POINTER ? NSCursor.pointingHand : NSCursor.iBeam).set() }
             return true
         case GHOSTTY_ACTION_QUIT:
             DispatchQueue.main.async { NSApp.terminate(nil) }

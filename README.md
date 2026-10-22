@@ -43,6 +43,60 @@ there.
 - Collapse a folder by clicking its header. A collapsed header shows its agents and its most urgent
   state; hovering any header shows **+** for a new tab there.
 
+## Search, links, and pane management
+
+⌘F opens Find for the focused terminal pane. Matches are highlighted in the scrollback, with a
+result count. ⌘G and ⌘⇧G move forward and backward; Return and Shift-Return do the same while
+editing the query. ⌘E uses the selection as the query. Esc or Done closes Find and returns focus
+to the terminal. Switching panes closes the old pane's find bar.
+
+Command-click a detected URL or OSC 8 hyperlink to open it with the system's default application.
+Supported destinations are HTTP, HTTPS, mail, local file URLs, SSH, VS Code and Cursor URLs.
+Unsupported schemes are ignored. Bare paths with line numbers are not yet detected as editor links.
+
+Drag tabs to reorder them or move them onto another folder header. The tab's context menu also has
+Move to Folder. The palette and menu offer Move Tab Earlier/Later, Swap Pane with Previous/Next,
+Move Pane to New Tab, Move Pane to Next Tab, and Equalize Panes. Moving a pane preserves its running
+session. Move Pane to Next Tab needs at least two panes in the source tab and another tab in the
+same folder with the same worktree ownership. ⌘⌃←/→ shrink/grow pane width, and ⌘⌃↓/↑ shrink/grow
+pane height. Resizing changes the nearest matching divider, with limits of 10% and 90%.
+
+## Project launch presets
+
+Choose **Project Launch Presets…** in File or the palette. Capture Current Project copies the
+current folder's tabs, split layouts and pane directories. Give it a name, edit each pane's startup
+command and environment variables, and save it. Environment entries use `KEY=value`, one per line.
+Saved Presets loads an existing preset for editing, launching, or deletion.
+
+Launch creates fresh tabs and sessions, including panes in background tabs, then runs the configured
+commands. It does not rerun commands in existing sessions. Capturing does not infer startup commands
+from running programs, copy agent conversations, or create new worktrees. Review the commands before
+launching. Presets may contain secrets in their environment values and are stored as local JSON at
+`~/Library/Application Support/tern/launch-presets.json`. A malformed or newer-version file is left
+unchanged and cannot be overwritten through the editor.
+
+## SSH and remote sessions
+
+Choose **Connect over SSH…** in File or the palette. Enter an SSH host alias or `user@host`, a remote
+folder, and optionally a tmux session name. SSH uses your existing config, keys and agent; configure
+ports and jump hosts in `~/.ssh/config`. Password and host-key prompts appear in the terminal.
+Tern uses `xterm-256color` for these connections so the remote host does not need Ghostty's terminfo.
+
+With a tmux name, Tern runs `tmux new-session -A` on the host. Opening the same connection reattaches
+to that session after a disconnect. The host must have tmux installed. Multiple connections to the
+same tmux name share its session. Without tmux, remote process survival depends on the remote shell
+and server. Tern never stores passwords or changes SSH configuration.
+
+Remote connections are saved with the layout. A live local SSH process survives quitting Tern;
+a missing local session reconnects when reopened. Splitting a remote pane opens another connection
+with the same settings. Capture its project as a preset to save and reuse connections, remote startup
+commands, and environment variables. Startup commands in a named tmux session run only when tmux
+creates that session. Existing tmux sessions keep their original command and environment.
+
+The header shows the configured remote host and folder. It does not track subsequent remote `cd`s
+or remote branches. Local agent hooks and usage polling do not provide remote agent status. These
+connections do not deploy a remote Tern daemon or install remote hooks.
+
 ## Agent status
 
 Each tab shows a status glyph, its name and the time since its last activity. The glyph is Claude's
@@ -137,9 +191,20 @@ escape codes asks too.
 
 ## Settings
 
-Three panes: General (folders, tabs), Appearance (theme and sidebar), Agents (a section each for Claude Code and
-Codex with hooks, usage limits and versions, then notifications and resume).
+Four panes: General (folders, tabs), Appearance (theme and sidebar), Terminal (text, input and bindings), Agents (Claude Code and Codex integrations, usage limits, notifications and resume).
+All panes use a compact, consistent window size and scroll when needed. Terminal settings have
+separate Text & input, App shortcuts and Terminal bindings pages, with Save and Apply always visible.
 
+- **Terminal**: font family, font size, scrollback bytes, cursor style, Option as Alt, Ghostty terminal
+  bindings, and app shortcuts. Save and Apply validates the configuration and updates existing
+  surfaces. App shortcuts use exact palette titles, such as `New Tab = cmd+shift+y`; terminal
+  bindings use Ghostty syntax, such as `ctrl+shift+c=copy_to_clipboard`. Conflicting app shortcuts
+  are rejected. Fixed folder/tab number shortcuts remain reserved. Settings are saved in
+  `terminal-settings.json` beside the layout and override Ghostty's corresponding options.
+  Until you save Terminal settings, your existing Ghostty values remain in use. The daemon retains
+  at most 10,000 history rows across reattach, independently of the surface's byte limit.
+  Reload Ghostty Config reloads the external config and reports its errors; the palette also has
+  Reload Configuration.
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal
   (background, foreground, cursor, selection, ANSI 16) on top of your Ghostty config, so fonts and

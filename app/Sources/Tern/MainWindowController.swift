@@ -5,11 +5,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     let workspace: Workspace
     private let terminalArea: TerminalArea
     private let splitController = NSSplitViewController()
+    private var workflowWindow: NSWindowController?
     private var paletteHost: NSView?
     private var pickerHost: NSView?
     private var picker: FolderPickerModel?
     private var emptyState: NSView?
     private var contentView: NSView?
+    private var settingsObserver: Any?
     private var themeObserver: Any?
     private var keyMonitor: Any?
     /// The window closes when its last tab does, not when it starts out empty.
@@ -119,6 +121,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if !window.setFrameUsingName("tern.main") { window.center() }
 
         commands = makeCommands()
+        settingsObserver = NotificationCenter.default.addObserver(forName: TerminalPreferences.didChange, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                GhosttyApp.shared.applyTheme()
+                self.commands = self.makeCommands()
+                NSApp.mainMenu = MenuBuilder.build(commands: self.commands)
+            }
+        }
         applyTheme()
         themeObserver = NotificationCenter.default.addObserver(forName: ThemeStore.didChange, object: nil, queue: .main) {
             [weak self] _ in MainActor.assumeIsolated { self?.applyTheme() }
@@ -301,6 +311,25 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         alert.beginSheetModal(for: window)
     }
 
+    private func showPresets() {
+        showWorkflow(title: "Project Launch Presets", view: LaunchPresetsView(workspace: workspace) { [weak self] in self?.workflowWindow?.close() })
+    }
+
+    private func showRemote() {
+        showWorkflow(title: "SSH Connection", view: RemoteSessionView(workspace: workspace) { [weak self] in self?.workflowWindow?.close() })
+    }
+
+    private func showWorkflow<V: View>(title: String, view: V) {
+        workflowWindow?.close()
+        let window = NSWindow(contentViewController: NSHostingController(rootView: view))
+        window.title = title
+        window.identifier = NSUserInterfaceItemIdentifier("tern.workflow")
+        window.styleMask = [.titled, .closable]
+        workflowWindow = NSWindowController(window: window)
+        window.center()
+        workflowWindow?.showWindow(nil)
+    }
+
     // MARK: Commands (the keymap)
 
     private func makeCommands() -> [Command] {
@@ -308,6 +337,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         return [
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
             Command("Open Folder…", menu: "File", key: "n") { [weak self] in self?.toggleFolderPicker() },
+            Command("Project Launch Presets…", menu: "File") { [weak self] in self?.showPresets() },
+            Command("Connect over SSH…", menu: "File") { [weak self] in self?.showRemote() },
             Command("New Tab", menu: "File", key: "t") { [weak self] in self?.newTab() },
             Command("New Tab in Worktree", menu: "File", key: "t", [.command, .shift]) { [weak self] in self?.newTab(worktree: true) },
             Command("Browse for Folder…", menu: "File", key: "o") { [weak self] in self?.browseForFolder() },
@@ -324,8 +355,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 if let path = w.currentProject?.path { self?.closeFolder(path) }
             },
 
+            Command("Reload Configuration", menu: "tern") { GhosttyApp.shared.applyTheme() },
             Command("Restart ternd", menu: "tern") { [weak self] in self?.restartDaemon() },
 
+            Command("Find…", menu: "Edit", key: "f") { [weak self] in self?.terminalArea.find() },
+            Command("Find Next", menu: "Edit", key: "g") { [weak self] in self?.terminalArea.findNext() },
+            Command("Find Previous", menu: "Edit", key: "g", [.command, .shift]) { [weak self] in self?.terminalArea.findNext(previous: true) },
+            Command("Use Selection for Find", menu: "Edit", key: "e") { [weak self] in
+                self?.terminalArea.focusedTerminal()?.performBinding("search_selection")
+            },
             Command("Clear Screen", menu: "Edit", key: "k", [.command, .shift]) { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("clear_screen")
             },
@@ -335,6 +373,17 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 self?.splitController.toggleSidebar(nil)
             },
             // ⌘↩ also opens the picker's choice in a worktree: the menu sees the key before the picker does.
+            Command("Move Tab Earlier", menu: "Navigate") { w.shiftTab(-1) },
+            Command("Move Tab Later", menu: "Navigate") { w.shiftTab(1) },
+            Command("Swap Pane with Previous", menu: "View") { w.swapPane(-1) },
+            Command("Swap Pane with Next", menu: "View") { w.swapPane(1) },
+            Command("Move Pane to New Tab", menu: "View") { w.detachPane() },
+            Command("Move Pane to Next Tab", menu: "View") { w.movePaneToNextTab() },
+            Command("Equalize Panes", menu: "View") { w.equalizePanes() },
+            Command("Widen Pane", menu: "View", key: Key.right, [.command, .control]) { w.resizePane(axis: .horizontal, delta: 0.05) },
+            Command("Narrow Pane", menu: "View", key: Key.left, [.command, .control]) { w.resizePane(axis: .horizontal, delta: -0.05) },
+            Command("Taller Pane", menu: "View", key: Key.up, [.command, .control]) { w.resizePane(axis: .vertical, delta: 0.05) },
+            Command("Shorter Pane", menu: "View", key: Key.down, [.command, .control]) { w.resizePane(axis: .vertical, delta: -0.05) },
             Command("Zoom Pane", menu: "View", key: "\r") { [weak self] in
                 if let picker = self?.picker { picker.submit(worktree: true) } else { w.toggleZoom() }
             },
@@ -539,6 +588,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// A closed tab leaves its worktree behind: offer to remove it, branch kept.
     func offerWorktreeRemoval(_ path: String) {
+        guard !workspace.allTabs.contains(where: { $0.worktree == path }) else { return }
         guard FileManager.default.fileExists(atPath: path) else { return }
         let name = URL(fileURLWithPath: path).lastPathComponent
         let changes = Worktree.changes(in: path)

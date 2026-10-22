@@ -3,6 +3,7 @@ import AppKit
 /// One user-facing action. The menu bar and the ⌘K palette are both built from
 /// the same list, so every shortcut is discoverable in both places.
 final class Command {
+    static var defaults: [String: TerminalPreferences.Shortcut] = [:]
     let title: String
     let menu: String
     let key: String
@@ -16,8 +17,10 @@ final class Command {
          inMenu: Bool = true, inPalette: Bool = true, action: @escaping () -> Void) {
         self.title = title
         self.menu = menu
-        self.key = key
-        self.modifiers = modifiers
+        if inPalette { Self.defaults[title] = TerminalPreferences.Shortcut(key: key, modifiers: modifiers) }
+        let overrides = try? TerminalPreferences.parseShortcuts(TerminalPreferences.current.shortcuts)
+        self.key = overrides?[title]?.key ?? key
+        self.modifiers = overrides?[title]?.modifiers ?? modifiers
         self.inMenu = inMenu
         self.inPalette = inPalette
         self.action = action
@@ -79,7 +82,17 @@ final class CommandRunner: NSObject {
     static let shared = CommandRunner()
 
     @objc func run(_ sender: NSMenuItem) {
-        (sender.representedObject as? Command)?.action()
+        guard let command = sender.representedObject as? Command else { return }
+        if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.settings", command.title == "Close Pane" {
+            window.performClose(nil)
+            return
+        }
+        // Editing a preset must not close a running pane behind its window.
+        if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.workflow" {
+            if command.title == "Close Pane" { window.performClose(nil) }
+            return
+        }
+        command.action()
     }
 }
 

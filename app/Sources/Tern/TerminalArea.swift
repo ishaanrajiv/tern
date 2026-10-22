@@ -10,6 +10,7 @@ final class TerminalArea: NSView {
     private var dimmers: [String: NSView] = [:]
     private var dividers: [(rect: CGRect, path: [Bool], axis: SplitAxis, parent: CGRect)] = []
     private var dragging: (path: [Bool], axis: SplitAxis, parent: CGRect)?
+    private let searchBar = TerminalSearch(frame: .zero)
     private var reattached: [String: Date] = [:]
 
     static let dividerWidth: CGFloat = 1
@@ -20,6 +21,9 @@ final class TerminalArea: NSView {
         self.ternBinary = ternBinary
         super.init(frame: .zero)
         wantsLayer = true
+        searchBar.isHidden = true
+        searchBar.onClose = { [weak self] in self?.needsLayout = true }
+        addSubview(searchBar)
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
@@ -29,6 +33,7 @@ final class TerminalArea: NSView {
     /// Re-syncs views with the model. Called whenever the workspace changes.
     func refresh(focus: Bool) {
         let tab = workspace.selectedTab
+        if !searchBar.isHidden, searchBar.terminal?.sessionID != tab?.focusedPane { searchBar.close(restoreFocus: false) }
         let visible = Set(tab.map { $0.zoomed ? [$0.focusedPane] : $0.root.panes } ?? [])
 
         // Drop views for panes that no longer exist anywhere.
@@ -41,9 +46,28 @@ final class TerminalArea: NSView {
             dimmers[pane] = nil
         }
 
-        for pane in visible where terminals[pane] == nil {
+        for pane in visible.union(workspace.panesNeedingLaunch) where terminals[pane] == nil {
             let view = TerminalView(sessionID: pane, ternBinary: ternBinary, cwd: workspace.cwd(for: pane),
                                     initLine: workspace.resumeCommand(for: pane))
+            view.onSearch = { [weak self, weak view] needle in
+                guard let self, let view else { return }
+                self.searchBar.open(view, needle: needle)
+                self.needsLayout = true
+            }
+            view.onEndSearch = { [weak self, weak view] in
+                guard let self, self.searchBar.terminal === view else { return }
+                self.searchBar.isHidden = true
+                self.needsLayout = true
+                if let view { self.window?.makeFirstResponder(view) }
+            }
+            view.onSearchTotal = { [weak self, weak view] value in
+                guard let self, self.searchBar.terminal === view else { return }
+                self.searchBar.setTotal(value)
+            }
+            view.onSearchSelected = { [weak self, weak view] value in
+                guard let self, self.searchBar.terminal === view else { return }
+                self.searchBar.setSelected(value)
+            }
             view.onFocus = { [weak self] in self?.workspace.focus(pane: pane) }
             view.onClose = { [weak self] in self?.attachEnded(pane) }
             view.onResize = { [weak self] in self?.workspace.noteResize(pane) }
@@ -63,7 +87,7 @@ final class TerminalArea: NSView {
         needsLayout = true
         layoutSubtreeIfNeeded()
 
-        if focus, let tab, let view = terminals[tab.focusedPane], window?.firstResponder !== view {
+        if focus, searchBar.isHidden, let tab, let view = terminals[tab.focusedPane], window?.firstResponder !== view {
             window?.makeFirstResponder(view)
         }
     }
@@ -96,18 +120,23 @@ final class TerminalArea: NSView {
         return terminals[tab.focusedPane]
     }
 
+    func find() { focusedTerminal()?.performBinding("start_search") }
+    func findNext(previous: Bool = false) { searchBar.navigate(previous: previous) }
+
     override func layout() {
         super.layout()
         dividers = []
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
         guard let tab = workspace.selectedTab else { return }
+        let area = NSRect(x: 0, y: 0, width: bounds.width, height: max(0, bounds.height - (searchBar.isHidden ? 0 : 38)))
+        searchBar.frame = NSRect(x: 0, y: area.height, width: bounds.width, height: 38)
         if tab.zoomed {
-            terminals[tab.focusedPane]?.frame = bounds
-            dimmers[tab.focusedPane]?.frame = bounds
+            terminals[tab.focusedPane]?.frame = area
+            dimmers[tab.focusedPane]?.frame = area
             return
         }
-        layoutNode(tab.root, in: bounds, path: [])
+        layoutNode(tab.root, in: area, path: [])
     }
 
     private func layoutNode(_ node: SplitNode, in rect: CGRect, path: [Bool]) {

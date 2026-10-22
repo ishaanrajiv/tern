@@ -125,7 +125,12 @@ private struct FolderSection: View {
                     Text(project.name).font(.system(size: 13, weight: .semibold)).padding(6)
                 }
                 .dropDestination(for: String.self) { paths, _ in
-                    guard reorderable, let path = paths.first else { return false }
+                    guard let path = paths.first else { return false }
+                    if path.hasPrefix("tern-tab:") {
+                        workspace.moveTab(String(path.dropFirst(9)), to: project.path)
+                        return true
+                    }
+                    guard reorderable else { return false }
                     workspace.moveProject(path, before: project.path)
                     return true
                 } isTargeted: { dropTarget = reorderable && $0 }
@@ -133,8 +138,19 @@ private struct FolderSection: View {
                 ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
                     TabRow(workspace: workspace, tab: tab, now: now, actions: actions,
                            hint: tabHints && index < 9 ? "⇧⌘\(index + 1)" : nil)
+                        .draggable("tern-tab:" + tab.id)
+                        .dropDestination(for: String.self) { items, _ in
+                            guard let item = items.first, item.hasPrefix("tern-tab:") else { return false }
+                            workspace.moveTab(String(item.dropFirst(9)), to: project.path, before: tab.id)
+                            return true
+                        }
                         .contextMenu {
                             Button("Rename…") { actions.rename(tab.id) }
+                            Menu("Move to Folder") {
+                                ForEach(workspace.projects) { folder in
+                                    Button(folder.name) { workspace.moveTab(tab.id, to: folder.path) }
+                                }
+                            }
                             Button("Close Tab") { actions.close(tab.id) }
                         }
                 }

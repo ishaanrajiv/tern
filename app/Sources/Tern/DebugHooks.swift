@@ -5,7 +5,7 @@ import AppKit
 ///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title;
 ///                      Escape, Return, Tab, Up, Down, Cmd+A, Cmd+C or Cmd+V to press that key;
 ///                      Type <text>; Hover, Click or DoubleClick X Y; Drag X1 Y1 X2 Y2; or Button N to
-///                      answer an alert sheet)
+///                      answer an alert sheet; Window <title> focuses an auxiliary window)
 /// An app may capture its own windows without screen-recording permission.
 enum DebugHooks {
     private static var sources: [DispatchSourceSignal] = []
@@ -18,6 +18,12 @@ enum DebugHooks {
         on(SIGUSR2) {
             guard let text = try? String(contentsOf: dir.appendingPathComponent("command"), encoding: .utf8) else { return }
             let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Target auxiliary editors explicitly when checking an isolated app.
+            if title.hasPrefix("Window "), let window = NSApp.windows.first(where: { $0.title == String(title.dropFirst(7)) }) {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                return
+            }
             // "Button N" answers the alert sheet up, as if its Nth button were clicked.
             if title.hasPrefix("Button "), let n = Int(title.dropFirst(7)),
                let parent = NSApp.windows.first(where: { $0.attachedSheet != nil }), let sheet = parent.attachedSheet {
@@ -29,7 +35,7 @@ enum DebugHooks {
             // "Drag X1 Y1 X2 Y2": a left-button drag, to select text.
             if parts.count == 5, parts[0] == "Drag",
                let x1 = Double(parts[1]), let y1 = Double(parts[2]), let x2 = Double(parts[3]), let y2 = Double(parts[4]),
-               let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+               let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
                 let steps: [(NSEvent.EventType, Double, Double)] = [(.leftMouseDown, x1, y1)]
                     + (1...8).map { (.leftMouseDragged, x1 + (x2 - x1) * Double($0) / 8, y1 + (y2 - y1) * Double($0) / 8) }
                     + [(.leftMouseUp, x2, y2)]
@@ -44,7 +50,7 @@ enum DebugHooks {
             }
             if parts.count == 3, ["Hover", "Click", "DoubleClick"].contains(parts[0]),
                let x = Double(parts[1]), let y = Double(parts[2]),
-               let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+               let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
                 let point = NSPoint(x: x, y: window.frame.height - y)
                 let click: [(NSEvent.EventType, Int)] = [(.leftMouseDown, 1), (.leftMouseUp, 1)]
                 let events: [(NSEvent.EventType, Int)] = switch parts[0] {

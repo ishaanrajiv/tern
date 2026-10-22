@@ -67,15 +67,14 @@ struct GeneralSettings: View {
                     Text("Most recent first").tag(FolderOrder.recent.rawValue)
                 } label: {
                     Labeled("Order", caption: folderOrder == FolderOrder.manual.rawValue
-                            ? "Folders stay where they are, so ⌘1–9 always mean the same folder. Drag to reorder." : nil)
+                            ? "Drag to reorder. ⌘1–9 follow this order." : nil)
                 }
                 RepoRootsList(text: $repoRoots)
             }
 
             Section("Tabs") {
                 Toggle(isOn: $worktrees) {
-                    Labeled("Give each new tab its own git worktree",
-                            caption: "⌘T in a git folder creates <repo>-worktrees/session-N on branch tern/session-N. ⌘⇧T always does.")
+                    Labeled("New tabs use git worktrees", caption: "⌘⇧T always opens a worktree.")
                 }
             }
         }
@@ -103,8 +102,8 @@ struct AppearanceSettings: View {
             } footer: {
                 Text(theme == "ghostty"
                      ? "Uses the colours from your Ghostty config."
-                     : "Colours the sidebar and the terminal. Fonts and keys still come from your Ghostty config.")
-                    .font(.callout)
+                     : "Applies to the sidebar and terminal.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -112,12 +111,10 @@ struct AppearanceSettings: View {
 
             Section("Sidebar") {
                 Picker(selection: $indicator) {
-                    Text("Spinner at the end of the row").tag(WorkingIndicator.trailing)
-                    Text("Agent logo turns").tag(WorkingIndicator.turning)
+                    Text("Trailing spinner").tag(WorkingIndicator.trailing)
+                    Text("Turning agent logo").tag(WorkingIndicator.turning)
                 } label: {
-                    Labeled("While working", caption: indicator == .trailing
-                            ? "Logos hold still; a spinner takes the place of the tab's age."
-                            : "The agent's logo turns; the tab's age stays.")
+                    Text("Working indicator")
                 }
             }
         }
@@ -137,44 +134,37 @@ struct AgentSettings: View {
 
     var body: some View {
         Form {
-            Section("Claude Code") {
-                AgentToggle(hooks: hooks, agent: "claude", caption: "In ~/.claude/settings.json, with a status line for usage limits.")
-                Toggle(isOn: $claudeAccountUsage) {
-                    Labeled("Usage limits from your account", caption: "Uses Claude Code's sign-in in the Keychain. Choose Always Allow.")
-                }
-                VersionRow(agent: "claude", version: updates.versions["claude"], checking: updates.checking, update: runUpdate)
+            Section("Integrations") {
+                AgentIntegrationRow(hooks: hooks, agent: "claude", name: "Claude Code",
+                                    version: updates.versions["claude"], checking: updates.checking, update: runUpdate)
+                AgentIntegrationRow(hooks: hooks, agent: "codex", name: "Codex",
+                                    version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
+                Toggle("Read Claude account usage", isOn: $claudeAccountUsage)
+                    .help("Uses Claude Code's sign-in in the Keychain. Choose Always Allow. Tern never refreshes its token.")
             }
-
-            Section("Codex") {
-                AgentToggle(hooks: hooks, agent: "codex", caption: "In ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
-                VersionRow(agent: "codex", version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
-            }
-
-            Section {
-                Toggle("Notify when an agent needs you", isOn: $notifyNeedsYou)
-                Toggle("Notify when an agent finishes", isOn: $notifyDone)
+            Section("Notifications and resume") {
+                Toggle("Agent needs your input", isOn: $notifyNeedsYou)
+                Toggle("Agent finishes", isOn: $notifyDone)
                     .help("Only for sessions you aren't looking at.")
-                Toggle("Resume conversations after a reboot", isOn: $resumeAgents)
-                    .help("A session lost to a reboot reopens its Claude Code or Codex conversation.")
-            } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    if let error = hooks.error {
-                        Text(error).foregroundStyle(.red)
-                    }
-                    if AgentNotifier.unavailable {
-                        Text("macOS isn't letting tern post notifications yet.").foregroundStyle(.secondary)
-                    }
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(updates.checking ? "Checking for updates…"
-                             : updates.lastChecked.map { "Updates checked at \($0.formatted(date: .omitted, time: .shortened))." }
-                             ?? "Updates not checked yet.")
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Check Now") { updates.check() }
-                            .disabled(updates.checking)
-                    }
+                Toggle("Resume agents after a reboot", isOn: $resumeAgents)
+                    .help("Reopens the Claude Code or Codex conversation when its previous session is gone.")
+            }
+            Section {
+                HStack {
+                    Text(updates.checking ? "Checking for updates…"
+                         : updates.lastChecked.map { "Checked at \($0.formatted(date: .omitted, time: .shortened))" }
+                         ?? "Updates not checked yet")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Check Now") { updates.check() }.disabled(updates.checking)
                 }
-                .font(.callout)
+                if let error = hooks.error {
+                    Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                }
+                if AgentNotifier.unavailable {
+                    Text("macOS notification permission is unavailable.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
         .settingsPane()
@@ -182,33 +172,44 @@ struct AgentSettings: View {
     }
 }
 
-private extension View {
-    func settingsPane() -> some View {
-        formStyle(.grouped)
-            .frame(width: 500)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}
-
-/// An agent's installed version, with an Update button when a newer one is out. Updates run in a new tab.
-private struct VersionRow: View {
+private struct AgentIntegrationRow: View {
+    let hooks: AgentHooks
     let agent: String
+    let name: String
     let version: AgentUpdates.Version?
     let checking: Bool
     let update: (AgentUpdates.Version) -> Void
 
     var body: some View {
-        LabeledContent {
-            if let version, version.behind {
-                Button("Update to \(version.latest ?? "")") { update(version) }
-            } else if version?.installed != nil {
-                Text(version?.latest == nil ? "Couldn't reach npm" : "Up to date")
-                    .foregroundStyle(.secondary)
+        let status = hooks.statuses[agent]
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(name)
+                Text(version?.installed ?? (checking ? "Checking version…" : "Not found in PATH"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-        } label: {
-            Labeled("Version", caption: version?.installed
-                    ?? (checking ? "Looking…" : "Not found in your shell's PATH."))
+            Spacer()
+            if let version, version.behind {
+                Button("Update") { update(version) }
+                    .help("Update to \(version.latest ?? "the latest version")")
+            }
+            Button(status?.installed == true ? "Remove Hooks" : "Set Up Hooks") {
+                hooks.set(agent, installed: status?.installed != true)
+            }
+            .disabled(status?.available == false)
+            .help(agent == "codex"
+                  ? "Reports agent status through ~/.codex/hooks.json. Run /hooks in Codex once to trust new hooks."
+                  : "Reports agent status through ~/.claude/settings.json and records usage through its status line.")
         }
+    }
+}
+
+extension View {
+    /// Every tab has the same compact viewport. Forms scroll when content grows.
+    func settingsPane() -> some View {
+        formStyle(.grouped)
+            .controlSize(.small)
+            .frame(width: 580, height: 460)
     }
 }
 
@@ -272,8 +273,8 @@ private struct RepoRootsList: View {
             Button("Add Folder…", action: add)
         } label: {
             Labeled("Find repositories in", caption: roots.isEmpty
-                    ? "None: opening a folder (⌘N) offers only recent ones."
-                    : "Git repositories up to three levels down are offered when you open a folder (⌘N).")
+                    ? "Only recent folders appear in ⌘N."
+                    : "Search up to three levels deep.")
         }
         ForEach(roots, id: \.self) { root in
             HStack {
@@ -325,7 +326,7 @@ private struct Labeled: View {
             Text(title)
             if let caption {
                 Text(caption)
-                    .font(.callout)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -333,29 +334,11 @@ private struct Labeled: View {
     }
 }
 
-/// Hooks tell tern when an agent is working, needs you, or is done.
-private struct AgentToggle: View {
-    let hooks: AgentHooks
-    let agent: String
-    let caption: String
-
-    var body: some View {
-        let status = hooks.statuses[agent]
-        Toggle(isOn: Binding(
-            get: { status?.installed == true },
-            set: { hooks.set(agent, installed: $0) }
-        )) {
-            Labeled("Report status to tern", caption: status?.available == false ? "Not installed on this Mac." : caption)
-        }
-        .disabled(status?.available == false)
-    }
-}
-
-/// Settings in toolbar panes, as in other Mac apps. The window fits each pane.
+/// Settings use a shared, bounded viewport across all toolbar tabs.
 final class SettingsWindowController: NSWindowController {
     convenience init(hooks: AgentHooks, updates: AgentUpdates, runUpdate: @escaping (AgentUpdates.Version) -> Void) {
         // Read before adding panes: adding the first one selects it, which saves its index.
-        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 2)
+        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 3)
         let tabs = SettingsTabs()
         tabs.tabStyle = .toolbar
         tabs.canPropagateSelectedChildViewControllerTitle = true
@@ -370,8 +353,10 @@ final class SettingsWindowController: NSWindowController {
         }
         pane("General", "gearshape", GeneralSettings())
         pane("Appearance", "paintpalette", AppearanceSettings())
+        pane("Terminal", "terminal", TerminalSettings())
         pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, runUpdate: runUpdate))
         let window = NSWindow(contentViewController: tabs)
+        window.identifier = NSUserInterfaceItemIdentifier("tern.settings")
         window.styleMask = [.titled, .closable]
         window.toolbarStyle = .preference
         self.init(window: window)

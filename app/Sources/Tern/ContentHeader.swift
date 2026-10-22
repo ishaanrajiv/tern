@@ -16,14 +16,18 @@ struct ContentHeader: View {
                         .font(.system(size: 12, weight: .semibold))
                         .lineLimit(1)
                     // A tab titled "~" needn't say "~" twice.
-                    if let cwd = s?.cwd, abbreviateHome(cwd) != workspace.title(for: tab) {
+                    if let remote = workspace.remote(for: tab.focusedPane) {
+                        Label(remote.host + ":" + remote.directory, systemImage: "network")
+                            .font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if workspace.remote(for: tab.focusedPane) == nil, let cwd = s?.cwd, abbreviateHome(cwd) != workspace.title(for: tab) {
                         Text(abbreviateHome(cwd))
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.head)
                     }
-                    if let branch = s?.branch {
+                    if workspace.remote(for: tab.focusedPane) == nil, let branch = s?.branch {
                         Label(branch, systemImage: "arrow.triangle.branch")
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
