@@ -6,7 +6,7 @@
 #               refuses notification permission to apps run from a build folder.
 #   --debug     debug Swift build
 #   --dist      build to run on other Macs: sign with Developer ID and the hardened
-#               runtime, notarize, staple, and write build/Tern.zip. Needs a
+#               runtime, notarize, staple, and write a versioned ZIP and checksum. Needs a
 #               "Developer ID Application" certificate and a notarytool keychain
 #               profile named tern (override with TERN_NOTARY_PROFILE):
 #                 xcrun notarytool store-credentials tern --apple-id <email> --team-id <TEAMID>
@@ -49,7 +49,7 @@ else
     IDENTITY="${TERN_SIGN_IDENTITY:-$(identity "Apple Development")}"
 fi
 
-cargo build --release --manifest-path "$ROOT/Cargo.toml"
+cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
 swift build -c "$CONFIG" --package-path "$ROOT/app"
 BIN="$(swift build -c "$CONFIG" --package-path "$ROOT/app" --show-bin-path)"
 
@@ -78,18 +78,22 @@ codesign --verify --strict --deep "$APP"
 echo "built $APP (signed: ${IDENTITY:-ad-hoc})"
 
 if [ "$DIST" = 1 ]; then
-    ZIP="$ROOT/build/Tern.zip"
+    VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+    ARCH="$(uname -m)"
+    ZIP="$ROOT/build/Tern-$VERSION-macos-$ARCH.zip"
     rm -f "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
     echo "notarizing (usually a few minutes)..."
     # On a rejection, `xcrun notarytool log <id> --keychain-profile tern` says why.
     xcrun notarytool submit "$ZIP" --keychain-profile "$PROFILE" --wait
     xcrun stapler staple "$APP"
+    xcrun stapler validate "$APP"
     # Re-zip so the copy you hand out carries the stapled ticket and opens offline.
     rm -f "$ZIP"
     ditto -c -k --keepParent "$APP" "$ZIP"
     spctl --assess --type execute -vv "$APP"
-    echo "ready to copy: $ZIP"
+    (cd "$ROOT/build" && shasum -a 256 "$(basename "$ZIP")" > "$(basename "$ZIP").sha256")
+    echo "ready to copy: $ZIP and $ZIP.sha256"
 fi
 
 if [ "$INSTALL" = 1 ]; then

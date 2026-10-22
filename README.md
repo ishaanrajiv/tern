@@ -6,7 +6,7 @@ Mac-native keys, and sessions that survive quitting the app.
 > [!WARNING]
 > **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
 > anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
-> that don't carry over. There are no releases yet: you build it from source (see [Build](#build)).
+> that don't carry over. There are no published releases yet: you build it from source (see [Build](#build)).
 > It runs on macOS 14 or later.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
@@ -319,6 +319,11 @@ them with `scripts/vt-bindings.sh` (needs `cargo install bindgen-cli`).
 
 ### Distribution build
 
+The first Apple Silicon prerelease candidate is `0.0.1`. The
+[release plan](docs/0.0.1-release-plan.md) records signing setup, packaging work and the
+fixes retained from the closed release PRs. The repository remains private during
+[public-readiness review](docs/public-readiness.md).
+
 To build a signed, notarized copy for another Mac, you need a **Developer ID Application**
 certificate and a notarytool Keychain profile. Store the credentials once:
 
@@ -332,9 +337,16 @@ Then build:
 ./scripts/build-app.sh --dist
 ```
 
-This enables the hardened runtime, notarizes the app, staples its ticket and writes
-`build/Tern.zip`. `TERN_NOTARY_PROFILE` overrides the default profile name `tern`.
+This enables the hardened runtime, notarizes the app, staples and validates its ticket,
+and writes `build/Tern-<version>-macos-<arch>.zip` with a `.sha256` checksum file.
+`TERN_NOTARY_PROFILE` overrides the default profile name `tern`.
 You can combine `--dist` with `--install`, but not `--debug`.
+
+From a clean, committed checkout with Ghostty's dependency sources fetched, create the
+complete source bundle with `python3 scripts/package-source.py`. It writes
+`build/Tern-<version>-source.tar.gz` and its `.sha256` file, including the pinned Ghostty
+source, native dependency sources, vendored Rust crates and rebuild instructions.
+See [RELEASING.md](RELEASING.md) for checks and draft release preparation.
 
 ### Third-party notices
 
