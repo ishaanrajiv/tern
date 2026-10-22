@@ -8,9 +8,12 @@ has concrete runtime, input-validation and privacy issues. Publishing source and
 distributing a signed binary are separate decisions. A private draft prerelease
 can support maintainer testing while the follow-up work is tracked.
 
-The GitHub API confirms that `ishaanrajiv/tern` is private, `main` is unprotected,
-and no releases have been published. The security-feature metadata was unavailable;
-this review does not infer that those features are enabled or disabled.
+The initial GitHub API check confirmed that `ishaanrajiv/tern` was private, `main` was
+unprotected, and no releases existed. The security-feature metadata was unavailable;
+this review does not infer that those features are enabled or disabled. The maintainer
+subsequently installed the signed app and authorized publication of the private
+[v0.0.1 prerelease](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1) on 2026-10-23.
+The issues below remain unresolved, and repository visibility is unchanged.
 
 ## Source and history
 

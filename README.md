@@ -6,8 +6,9 @@ Mac-native keys, and sessions that survive quitting the app.
 > [!WARNING]
 > **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
 > anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
-> that don't carry over. There are no published releases yet: you build it from source (see [Build](#build)).
-> It runs on macOS 14 or later.
+> that don't carry over. The [0.0.1 Apple Silicon prerelease](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1)
+> is available to people with repository access. You can also [build from source](#build).
+> It targets macOS 14 or later; testing on macOS 14 is still outstanding.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
 Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
@@ -319,7 +320,7 @@ them with `scripts/vt-bindings.sh` (needs `cargo install bindgen-cli`).
 
 ### Distribution build
 
-The first Apple Silicon prerelease candidate is `0.0.1`. The
+The first Apple Silicon prerelease is [0.0.1](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1). The
 [release plan](docs/0.0.1-release-plan.md) records signing setup, packaging work and the
 fixes retained from the closed release PRs. The repository remains private during
 [public-readiness review](docs/public-readiness.md).

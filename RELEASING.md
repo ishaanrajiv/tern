@@ -1,8 +1,9 @@
 # Releasing tern
 
-The first release candidate is `0.0.1` for Apple Silicon. Keep the GitHub release a draft
-until the signed download has passed the required checks. Repository visibility is a
-separate decision; see [the public-readiness review](docs/public-readiness.md).
+The first release is the private `0.0.1` prerelease for Apple Silicon. Prepare subsequent
+candidates as drafts and record their validation and remaining gaps before publication.
+Repository visibility is a separate decision; see
+[the public-readiness review](docs/public-readiness.md).
 
 ## One-time setup
 
