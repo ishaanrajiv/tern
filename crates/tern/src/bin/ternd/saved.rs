@@ -11,13 +11,21 @@ use std::time::Duration;
 use anyhow::Result;
 use tern::*;
 
-use crate::screen::write_lines;
+use crate::screen::saved_screen;
 use crate::session::{now_ms, Session, Sessions};
 
 /// Set once ternd is told to quit, so sessions dying with it keep their saved screens.
 pub static QUITTING: AtomicBool = AtomicBool::new(false);
 
 const SAVE_EVERY: Duration = Duration::from_secs(15);
+
+/// Version of the saved screen's bytes. 0: no header, rows from the vt100 crate.
+/// 1: libghostty-vt's formatter output. Both are VT bytes that replay as they are.
+const SCREEN_FORMAT: u32 = 1;
+/// The header is an APC string, which terminals ignore, so even a ternd that
+/// predates it replays the file without stray text.
+const HEADER_START: &[u8] = b"\x1b_tern-screen ";
+const HEADER_END: &[u8] = b"\x1b\\";
 const KEEP_SAVED_FOR: Duration = Duration::from_secs(30 * 24 * 3600);
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -45,7 +53,16 @@ fn saved_paths(id: &str) -> Option<(PathBuf, PathBuf)> {
 pub fn load_saved(id: &str) -> Option<(SavedMeta, Vec<u8>)> {
     let (screen, meta) = saved_paths(id)?;
     let meta: SavedMeta = serde_json::from_slice(&std::fs::read(meta).ok()?).ok()?;
-    Some((meta, std::fs::read(screen).ok()?))
+    let (_, body) = screen_body(std::fs::read(screen).ok()?)?;
+    Some((meta, body))
+}
+
+/// The format version and the bytes to replay; None for a format newer than this ternd.
+fn screen_body(file: Vec<u8>) -> Option<(u32, Vec<u8>)> {
+    let Some(rest) = file.strip_prefix(HEADER_START) else { return Some((0, file)) };
+    let end = rest.windows(HEADER_END.len()).position(|w| w == HEADER_END)?;
+    let version: u32 = std::str::from_utf8(&rest[..end]).ok()?.trim().parse().ok()?;
+    (version <= SCREEN_FORMAT).then(|| (version, rest[end + HEADER_END.len()..].to_vec()))
 }
 
 pub fn forget_saved(id: &str) {
@@ -59,7 +76,10 @@ fn write_saved(id: &str, screen: &[u8], meta: &SavedMeta) -> Result<()> {
     let Some((screen_path, meta_path)) = saved_paths(id) else { return Ok(()) };
     std::fs::create_dir_all(saved_dir())?;
     let tmp = screen_path.with_extension("screen.tmp");
-    std::fs::write(&tmp, screen)?;
+    let mut file = format!("{}{SCREEN_FORMAT}", String::from_utf8_lossy(HEADER_START)).into_bytes();
+    file.extend_from_slice(HEADER_END);
+    file.extend_from_slice(screen);
+    std::fs::write(&tmp, file)?;
     std::fs::rename(&tmp, &screen_path)?;
     std::fs::write(&meta_path, serde_json::to_vec(meta)?)?;
     Ok(())
@@ -95,12 +115,11 @@ fn save_session(s: &Session, force: bool) {
         let mut st = s.state.lock().unwrap();
         // Full-screen programs own the screen; the main screen behind them isn't
         // reachable, so the last save from before they started stands.
-        if st.parser.screen().alternate_screen() || (!force && st.saved_output_ms == st.last_output_ms) {
+        if st.screen.alternate_screen() || (!force && st.saved_output_ms == st.last_output_ms) {
             return;
         }
         st.saved_output_ms = st.last_output_ms;
-        let mut out = Vec::new();
-        write_lines(&mut st.parser, &mut out, true);
+        let out = saved_screen(&st.screen);
         let agent = st.agent.as_ref().and_then(|a| Some((a.agent.clone(), a.session.clone()?)));
         (out, agent)
     };
@@ -209,6 +228,39 @@ mod tests {
             forget_saved("p-1");
             assert!(load_saved("p-1").is_none());
         });
+    }
+
+    #[test]
+    fn screens_carry_their_format_version() {
+        with_runtime_dir(|dir| {
+            write_saved("p-3", b"hi\r\n", &SavedMeta { saved_ms: 1, command: None }).unwrap();
+            let file = std::fs::read(dir.join("saved/p-3.screen")).unwrap();
+            assert!(file.starts_with(b"\x1b_tern-screen 1\x1b\\"), "{file:?}");
+            assert_eq!(screen_body(file), Some((1, b"hi\r\n".to_vec())));
+        });
+    }
+
+    #[test]
+    fn headerless_screens_replay_unchanged() {
+        let old = b"\x1b[m\x1b[31mred\x1b[m\r\n".to_vec();
+        assert_eq!(screen_body(old.clone()), Some((0, old)));
+    }
+
+    #[test]
+    fn screens_from_a_newer_ternd_are_skipped() {
+        assert_eq!(screen_body(b"\x1b_tern-screen 9\x1b\\x".to_vec()), None);
+        assert_eq!(screen_body(b"\x1b_tern-screen junk\x1b\\x".to_vec()), None);
+    }
+
+    #[test]
+    fn the_header_is_invisible_to_a_terminal() {
+        let mut file = HEADER_START.to_vec();
+        file.extend_from_slice(b"1");
+        file.extend_from_slice(HEADER_END);
+        file.extend_from_slice(b"hello");
+        let mut t = crate::vt::Terminal::new(20, 3, 10);
+        t.write(&file);
+        assert_eq!(String::from_utf8(t.format(crate::vt::Format::Plain)).unwrap(), "hello");
     }
 
     #[test]

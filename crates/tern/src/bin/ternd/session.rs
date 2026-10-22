@@ -20,6 +20,7 @@ use tern::*;
 
 use crate::saved::{forget_saved, load_saved, restored_banner, SavedMeta, QUITTING};
 use crate::screen::snapshot;
+use crate::vt::Terminal;
 
 const SCROLLBACK_LINES: usize = 10_000;
 
@@ -43,7 +44,7 @@ pub struct Session {
 }
 
 pub struct SessionState {
-    pub parser: vt100::Parser<TermEvents>,
+    pub screen: Terminal,
     clients: Vec<(u64, Sender<Msg>)>,
     pub last_output_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
@@ -62,22 +63,6 @@ pub struct AgentReport {
     pub at_ms: u64,
     pub session: Option<String>,
     pub message: Option<String>,
-}
-
-/// Terminal events the headless screen reports back to us.
-#[derive(Default)]
-pub struct TermEvents {
-    title: String,
-    bells: u64,
-}
-
-impl vt100::Callbacks for TermEvents {
-    fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
-        self.title = String::from_utf8_lossy(title).into_owned();
-    }
-    fn audible_bell(&mut self, _: &mut vt100::Screen) {
-        self.bells += 1;
-    }
 }
 
 pub fn now_ms() -> u64 {
@@ -110,9 +95,8 @@ fn session_info(s: &Session) -> SessionInfo {
             st.agent = None;
         }
         let report = st.agent.as_ref().map(|a| (a.agent.clone(), a.state, a.at_ms, a.session.clone(), a.message.clone()));
-        let (rows, cols) = st.parser.screen().size();
-        let cb = st.parser.callbacks();
-        (cols, rows, st.clients.len(), cb.title.clone(), cb.bells, st.last_output_ms, report, command)
+        let (cols, rows) = st.screen.size();
+        (cols, rows, st.clients.len(), st.screen.title(), st.screen.bells(), st.last_output_ms, report, command)
     };
     let cwd = fg.cwd.or_else(|| procinfo::process_cwd(s.pid)).or_else(|| s.start_cwd.clone());
     let git = cwd.as_deref().and_then(|d| procinfo::git_info(std::path::Path::new(d)));
@@ -215,11 +199,11 @@ pub fn spawn_session(
     // We reap the child ourselves with waitpid once its PTY closes.
     std::mem::forget(child);
 
-    let mut parser = vt100::Parser::new_with_callbacks(rows, cols, SCROLLBACK_LINES, TermEvents::default());
+    let mut screen = Terminal::new(cols, rows, SCROLLBACK_LINES);
     // Lay the saved screen down before the new shell prints anything.
-    let restored = load_saved(id).map(|(meta, screen)| {
-        parser.process(&screen);
-        parser.process(restored_banner(meta.saved_ms, cols).as_bytes());
+    let restored = load_saved(id).map(|(meta, saved)| {
+        screen.write(&saved);
+        screen.write(restored_banner(meta.saved_ms, cols).as_bytes());
         meta
     });
     let session = Arc::new(Session {
@@ -228,7 +212,7 @@ pub fn spawn_session(
         start_cwd: cwd,
         master,
         state: Mutex::new(SessionState {
-            parser,
+            screen,
             clients: Vec::new(),
             last_output_ms: now_ms(),
             saved_output_ms: 0,
@@ -271,7 +255,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 if command.is_some() {
                     st.command = command;
                 }
-                st.parser.process(bytes);
+                st.screen.write(bytes);
                 st.last_output_ms = now_ms();
                 st.clients.retain(|(_, tx)| tx.send(Msg::Output(bytes.to_vec())).is_ok());
             }
@@ -320,7 +304,7 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
     let snapshot = {
         let mut st = session.state.lock().unwrap();
         resize_locked(&session, &mut st, cols, rows);
-        let snap = snapshot(&mut st.parser);
+        let snap = snapshot(&st.screen);
         st.clients.push((client_id, tx));
         snap
     };
@@ -405,10 +389,10 @@ fn answer_prompt(session: &Session, input: &[u8]) {
 }
 
 fn resize_locked(session: &Session, st: &mut SessionState, cols: u16, rows: u16) {
-    if cols == 0 || rows == 0 || st.parser.screen().size() == (rows, cols) {
+    if cols == 0 || rows == 0 || st.screen.size() == (cols, rows) {
         return;
     }
-    st.parser.screen_mut().set_size(rows, cols);
+    st.screen.resize(cols, rows);
     let ws = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
     unsafe {
         let _ = set_winsize(session.master.as_raw_fd(), &ws);

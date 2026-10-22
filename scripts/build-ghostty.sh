@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Builds vendor/ghostty/macos/GhosttyKit.xcframework (libghostty for macOS).
+# Builds vendor/ghostty/macos/GhosttyKit.xcframework (libghostty for macOS, which the
+# app links) and vendor/ghostty/zig-out/lib/libghostty-vt.a (the terminal engine
+# ternd links; Rust builds need it, see crates/tern/build.rs).
 #
 # Zig's own package fetcher has been flaky here (TLS failures, stalls), so this
 # downloads every dependency with curl into .zig-deps/<hash>/ and builds with
@@ -68,4 +70,5 @@ zig build --system "$DEPS" \
   -Demit-macos-app=false \
   -Demit-docs=false \
   -Dxcframework-target=native
-echo "built $GHOSTTY/macos/GhosttyKit.xcframework"
+test -f "$GHOSTTY/zig-out/lib/libghostty-vt.a" || { echo "zig build made no libghostty-vt.a" >&2; exit 1; }
+echo "built $GHOSTTY/macos/GhosttyKit.xcframework and $GHOSTTY/zig-out/lib/libghostty-vt.a"

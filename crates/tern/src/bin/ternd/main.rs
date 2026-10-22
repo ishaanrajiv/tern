@@ -1,6 +1,6 @@
 //! ternd: owns the PTYs so terminal sessions outlive the tern app.
 //!
-//! Each session keeps a headless vt100 screen alongside its PTY. When a client
+//! Each session keeps a headless libghostty-vt terminal alongside its PTY. When a client
 //! attaches, it first receives a snapshot of that screen (history, then the
 //! visible screen), then the live output stream.
 //!
@@ -9,6 +9,7 @@
 
 mod saved;
 mod screen;
+mod vt;
 mod session;
 
 use std::io::{BufRead, BufReader, Write};

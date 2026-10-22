@@ -12,7 +12,7 @@ echo "== swift build"
 # DebugHooks' screenshot API is deprecated but debug-only; any other warning fails.
 # SwiftPM only reports warnings for files it compiles this run.
 out=$(cd app && swift build 2>&1) || { echo "$out"; exit 1; }
-warnings=$(echo "$out" | grep -E 'warning:' | grep -v 'DebugHooks.swift' || true)
+warnings=$(echo "$out" | grep -E '^/.*: warning:' | grep -v 'DebugHooks.swift' || true)
 if [ -n "$warnings" ]; then
     echo "$warnings"
     exit 1

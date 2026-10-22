@@ -11,7 +11,9 @@ Mac-native keys, and sessions that survive quitting the app.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
 Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
-and tern notifies you and takes you there with ⌘J.
+and ⌘J takes you to the next one needing attention. The Dock badge counts agents waiting for you.
+Notification banners are implemented but currently blocked by a macOS permission issue; see
+[Known gaps](#known-gaps).
 
 ## Folders and tabs
 
@@ -43,16 +45,21 @@ there.
 
 ## Agent status
 
-Each tab in the sidebar is one line: its status, its name, which agent runs in it (**C** for Claude
-Code, **X** for Codex) and how long since it last did something:
+Each tab shows a status glyph, its name and the time since its last activity. The glyph is Claude's
+spark for Claude Code, OpenAI's mark for Codex, or a circle for a shell. Its colour tells you the state:
 
-| Icon | Meaning |
+| Appearance | Meaning |
 |---|---|
-| turning arc | Working (blue for an agent) |
-| amber ring with a dot | Needs you: a permission prompt or a question. The folder header counts these. |
-| solid dot, bold name | Done, and you haven't looked yet |
-| hollow ring | Done or idle |
-| dashed ring | Not running: nothing for a day, or waiting to be reopened after a restart |
+| Amber glyph, bold name, amber row tint and rail | Needs you: a permission prompt or a question. The folder header counts these. |
+| Blue glyph | Working. By default, a spinner replaces the age at the end of the row. |
+| Text-coloured glyph, bold name | Done, and you haven't looked yet. A shell uses a solid dot. |
+| Grey glyph | Idle. A shell uses a hollow ring. |
+| Faint glyph | Dormant: no recent activity, or waiting to be reopened after a restart. |
+
+Settings → Appearance → Sidebar lets you replace the trailing spinner with a turning glyph.
+Collapsed folder headers and the header above the terminal use the same status glyphs. A tab with
+split panes shows its most urgent pane's state. In zsh, a shell tab becomes done when its command
+finishes, rather than whenever it prints output.
 
 Sessions running an agent are named after its task (the title Claude Code and Codex give the terminal).
 The header above the terminal shows the session, its folder and branch, its status, and what the agent
@@ -65,9 +72,9 @@ to trust new hooks once: run `/hooks` inside Codex. When a newer tern listens to
 updates hooks you already set up at launch (never adding them where you haven't). Without hooks, tern
 still recognizes the agents and guesses their state from their output.
 
-When an agent needs you or finishes in a session you aren't looking at, you get a notification
-(click it to go there), the Dock icon shows how many are waiting, and ⌘J jumps to the next one:
-whatever needs you first, then whatever finished.
+When an agent needs you in a session you aren't looking at, the Dock bounces and its badge shows
+how many are waiting. ⌘J jumps to whatever needs you first, then whatever finished. Notification
+banners, when macOS grants permission, can also take you there when clicked.
 
 ### Usage limits
 
@@ -130,13 +137,15 @@ escape codes asks too.
 
 ## Settings
 
-Three panes: General (folders, tabs), Appearance (theme), Agents (a section each for Claude Code and
+Three panes: General (folders, tabs), Appearance (theme and sidebar), Agents (a section each for Claude Code and
 Codex with hooks, usage limits and versions, then notifications and resume).
 
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal
   (background, foreground, cursor, selection, ANSI 16) on top of your Ghostty config, so fonts and
   keys still come from it. The palette has the same choices ("Theme: …"); a change applies at once.
+- **While working**: a spinner at the end of the row (default), or a turning status glyph. With the
+  spinner, agent logos stay still; with the turning glyph, the age stays visible.
 - **Folder order**: as opened (default), or most recent first.
 - **Find repositories in** (`~/dev`): the folders the picker searches for git repositories, three
   levels deep. Add Folder… adds one; a folder that no longer exists is marked "not found".
@@ -158,13 +167,17 @@ Tern.app (Swift, AppKit)
        └─ child process: tern attach <session>              ← byte relay over a unix socket
                               │
 ternd (Rust, launchd agent dev.tern.ternd)
-  └─ owns each session's PTY + a headless vt100 screen
+  └─ owns each session's PTY + a headless libghostty-vt terminal
      so sessions outlive the app and repaint on reattach
 ```
 
 - `crates/tern`: the `tern` CLI and the `ternd` daemon, plus the protocol in `src/lib.rs`
   (one JSON request line, then length-prefixed binary frames). ternd lives in `src/bin/ternd/`:
-  `session.rs` (PTYs, attach, agent reports), `screen.rs` (snapshots), `saved.rs` (screens on disk).
+  `session.rs` (PTYs, attach, agent reports), `screen.rs` (snapshots), `saved.rs` (screens on disk),
+  `vt/` (libghostty-vt, linked statically; `scripts/vt-bindings.sh` regenerates its bindings).
+  Because the headless terminal is Ghostty's own engine, a reattaching pane gets back what it showed,
+  with the program's modes (bracketed paste, mouse, kitty keyboard flags) and links. Saved screens
+  start with a format version and keep colours but not modes.
 - Versions: the app says `hello` to ternd at launch. ternd answers with its protocol number and a
   hash of its binary. When the installed ternd is newer than the running one, tern offers to restart
   it, and warns when the running one speaks an older protocol. Restarting ends the programs in your
@@ -191,7 +204,15 @@ ternd (Rust, launchd agent dev.tern.ternd)
 
 ## Build
 
-Requirements: Xcode with the Metal toolchain, Rust, and the Zig version Ghostty pins.
+Requirements:
+
+- Xcode with Swift 6.2 or later and the Metal toolchain. The app builds in Swift 6 language mode.
+- Rust and Cargo.
+- Zig matching `minimum_zig_version` in `vendor/ghostty/build.zig.zon`, currently `0.17.0`.
+- Python 3 and curl for Ghostty's dependency downloads.
+
+Install Zig, then check `zig version` against the submodule's requirement. If Homebrew supplies a
+different version, install the matching Zig toolchain before building.
 
 ```bash
 brew install zig
@@ -210,10 +231,6 @@ git submodule update --init
 ```
 
 ```bash
-./scripts/build-app.sh
-```
-
-```bash
 ./scripts/build-app.sh --install
 ```
 
@@ -221,12 +238,35 @@ git submodule update --init
 open ~/Applications/Tern.app
 ```
 
-`build-app.sh` signs the app with your Apple Development identity if you have one, and ad-hoc
-otherwise. `--install` copies it to `~/Applications`; a running ternd keeps working through the
-swap.
+`build-app.sh` writes `build/Tern.app` and signs it with your Apple Development identity if you have
+one, and ad-hoc otherwise. `--install` also copies it to `~/Applications`; a running ternd keeps
+working through the swap. Omit `--install` to build without installing, or add `--debug` for a debug
+Swift build. Set `TERN_SIGN_IDENTITY` to choose a signing identity, or `-` for ad-hoc signing.
 
 `build-ghostty.sh` downloads Ghostty's Zig dependencies with curl into `.zig-deps/` and builds
 offline with `zig build --system`, because Zig's own fetcher was unreliable here.
+It builds libghostty for the current Mac's architecture.
+
+### Distribution build
+
+To build a signed, notarized copy for another Mac, you need a **Developer ID Application**
+certificate and a notarytool Keychain profile. Store the credentials once:
+
+```bash
+xcrun notarytool store-credentials tern --apple-id <email> --team-id <TEAMID>
+```
+
+Then build:
+
+```bash
+./scripts/build-app.sh --dist
+```
+
+This enables the hardened runtime, notarizes the app, staples its ticket and writes
+`build/Tern.zip`. `TERN_NOTARY_PROFILE` overrides the default profile name `tern`.
+You can combine `--dist` with `--install`, but not `--debug`.
+
+### Third-party notices
 
 `build-app.sh` puts `LICENSE` and `THIRD_PARTY_NOTICES.md` in the app's `Contents/Resources`. After
 updating the Ghostty submodule or the Rust dependencies, regenerate the notices (it reads the license

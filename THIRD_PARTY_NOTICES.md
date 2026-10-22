@@ -16,16 +16,16 @@ and the MPL's for z2d, whose source is at <https://github.com/vancluever/z2d>.
 
 | Component | License | In Tern.app |
 |---|---|---|
-| [Ghostty (libghostty, shell integration, terminfo)](https://github.com/ghostty-org/ghostty) | MIT | linked; resources |
+| [Ghostty (libghostty, libghostty-vt, shell integration, terminfo)](https://github.com/ghostty-org/ghostty) | MIT | linked into the app and `ternd`; resources |
 | [libxev](https://github.com/mitchellh/libxev) | MIT | linked |
 | [zig-objc](https://github.com/mitchellh/zig-objc) | MIT | linked |
-| [uucode](https://github.com/jacobsandlund/uucode) | MIT | linked |
+| [uucode](https://github.com/jacobsandlund/uucode) | MIT | linked into the app and `ternd` |
 | [z2d](https://github.com/vancluever/z2d) | MPL-2.0 | linked |
 | [libvaxis](https://github.com/rockorager/libvaxis) | MIT | linked |
 | [zf](https://github.com/natecraddock/zf) | MIT | linked |
 | [Oniguruma](https://github.com/kkos/oniguruma) | BSD-2-Clause | linked |
-| [simdutf](https://github.com/simdutf/simdutf) | MIT OR Apache-2.0 | linked |
-| [Highway](https://github.com/google/highway) | Apache-2.0 OR BSD-3-Clause | linked |
+| [simdutf](https://github.com/simdutf/simdutf) | MIT OR Apache-2.0 | linked into the app and `ternd` |
+| [Highway](https://github.com/google/highway) | Apache-2.0 OR BSD-3-Clause | linked into the app and `ternd` |
 | [FreeType](https://freetype.org) | FTL | linked |
 | [libpng](http://www.libpng.org/pub/png/libpng.html) | libpng-2.0 | linked |
 | [zlib](https://zlib.net) | Zlib | linked |
@@ -43,7 +43,6 @@ and the MPL's for z2d, whose source is at <https://github.com/vancluever/z2d>.
 | [Nerd Fonts Symbols Only](https://github.com/ryanoasis/nerd-fonts) | MIT | embedded font |
 | [iTerm2 Color Schemes (Ghostty themes)](https://github.com/mbadolato/iTerm2-Color-Schemes) | MIT | resources |
 | [anyhow 1.0.104](https://github.com/dtolnay/anyhow) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
-| [arrayvec 0.7.8](https://github.com/bluss/arrayvec) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
 | [bitflags 2.13.2](https://github.com/bitflags/bitflags) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
 | [cfg-if 1.0.5](https://github.com/rust-lang/cfg-if) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
 | [equivalent 1.0.3](https://github.com/indexmap-rs/equivalent) | Apache-2.0 OR MIT | linked into `tern`, `ternd` |
@@ -60,14 +59,11 @@ and the MPL's for z2d, whose source is at <https://github.com/vancluever/z2d>.
 | [serde_json 1.0.154](https://github.com/serde-rs/json) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
 | [signal-hook 0.3.18](https://github.com/vorner/signal-hook) | Apache-2.0/MIT | linked into `tern`, `ternd` |
 | [signal-hook-registry 1.4.8](https://github.com/vorner/signal-hook) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
-| [unicode-width 0.2.2](https://github.com/unicode-rs/unicode-width) | MIT OR Apache-2.0 | linked into `tern`, `ternd` |
-| [vt100 0.16.2](https://github.com/doy/vt100-rust) | MIT | linked into `tern`, `ternd` |
-| [vte 0.15.0](https://github.com/alacritty/vte) | Apache-2.0 OR MIT | linked into `tern`, `ternd` |
 | [zmij 1.0.23](https://github.com/dtolnay/zmij) | MIT | linked into `tern`, `ternd` |
 
 ## Ghostty and its libraries
 
-### Ghostty (libghostty, shell integration, terminfo)
+### Ghostty (libghostty, libghostty-vt, shell integration, terminfo)
 
 <https://github.com/ghostty-org/ghostty> · MIT
 
@@ -4509,38 +4505,6 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### arrayvec 0.7.8
-
-<https://github.com/bluss/arrayvec> · MIT OR Apache-2.0
-
-```text
-Copyright (c) Ulrik Sverdrup "bluss" 2015-2023
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
 ### bitflags 2.13.2
 
 <https://github.com/bitflags/bitflags> · MIT OR Apache-2.0
@@ -5005,98 +4969,6 @@ DEALINGS IN THE SOFTWARE.
 
 ```text
 Copyright (c) 2017 tokio-jsonrpc developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-### unicode-width 0.2.2
-
-<https://github.com/unicode-rs/unicode-width> · MIT OR Apache-2.0
-
-```text
-Copyright (c) 2015 The Rust Project Developers
-
-Permission is hereby granted, free of charge, to any
-person obtaining a copy of this software and associated
-documentation files (the "Software"), to deal in the
-Software without restriction, including without
-limitation the rights to use, copy, modify, merge,
-publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software
-is furnished to do so, subject to the following
-conditions:
-
-The above copyright notice and this permission notice
-shall be included in all copies or substantial portions
-of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
-ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
-TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
-PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
-SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
-CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
-OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
-IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
-
-### vt100 0.16.2
-
-<https://github.com/doy/vt100-rust> · MIT
-
-```text
-The MIT License (MIT)
-
-Copyright (c) 2016 Jesse Luehrs
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### vte 0.15.0
-
-<https://github.com/alacritty/vte> · Apache-2.0 OR MIT
-
-```text
-Copyright (c) 2016 Joe Wilm
 
 Permission is hereby granted, free of charge, to any
 person obtaining a copy of this software and associated
