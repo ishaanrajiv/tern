@@ -200,7 +200,8 @@ ternd (Rust, launchd agent dev.tern.ternd)
   to a state and sends it to ternd for the session named by `TERN_SESSION_ID`. ternd recognizes the
   agents themselves by executable path and argv (Claude Code's binary is named after its version, and
   Codex runs under node), and drops a report once the shell is back in the foreground.
-- `vendor/ghostty`: Ghostty as a git submodule (MIT). It only provides libghostty.
+- `vendor/ghostty`: Ghostty as a git submodule (MIT). It provides libghostty for the app and
+  libghostty-vt for ternd.
 
 ## Build
 
@@ -245,7 +246,11 @@ Swift build. Set `TERN_SIGN_IDENTITY` to choose a signing identity, or `-` for a
 
 `build-ghostty.sh` downloads Ghostty's Zig dependencies with curl into `.zig-deps/` and builds
 offline with `zig build --system`, because Zig's own fetcher was unreliable here.
-It builds libghostty for the current Mac's architecture.
+It builds libghostty for the current Mac's architecture and `zig-out/lib/libghostty-vt.a`, which
+ternd links statically; Cargo builds fail with a pointer to this script until it exists.
+
+ternd's Rust bindings to libghostty-vt are checked in. After updating the submodule, regenerate
+them with `scripts/vt-bindings.sh` (needs `cargo install bindgen-cli`).
 
 ### Distribution build
 
@@ -330,7 +335,7 @@ daemon is spawned directly, without launchd.
 
 - Sessions survive the app quitting. A reboot or a ternd restart ends the processes, but not what
   they showed: ternd saves each screen (every 15s while it changes, and when it's told to quit), and
-  a pane that comes back shows its old screen, colours included, under a "restored" rule. The
+  a pane that comes back shows its old screen, colours and links included, under a "restored" rule. The
   command that was running is typed at the prompt, not run. Agent conversations resume (see
   Settings). Full-screen programs (vim, htop) aren't saved while they're up; the screen from before
   they started is.
@@ -355,8 +360,8 @@ daemon is spawned directly, without launchd.
 
 tern is released under the [MIT License](LICENSE).
 
-Tern.app also contains [Ghostty](https://github.com/ghostty-org/ghostty)'s libghostty (MIT) and the
-libraries it links, the fonts it embeds, and the Rust crates in `tern` and `ternd`.
+Tern.app also contains [Ghostty](https://github.com/ghostty-org/ghostty)'s libghostty (MIT, in the
+app) and libghostty-vt (MIT, in `ternd`) and the libraries they link, the fonts it embeds, and the Rust crates in `tern` and `ternd`.
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists each one with its license. Almost all are
 MIT, BSD, Apache-2.0 or zlib-style. The exceptions are GNU libintl (LGPL-2.1-or-later) and z2d
 (MPL-2.0), both statically linked by libghostty; their source, and tern's, is available as the notices
