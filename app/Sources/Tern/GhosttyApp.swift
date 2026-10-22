@@ -32,7 +32,9 @@ final class GhosttyApp {
         runtime.read_clipboard_cb = { userdata, location, state, _, _, _ in
             GhosttyApp.readClipboard(userdata, location: location, state: state)
         }
-        runtime.confirm_read_clipboard_cb = { _, _, _, _ in }
+        runtime.confirm_read_clipboard_cb = { userdata, confirm, state, request in
+            GhosttyApp.confirmClipboard(userdata, confirm: confirm, state: state, request: request)
+        }
         runtime.write_clipboard_cb = { _, location, content, len, _ in
             GhosttyApp.writeClipboard(location: location, content: content, len: len)
         }
@@ -165,6 +167,84 @@ final class GhosttyApp {
             }
         }
         return GHOSTTY_CLIPBOARD_READ_STARTED
+    }
+
+    /// Ghostty asks before a paste that could run commands (newlines, and the program hasn't
+    /// turned on bracketed paste) and before a program reads the clipboard. The request stays
+    /// open until it's completed as confirmed or denied.
+    private static func confirmClipboard(
+        _ userdata: UnsafeMutableRawPointer?,
+        confirm: UnsafePointer<ghostty_clipboard_confirm_s>?,
+        state: UnsafeMutableRawPointer?,
+        request: ghostty_clipboard_request_e
+    ) {
+        guard let view = TerminalView.from(userdata), let confirm else { return }
+        // Borrowed for this call only: copy before asking.
+        let contents: [(mime: String, data: Data)] = (0..<confirm.pointee.contents_len).compactMap { i in
+            let item = confirm.pointee.contents[i]
+            guard let mime = item.mime, let data = item.data else { return nil }
+            return (String(cString: mime), Data(bytes: data, count: item.len))
+        }
+        let text = contents.first { $0.mime == "text/plain" }.map { String(decoding: $0.data, as: UTF8.self) } ?? ""
+        DispatchQueue.main.async {
+            askClipboard(text: text, request: request, in: view.window) { allowed in
+                guard let surface = view.surface else { return }
+                guard allowed else { return ghostty_surface_deny_clipboard_request(surface, state) }
+                complete(surface, contents: contents, state: state)
+            }
+        }
+    }
+
+    private static func askClipboard(text: String, request: ghostty_clipboard_request_e, in window: NSWindow?,
+                                     answer: @escaping (Bool) -> Void) {
+        let alert = NSAlert()
+        switch request {
+        case GHOSTTY_CLIPBOARD_REQUEST_PASTE:
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            let preview = lines.prefix(6).map { $0.count > 80 ? $0.prefix(80) + "…" : $0 }.joined(separator: "\n")
+            alert.messageText = lines.count > 1 ? "Paste \(lines.count) lines?" : "Paste this?"
+            alert.informativeText = "The program in this tab hasn't turned on bracketed paste, so each line may run "
+                + "as a command.\n\n\(preview)\(lines.count > 6 ? "\n…" : "")"
+            alert.addButton(withTitle: "Paste")
+        case GHOSTTY_CLIPBOARD_REQUEST_OSC_52_WRITE, GHOSTTY_CLIPBOARD_REQUEST_KITTY_WRITE:
+            alert.messageText = "Let this tab set the clipboard?"
+            alert.informativeText = "A program in this tab wants to replace what's on the clipboard."
+            alert.addButton(withTitle: "Allow")
+        default:
+            alert.messageText = "Let this tab read the clipboard?"
+            alert.informativeText = "A program in this tab asked for what's on the clipboard."
+            alert.addButton(withTitle: "Allow")
+        }
+        alert.addButton(withTitle: "Cancel")
+        guard let window, window.attachedSheet == nil else {
+            return answer(alert.runModal() == .alertFirstButtonReturn)
+        }
+        alert.beginSheetModal(for: window) { answer($0 == .alertFirstButtonReturn) }
+    }
+
+    private static func complete(_ surface: ghostty_surface_t, contents: [(mime: String, data: Data)],
+                                 state: UnsafeMutableRawPointer?) {
+        // Pointers into these copies live only for the call.
+        let mimes = contents.map { strdup($0.mime)! }
+        let datas = contents.map { item -> UnsafeMutablePointer<CChar> in
+            let p = UnsafeMutablePointer<CChar>.allocate(capacity: max(item.data.count, 1))
+            _ = item.data.withUnsafeBytes { raw in raw.copyBytes(to: UnsafeMutableRawBufferPointer(start: p, count: item.data.count)) }
+            return p
+        }
+        defer {
+            mimes.forEach { free($0) }
+            datas.forEach { $0.deallocate() }
+        }
+        let items = contents.indices.map { i in
+            ghostty_clipboard_content_s(mime: mimes[i], data: datas[i], len: contents[i].data.count)
+        }
+        items.withUnsafeBufferPointer { buf in
+            var done = ghostty_clipboard_complete_s(
+                contents: buf.baseAddress, contents_len: buf.count,
+                available: nil, available_len: 0,
+                confirmed: true, remember: false)
+            ghostty_surface_complete_clipboard_request(surface, &done, state)
+        }
     }
 
     private static func writeClipboard(

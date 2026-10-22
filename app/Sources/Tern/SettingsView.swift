@@ -69,13 +69,7 @@ struct GeneralSettings: View {
                     Labeled("Order", caption: folderOrder == FolderOrder.manual.rawValue
                             ? "Folders stay where they are, so ⌘1–9 always mean the same folder. Drag to reorder." : nil)
                 }
-                LabeledContent {
-                    TextField("", text: $repoRoots, prompt: Text("~/dev"))
-                        .frame(width: 180)
-                        .multilineTextAlignment(.trailing)
-                } label: {
-                    Labeled("Find repositories in", caption: "Offered when you open a folder (⌘N). Separate folders with commas.")
-                }
+                RepoRootsList(text: $repoRoots)
             }
 
             Section("Tabs") {
@@ -131,67 +125,44 @@ struct AgentSettings: View {
 
     var body: some View {
         Form {
-            Section {
-                AgentToggle(hooks: hooks, agent: "claude", name: "Claude Code",
-                            caption: "Adds hooks to ~/.claude/settings.json.")
-                AgentToggle(hooks: hooks, agent: "codex", name: "Codex",
-                            caption: "Adds hooks to ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
-                if let error = hooks.error {
-                    Text(error).font(.callout).foregroundStyle(.red)
-                }
-            } header: {
-                Text("Status")
-            } footer: {
-                Text("Hooks tell tern when an agent is working, needs you, or is done. For Claude Code, tern also sets a status line command, which shows nothing and reports usage limits for the sidebar.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Section("Usage limits") {
+            Section("Claude Code") {
+                AgentToggle(hooks: hooks, agent: "claude", caption: "In ~/.claude/settings.json, with a status line for usage limits.")
                 Toggle(isOn: $claudeAccountUsage) {
-                    Labeled("Read Claude Code's limits from your account",
-                            caption: "Uses Claude Code's sign-in from the Keychain, so the sidebar shows your limits wherever Claude Code runs. macOS asks once: choose Always Allow.")
+                    Labeled("Usage limits from your account", caption: "Uses Claude Code's sign-in in the Keychain. Choose Always Allow.")
                 }
+                VersionRow(agent: "claude", version: updates.versions["claude"], checking: updates.checking, update: runUpdate)
+            }
+
+            Section("Codex") {
+                AgentToggle(hooks: hooks, agent: "codex", caption: "In ~/.codex/hooks.json. Run /hooks in Codex once to trust them.")
+                VersionRow(agent: "codex", version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
             }
 
             Section {
-                ForEach(["claude", "codex"], id: \.self) { agent in
-                    VersionRow(agent: agent, version: updates.versions[agent], checking: updates.checking,
-                               update: runUpdate)
-                }
-            } header: {
-                Text("Versions")
+                Toggle("Notify when an agent needs you", isOn: $notifyNeedsYou)
+                Toggle("Notify when an agent finishes", isOn: $notifyDone)
+                    .help("Only for sessions you aren't looking at.")
+                Toggle("Resume conversations after a reboot", isOn: $resumeAgents)
+                    .help("A session lost to a reboot reopens its Claude Code or Codex conversation.")
             } footer: {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(updates.checking ? "Checking…"
-                         : updates.lastChecked.map {
-                             "Checked at \($0.formatted(date: .omitted, time: .shortened)). Updates run in a new tab."
-                         } ?? "Not checked yet.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check Now") { updates.check() }
-                        .disabled(updates.checking)
+                VStack(alignment: .leading, spacing: 6) {
+                    if let error = hooks.error {
+                        Text(error).foregroundStyle(.red)
+                    }
+                    if AgentNotifier.unavailable {
+                        Text("macOS isn't letting tern post notifications yet.").foregroundStyle(.secondary)
+                    }
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(updates.checking ? "Checking for updates…"
+                             : updates.lastChecked.map { "Updates checked at \($0.formatted(date: .omitted, time: .shortened))." }
+                             ?? "Updates not checked yet.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Check Now") { updates.check() }
+                            .disabled(updates.checking)
+                    }
                 }
-            }
-
-            Section("Notifications") {
-                Toggle(isOn: $notifyNeedsYou) {
-                    Labeled("When an agent needs you", caption: AgentNotifier.unavailable
-                            ? "macOS isn't letting tern post notifications yet." : nil)
-                }
-                Toggle(isOn: $notifyDone) {
-                    Labeled("When an agent finishes", caption: "Only for sessions you aren't looking at.")
-                }
-            }
-
-            Section("After a restart") {
-                Toggle(isOn: $resumeAgents) {
-                    Labeled("Resume agent conversations",
-                            caption: "If a session was lost to a reboot, tern reopens its Claude Code or Codex conversation.")
-                }
+                .font(.callout)
             }
         }
         .settingsPane()
@@ -207,7 +178,7 @@ private extension View {
     }
 }
 
-/// An agent's installed version, with an Update button when a newer one is out.
+/// An agent's installed version, with an Update button when a newer one is out. Updates run in a new tab.
 private struct VersionRow: View {
     let agent: String
     let version: AgentUpdates.Version?
@@ -215,7 +186,6 @@ private struct VersionRow: View {
     let update: (AgentUpdates.Version) -> Void
 
     var body: some View {
-        let name = agent == "claude" ? "Claude Code" : "Codex"
         LabeledContent {
             if let version, version.behind {
                 Button("Update to \(version.latest ?? "")") { update(version) }
@@ -224,7 +194,7 @@ private struct VersionRow: View {
                     .foregroundStyle(.secondary)
             }
         } label: {
-            Labeled(name, caption: version?.installed.map { "\($0) installed" }
+            Labeled("Version", caption: version?.installed
                     ?? (checking ? "Looking…" : "Not found in your shell's PATH."))
         }
     }
@@ -280,6 +250,54 @@ private struct ThemeSwatch: View {
     }
 }
 
+/// The folders searched for git repositories: one row each, with − to remove and Add Folder… to choose more.
+private struct RepoRootsList: View {
+    @Binding var text: String
+
+    var body: some View {
+        let roots = Prefs.parseRoots(text)
+        LabeledContent {
+            Button("Add Folder…", action: add)
+        } label: {
+            Labeled("Find repositories in", caption: roots.isEmpty
+                    ? "None: opening a folder (⌘N) offers only recent ones."
+                    : "Git repositories up to three levels down are offered when you open a folder (⌘N).")
+        }
+        ForEach(roots, id: \.self) { root in
+            HStack {
+                Image(systemName: "folder").foregroundStyle(.secondary)
+                Text(root).lineLimit(1).truncationMode(.middle)
+                if !FileManager.default.fileExists(atPath: Workspace.normalize(root)) {
+                    Text("not found").font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { text = Prefs.joinRoots(roots.filter { $0 != root }) } label: {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .help("Stop searching \(root)")
+            }
+        }
+    }
+
+    private func add() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = true
+        panel.prompt = "Add"
+        panel.message = "Choose folders to search for git repositories"
+        panel.directoryURL = URL(fileURLWithPath: NSHomeDirectory())
+        guard panel.runModal() == .OK else { return }
+        var roots = Prefs.parseRoots(text)
+        for url in panel.urls {
+            let path = abbreviateHome(url.path)
+            if !roots.contains(path) { roots.append(path) }
+        }
+        text = Prefs.joinRoots(roots)
+    }
+}
+
 /// A setting's name with a quieter explanation under it.
 private struct Labeled: View {
     let title: String
@@ -303,10 +321,10 @@ private struct Labeled: View {
     }
 }
 
+/// Hooks tell tern when an agent is working, needs you, or is done.
 private struct AgentToggle: View {
     let hooks: AgentHooks
     let agent: String
-    let name: String
     let caption: String
 
     var body: some View {
@@ -315,7 +333,7 @@ private struct AgentToggle: View {
             get: { status?.installed == true },
             set: { hooks.set(agent, installed: $0) }
         )) {
-            Labeled(name, caption: status?.available == false ? "Not installed on this Mac." : caption)
+            Labeled("Report status to tern", caption: status?.available == false ? "Not installed on this Mac." : caption)
         }
         .disabled(status?.available == false)
     }

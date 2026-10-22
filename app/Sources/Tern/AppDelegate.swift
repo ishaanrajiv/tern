@@ -43,11 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = MenuBuilder.build(commands: controller.commands)
         DebugHooks.install { [weak controller] in controller?.commands ?? [] }
         controller.showWindow(nil)
+        controller.checkDaemon()
         // Nothing open: start by choosing a folder.
         if workspace.allTabs.isEmpty { controller.showFolderPicker() }
 
         TernClient.watch { [weak self] list in self?.workspace.update(sessions: list) }
-        NSApp.activate(ignoringOtherApps: true)
+        // A private instance (TERN_RUNTIME_DIR, for testing) doesn't take the screen from the app in use.
+        if ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] == nil { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationDidBecomeActive(_ notification: Notification) { workspace.isActive = true }

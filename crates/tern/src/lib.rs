@@ -4,6 +4,9 @@
 //! For `attach`, the daemon answers with one JSON line (`AttachReply`) and
 //! the connection then switches to binary frames in both directions:
 //! `[kind: u8][len: u32 big-endian][payload]`.
+//!
+//! `hello` tells a client which protocol and build the running daemon speaks;
+//! a daemon from before `hello` closes the connection without answering.
 
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
@@ -24,9 +27,15 @@ pub const FRAME_OUTPUT: u8 = 0x81;
 /// Daemon -> client: the session's process exited, payload is `code: i32` big-endian.
 pub const FRAME_EXIT: u8 = 0x82;
 
+/// Bumped whenever a request, reply or frame changes in a way an older peer
+/// would misread. A client finding a different number asks for a restart.
+pub const PROTOCOL: u32 = 1;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
+    /// Answered with a `HelloReply`.
+    Hello,
     Attach {
         id: String,
         cols: u16,
@@ -73,6 +82,17 @@ pub enum AgentState {
     Done,
     /// The agent exited.
     Ended,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloReply {
+    pub protocol: u32,
+    /// The crate version, for people reading logs.
+    pub version: String,
+    pub pid: u32,
+    /// `build_id` of the ternd binary as it was when this daemon started, so a
+    /// client can tell a different one has been installed since.
+    pub build: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -131,6 +151,14 @@ pub fn runtime_dir() -> PathBuf {
 
 pub fn socket_path() -> PathBuf {
     runtime_dir().join("ternd.sock")
+}
+
+/// Identifies a binary by its contents (FNV-1a, hex), the same however it got
+/// where it is.
+pub fn build_id(path: &std::path::Path) -> io::Result<String> {
+    let bytes = std::fs::read(path)?;
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    Ok(format!("{hash:016x}"))
 }
 
 pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<()> {
@@ -193,4 +221,76 @@ pub fn spawn_on_pty(
         });
     }
     command.spawn()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frames_round_trip() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, FRAME_INPUT, b"ls\r").unwrap();
+        write_frame(&mut wire, FRAME_RESIZE, &resize_payload(120, 40)).unwrap();
+        write_frame(&mut wire, FRAME_OUTPUT, b"").unwrap();
+        let mut r = wire.as_slice();
+        let mut buf = Vec::new();
+        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_INPUT));
+        assert_eq!(buf, b"ls\r");
+        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_RESIZE));
+        assert_eq!(parse_resize(&buf), Some((120, 40)));
+        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_OUTPUT));
+        assert!(buf.is_empty());
+        // Clean EOF between frames.
+        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), None);
+    }
+
+    #[test]
+    fn a_cut_off_frame_is_an_error() {
+        let mut wire = Vec::new();
+        write_frame(&mut wire, FRAME_OUTPUT, b"hello").unwrap();
+        wire.truncate(7);
+        assert!(read_frame(&mut wire.as_slice(), &mut Vec::new()).is_err());
+    }
+
+    #[test]
+    fn bad_resize_payloads() {
+        assert_eq!(parse_resize(&[0, 1, 2]), None);
+        assert_eq!(parse_resize(&[]), None);
+    }
+
+    #[test]
+    fn requests_on_the_wire() {
+        assert_eq!(serde_json::to_string(&Request::Hello).unwrap(), r#"{"op":"hello"}"#);
+        // An attach from an older client (no init, no env) still parses.
+        let req: Request = serde_json::from_str(r#"{"op":"attach","id":"p-1","cols":80,"rows":24,"cwd":null,"cmd":null}"#).unwrap();
+        assert!(matches!(req, Request::Attach { init: None, ref env, .. } if env.is_empty()));
+        let req: Request =
+            serde_json::from_str(r#"{"op":"report","id":"p","agent":"claude","state":"needs_you","agent_session":null,"message":"Allow?"}"#)
+                .unwrap();
+        assert!(matches!(req, Request::Report { state: AgentState::NeedsYou, .. }));
+    }
+
+    #[test]
+    fn session_info_from_an_older_daemon() {
+        // Fields added later default when missing.
+        let json = r#"{"id":"p","pid":1,"cols":80,"rows":24,"clients":1,"cwd":null,"process":"zsh","title":"",
+            "git_root":null,"branch":null,"last_output_ms":0,"bells":0}"#;
+        let info: SessionInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(info.agent, None);
+        assert_eq!(info.command, None);
+    }
+
+    #[test]
+    fn build_id_follows_contents() {
+        let dir = std::env::temp_dir().join(format!("tern-build-id-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a"), dir.join("b"));
+        std::fs::write(&a, b"one").unwrap();
+        std::fs::write(&b, b"one").unwrap();
+        assert_eq!(build_id(&a).unwrap(), build_id(&b).unwrap());
+        std::fs::write(&b, b"two").unwrap();
+        assert_ne!(build_id(&a).unwrap(), build_id(&b).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

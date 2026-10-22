@@ -131,7 +131,8 @@ private struct FolderSection: View {
                 } isTargeted: { dropTarget = reorderable && $0 }
             if !project.collapsed {
                 ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
-                    TabRow(workspace: workspace, tab: tab, now: now, hint: tabHints && index < 9 ? "⇧⌘\(index + 1)" : nil)
+                    TabRow(workspace: workspace, tab: tab, now: now, actions: actions,
+                           hint: tabHints && index < 9 ? "⇧⌘\(index + 1)" : nil)
                         .contextMenu {
                             Button("Rename…") { actions.rename(tab.id) }
                             Button("Close Tab") { actions.close(tab.id) }
@@ -225,6 +226,7 @@ private struct TabRow: View {
     let workspace: Workspace
     let tab: Tab
     let now: Date
+    let actions: SidebarActions
     let hint: String?
     @State private var hovering = false
 
@@ -236,13 +238,17 @@ private struct TabRow: View {
         HStack(spacing: 8) {
             StatusIcon(status: status, isAgent: agent != nil)
             let title = workspace.title(for: tab)
-            Text(title)
-                .font(.system(size: 13, weight: emphasized ? .semibold : selected ? .medium : .regular))
-                .foregroundStyle(status == .dormant ? .secondary : .primary)
-                .lineLimit(1)
-                // Short names never truncate; long ones give way last.
-                .fixedSize(horizontal: title.count <= 14, vertical: false)
-                .layoutPriority(1)
+            if workspace.renamingTabID == tab.id {
+                RenameField(initial: tab.name ?? title) { workspace.finishRename(tab.id, name: $0) }
+            } else {
+                Text(title)
+                    .font(.system(size: 13, weight: emphasized ? .semibold : selected ? .medium : .regular))
+                    .foregroundStyle(status == .dormant ? .secondary : .primary)
+                    .lineLimit(1)
+                    // Short names never truncate; long ones give way last.
+                    .fixedSize(horizontal: title.count <= 14, vertical: false)
+                    .layoutPriority(1)
+            }
             if let worktree = tab.worktree {
                 Chip(text: (worktree as NSString).lastPathComponent)
                     .help("Worktree \(abbreviateHome(worktree))")
@@ -264,6 +270,17 @@ private struct TabRow: View {
             if let agent { AgentMark(agent: agent) }
             if let hint {
                 KeyBadge(text: hint)
+            } else if hovering {
+                Button { actions.close(tab.id) } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .background(Palette.selection, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .frame(minWidth: 22, alignment: .trailing)
+                .help("Close tab (⇧⌘W)")
             } else {
                 Text(relativeAge(workspace.lastActivity(tab), now: now))
                     .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
@@ -279,7 +296,9 @@ private struct TabRow: View {
             in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
-        .onTapGesture { workspace.select(tab.id) }
+        // The first click selects at once; the second of a double-click renames.
+        .onTapGesture(count: 2) { actions.rename(tab.id) }
+        .simultaneousGesture(TapGesture().onEnded { workspace.select(tab.id) })
         .help(helpText)
     }
 
@@ -287,6 +306,42 @@ private struct TabRow: View {
         let s = workspace.sessions[tab.focusedPane]
         let facts = [s?.process, s?.cwd.map(abbreviateHome), s?.branch].compactMap { $0 }.joined(separator: " · ")
         return [workspace.agentMessage(tab), facts].compactMap { $0 }.joined(separator: "\n")
+    }
+}
+
+/// A tab's name being edited in place: ↩ saves, Esc cancels, clicking elsewhere saves.
+/// Saving it empty names the tab after what runs in it again.
+private struct RenameField: View {
+    let finish: (String?) -> Void
+    @State private var text: String
+    @State private var done = false
+    @FocusState private var focused: Bool
+
+    init(initial: String, finish: @escaping (String?) -> Void) {
+        self.finish = finish
+        _text = State(initialValue: initial)
+    }
+
+    var body: some View {
+        TextField("Name after what's running", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13, weight: .medium))
+            .padding(.horizontal, 4)
+            .frame(height: 22)
+            .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.working, lineWidth: 1))
+            .focused($focused)
+            .onSubmit { end(text) }
+            .onExitCommand { end(nil) }
+            .onChange(of: focused) { _, now in if !now { end(text) } }
+            // Wait a turn: the click that started this may still be handing focus to the terminal.
+            .onAppear { DispatchQueue.main.async { focused = true } }
+    }
+
+    private func end(_ name: String?) {
+        guard !done else { return }
+        done = true
+        finish(name)
     }
 }
 

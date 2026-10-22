@@ -173,6 +173,22 @@ enum Prefs {
         ])
     }
 
+    /// The repository folders, one per line (older builds separated them with commas).
+    static var repoRootList: [String] {
+        get { parseRoots(UserDefaults.standard.string(forKey: repoRoots) ?? "") }
+        set { UserDefaults.standard.set(joinRoots(newValue), forKey: repoRoots) }
+    }
+
+    static func parseRoots(_ text: String) -> [String] {
+        text.split(whereSeparator: text.contains("\n") ? { $0 == "\n" } : { $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+
+    /// Always ends in a newline, so a single folder with a comma in its name reads back whole.
+    static func joinRoots(_ roots: [String]) -> String {
+        roots.map { $0 + "\n" }.joined()
+    }
+
     static var order: FolderOrder {
         FolderOrder(rawValue: UserDefaults.standard.string(forKey: folderOrder) ?? "") ?? .manual
     }
@@ -612,6 +628,16 @@ final class Workspace {
         mutateTab(tabID) { $0.name = name.isEmpty ? nil : name }
     }
 
+    /// The tab whose name is being edited in the sidebar.
+    var renamingTabID: String?
+
+    /// Ends an inline rename, saving `name` unless it's nil (cancelled).
+    func finishRename(_ tabID: String, name: String?) {
+        guard renamingTabID == tabID else { return }
+        if let name { rename(tabID, to: name.trimmingCharacters(in: .whitespaces)) }
+        renamingTabID = nil
+    }
+
     func setCollapsed(_ path: String, _ collapsed: Bool) {
         guard let i = projects.firstIndex(where: { $0.path == path }) else { return }
         projects[i].collapsed = collapsed
@@ -681,7 +707,12 @@ final class Workspace {
 
     // MARK: Persistence
 
-    private struct Saved: Codable {
+    /// Bumped when the saved layout changes shape. A file from another version is kept
+    /// aside before this one overwrites it.
+    static let layoutVersion = 1
+
+    struct Saved: Codable {
+        var version: Int?
         var projects: [Project]
         var selectedTabID: String?
         var paneCwd: [String: String]
@@ -689,21 +720,32 @@ final class Workspace {
         var recents: [String: Date]?
     }
 
+    /// With TERN_RUNTIME_DIR set (a private ternd for testing), everything tern keeps goes there instead.
     static let layoutURL: URL = {
-        let dir = FileManager.default.homeDirectoryForCurrentUser
+        let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/tern", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("layout.json")
     }()
 
+    /// Reads what it can: a folder, tab or field that doesn't decode is skipped, not the
+    /// whole file. Anything lost that way is kept aside first, since the next save overwrites it.
     func load() {
-        guard let data = try? Data(contentsOf: Self.layoutURL),
-              let saved = try? JSONDecoder().decode(Saved.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: Self.layoutURL) else { return }
+        let (saved, dropped) = Self.decodeLayout(data)
+        if saved == nil || dropped > 0 || saved?.version != Self.layoutVersion {
+            Self.keepAside(data, reason: saved == nil ? "unreadable" : "v\(saved?.version ?? 0)")
+        }
+        guard let saved else { return }
         projects = saved.projects.filter { !$0.tabs.isEmpty }
         for i in projects.indices { projects[i].numberTabs() }
-        selectedTabID = saved.selectedTabID ?? projects.first?.tabs.first?.id
-        paneCwd = saved.paneCwd
-        paneAgent = saved.paneAgent ?? [:]
+        let panes = Set(allTabs.flatMap { $0.root.panes })
+        let tabs = Set(allTabs.map(\.id))
+        selectedTabID = saved.selectedTabID.flatMap { tabs.contains($0) ? $0 : nil } ?? projects.first?.tabs.first?.id
+        // Records for panes no tab has any more go.
+        paneCwd = saved.paneCwd.filter { panes.contains($0.key) }
+        paneAgent = (saved.paneAgent ?? [:]).filter { panes.contains($0.key) }
         // Folders not used for 90 days drop out of the picker's recents.
         recents = (saved.recents ?? [:]).filter { $0.value.timeIntervalSinceNow > -90 * 86400 }
         for p in projects.indices {
@@ -711,11 +753,120 @@ final class Workspace {
         }
     }
 
+    /// The saved layout, and how many folders, tabs or fields in it didn't decode.
+    static func decodeLayout(_ data: Data) -> (Saved?, dropped: Int) {
+        let log = DecodeLog()
+        let decoder = JSONDecoder()
+        decoder.userInfo[.decodeLog] = log
+        let saved = try? decoder.decode(Saved.self, from: data)
+        return (saved, log.dropped)
+    }
+
+    /// Copies a layout this build can't fully read to layout-<reason>-<time>.json, keeping the last five.
+    private static func keepAside(_ data: Data, reason: String) {
+        let dir = layoutURL.deletingLastPathComponent()
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
+        try? data.write(to: dir.appendingPathComponent("layout-\(reason)-\(stamp).json"))
+        NSLog("tern: kept the saved layout aside (\(reason)) before replacing it")
+        let fm = FileManager.default
+        let old = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
+            .filter { $0.hasPrefix("layout-") && $0.hasSuffix(".json") }
+            .sorted { a, b in
+                let date = { (name: String) in
+                    (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(name).path)[.modificationDate] as? Date) ?? .distantPast
+                }
+                return date(a) > date(b)
+            }
+            .dropFirst(5)
+        for name in old { try? fm.removeItem(at: dir.appendingPathComponent(name)) }
+    }
+
     func save() {
-        let saved = Saved(projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd, paneAgent: paneAgent, recents: recents)
+        let saved = Saved(version: Self.layoutVersion, projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd,
+                          paneAgent: paneAgent, recents: recents)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(saved) else { return }
         try? data.write(to: Self.layoutURL, options: .atomic)
+    }
+}
+
+// MARK: Forgiving decoding
+
+/// Counts what a decode skipped.
+final class DecodeLog {
+    var dropped = 0
+}
+
+extension CodingUserInfoKey {
+    static let decodeLog = CodingUserInfoKey(rawValue: "tern.decodeLog")!
+}
+
+/// One element of an array that may not decode; it's skipped, and counted, rather than failing the array.
+private struct Lossy<T: Decodable>: Decodable {
+    let value: T?
+
+    init(from decoder: Decoder) throws {
+        value = try? T(from: decoder)
+        if value == nil { (decoder.userInfo[.decodeLog] as? DecodeLog)?.dropped += 1 }
+    }
+}
+
+private extension KeyedDecodingContainer {
+    /// The value, or nil (counted as dropped) if it's there but doesn't decode.
+    func lenient<T: Decodable>(_ type: T.Type, _ key: Key, decoder: Decoder) -> T? {
+        do { return try decodeIfPresent(type, forKey: key) } catch {
+            (decoder.userInfo[.decodeLog] as? DecodeLog)?.dropped += 1
+            return nil
+        }
+    }
+
+    func lossyArray<T: Decodable>(_ type: T.Type, _ key: Key, decoder: Decoder) -> [T] {
+        (lenient([Lossy<T>].self, key, decoder: decoder) ?? []).compactMap(\.value)
+    }
+}
+
+// Fields with a sensible default don't have to be in the file, so a layout from a build
+// before they existed loads, and one that's mangled loses only what's mangled.
+
+extension Tab {
+    private enum CodingKeys: String, CodingKey { case id, name, root, focusedPane, zoomed, worktree, number }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        root = try c.decode(SplitNode.self, forKey: .root)
+        let panes = root.panes
+        focusedPane = c.lenient(String.self, .focusedPane, decoder: decoder).flatMap { panes.contains($0) ? $0 : nil } ?? panes[0]
+        name = c.lenient(String.self, .name, decoder: decoder)
+        zoomed = false
+        worktree = c.lenient(String.self, .worktree, decoder: decoder)
+        number = c.lenient(Int.self, .number, decoder: decoder)
+    }
+}
+
+extension Project {
+    private enum CodingKeys: String, CodingKey { case path, tabs, collapsed, lastTab }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        path = try c.decode(String.self, forKey: .path)
+        tabs = c.lossyArray(Tab.self, .tabs, decoder: decoder)
+        collapsed = c.lenient(Bool.self, .collapsed, decoder: decoder) ?? false
+        lastTab = c.lenient(String.self, .lastTab, decoder: decoder)
+    }
+}
+
+extension Workspace.Saved {
+    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        version = c.lenient(Int.self, .version, decoder: decoder)
+        projects = c.lossyArray(Project.self, .projects, decoder: decoder)
+        selectedTabID = c.lenient(String.self, .selectedTabID, decoder: decoder)
+        paneCwd = c.lenient([String: String].self, .paneCwd, decoder: decoder) ?? [:]
+        paneAgent = c.lenient([String: AgentRef].self, .paneAgent, decoder: decoder)
+        recents = c.lenient([String: Date].self, .recents, decoder: decoder)
     }
 }

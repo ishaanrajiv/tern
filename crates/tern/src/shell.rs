@@ -53,19 +53,6 @@ pub fn last_command(id: &str) -> Option<Option<String>> {
     std::fs::read_to_string(command_file(id)).ok().map(|text| telling(&text))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::telling;
-
-    #[test]
-    fn picks_the_telling_part() {
-        assert_eq!(telling("cd api && npm run dev").as_deref(), Some("npm run dev"));
-        assert_eq!(telling("ls -la"), None);
-        assert_eq!(telling("git status; clear").as_deref(), Some("git status"));
-        assert_eq!(telling("cargo test\n  --release").as_deref(), Some("cargo test"));
-    }
-}
-
 /// What a command line says about a tab: its last part that isn't trivial,
 /// so `cd api && npm run dev` gives "npm run dev" and `ls` gives nothing.
 pub fn telling(line: &str) -> Option<String> {
@@ -88,4 +75,17 @@ pub fn is_trivial(command: &str) -> bool {
         "" | "cd" | "z" | "zi" | "ls" | "ll" | "la" | "l" | "eza" | "pwd" | "clear" | "cls" | "reset" | "exit"
             | "history" | "echo" | "which" | "type" | "true" | "false" | "source" | "." | "export" | "unset"
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::telling;
+
+    #[test]
+    fn picks_the_telling_part() {
+        assert_eq!(telling("cd api && npm run dev").as_deref(), Some("npm run dev"));
+        assert_eq!(telling("ls -la"), None);
+        assert_eq!(telling("git status; clear").as_deref(), Some("git status"));
+        assert_eq!(telling("cargo test\n  --release").as_deref(), Some("cargo test"));
+    }
 }

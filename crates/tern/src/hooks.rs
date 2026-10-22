@@ -132,7 +132,7 @@ fn config_path(agent: &str) -> Result<PathBuf> {
 /// A stable path for the hook command, so moving or rebuilding Tern.app
 /// doesn't break installed hooks (or Codex's trust in them).
 pub fn stable_binary() -> Result<PathBuf> {
-    Ok(home()?.join("Library/Application Support/tern/bin/tern"))
+    Ok(crate::runtime_dir().join("bin/tern"))
 }
 
 /// Points the stable path at this binary.
@@ -309,6 +309,10 @@ fn is_current(agent: &str, config: &Map<String, Value>) -> bool {
 /// Brings hooks an older tern installed up to this tern's events. Hooks that
 /// were never installed stay that way. Returns the agents updated.
 pub fn update_installed() -> Vec<&'static str> {
+    // A private ternd (testing) never rewrites the agents' real config.
+    if std::env::var_os("TERN_RUNTIME_DIR").is_some() {
+        return Vec::new();
+    }
     AGENTS
         .into_iter()
         .filter(|a| {
@@ -317,4 +321,151 @@ pub fn update_installed() -> Vec<&'static str> {
             !hooked_events(a, &config).is_empty() && !is_current(a, &config) && install(a).is_ok()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// These tests point HOME at a scratch folder; they take turns.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_home(f: impl FnOnce(&Path)) {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let old = std::env::var_os("HOME");
+        let dir = std::env::temp_dir().join(format!("tern-hooks-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("HOME", &dir);
+        // The saved status line lives in the runtime dir, which follows HOME unless this is set.
+        let runtime = std::env::var_os("TERN_RUNTIME_DIR");
+        std::env::remove_var("TERN_RUNTIME_DIR");
+        f(&dir);
+        if let Some(r) = runtime {
+            std::env::set_var("TERN_RUNTIME_DIR", r);
+        }
+        match old {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn read(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn claude_round_trip_leaves_the_users_settings_as_they_were() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let original = json!({
+                "model": "opus",
+                "hooks": { "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "command": "my-guard" }] }] },
+                "statusLine": { "type": "command", "command": "my-statusline" },
+                "permissions": { "allow": ["Bash(ls:*)"] }
+            });
+            std::fs::write(&path, serde_json::to_string_pretty(&original).unwrap()).unwrap();
+
+            install("claude").unwrap();
+            let installed = read(&path);
+            assert_eq!(installed["model"], "opus");
+            assert_eq!(installed["permissions"], original["permissions"]);
+            for event in events("claude") {
+                let groups = installed["hooks"][*event].as_array().unwrap();
+                assert_eq!(groups.iter().filter(|g| is_ours(g, "claude")).count(), 1, "{event}");
+            }
+            // The user's own hook stays, next to ours.
+            assert!(installed["hooks"]["PreToolUse"].as_array().unwrap().iter().any(|g| g["matcher"] == "Bash"));
+            assert!(installed["statusLine"]["command"].as_str().unwrap().ends_with("statusline"));
+            assert_eq!(status("claude").unwrap()["current"], true);
+
+            // Installing again doesn't pile up duplicates or lose the saved status line.
+            install("claude").unwrap();
+            assert_eq!(read(&path)["hooks"]["Stop"].as_array().unwrap().len(), 1);
+
+            uninstall("claude").unwrap();
+            assert_eq!(read(&path), original);
+            assert_eq!(status("claude").unwrap()["installed"], false);
+        });
+    }
+
+    #[test]
+    fn codex_hooks_file_we_created_goes_away() {
+        with_home(|home| {
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+            let path = install("codex").unwrap();
+            assert!(path.exists());
+            assert_eq!(status("codex").unwrap()["current"], true);
+            uninstall("codex").unwrap();
+            assert!(!path.exists());
+            assert!(!path.with_extension("json.tern-backup").exists());
+        });
+    }
+
+    #[test]
+    fn older_installs_are_brought_up_to_date_and_others_left_alone() {
+        with_home(|home| {
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+            install("codex").unwrap();
+            // An older tern hooked fewer events.
+            let path = home.join(".codex/hooks.json");
+            let mut config = read(&path);
+            config["hooks"].as_object_mut().unwrap().remove("Interrupt");
+            std::fs::write(&path, config.to_string()).unwrap();
+            assert_eq!(status("codex").unwrap()["current"], false);
+
+            assert_eq!(update_installed(), vec!["codex"]);
+            assert_eq!(status("codex").unwrap()["current"], true);
+            // Claude Code's were never installed, so they still aren't.
+            assert!(!home.join(".claude/settings.json").exists());
+        });
+    }
+
+    #[test]
+    fn a_config_we_cannot_understand_is_left_untouched() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            for text in [r#"{"hooks": []}"#, "[1, 2]", "{ not json"] {
+                std::fs::write(&path, text).unwrap();
+                assert!(install("claude").is_err(), "{text}");
+                assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+            }
+        });
+    }
+
+    #[test]
+    fn events_map_to_states() {
+        let state = |v: Value| state_for("claude", &v).map(|(s, _)| s);
+        assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "startup" })), Some(AgentState::Idle));
+        assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "compact" })), None);
+        assert_eq!(state(json!({ "hook_event_name": "UserPromptSubmit" })), Some(AgentState::Working));
+        assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure", "is_interrupt": true })), Some(AgentState::Idle));
+        assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure" })), None);
+        assert_eq!(state(json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" })), None);
+        assert_eq!(state(json!({ "hook_event_name": "SessionEnd" })), Some(AgentState::Ended));
+        assert_eq!(state(json!({ "hook_event_name": "Whatever" })), None);
+        assert_eq!(state(json!({})), None);
+
+        let (s, message) = state_for("claude", &json!({ "hook_event_name": "PermissionRequest", "tool_name": "Bash" })).unwrap();
+        assert_eq!((s, message.as_deref()), (AgentState::NeedsYou, Some("Allow Bash?")));
+        let (s, message) =
+            state_for("claude", &json!({ "hook_event_name": "Notification", "message": "Claude needs your permission to use Bash" }))
+                .unwrap();
+        assert_eq!(s, AgentState::NeedsYou);
+        assert!(message.unwrap().contains("permission"));
+        let (s, message) = state_for("codex", &json!({ "hook_event_name": "Stop", "last_assistant_message": "Done.\n\n  All  good" })).unwrap();
+        assert_eq!((s, message.as_deref()), (AgentState::Done, Some("Done. All good")));
+    }
+
+    #[test]
+    fn long_messages_are_cut() {
+        let long = "word ".repeat(100);
+        let s = summarize(&long);
+        assert_eq!(s.chars().count(), 200);
+        assert!(s.ends_with('…'));
+    }
 }

@@ -29,7 +29,9 @@ there.
 - A tab is named after what it runs: an agent's task, the command in the foreground (`npm run dev`),
   or the last one that ran (`git status`). A shell that hasn't run anything is **Tab 1**, **Tab 2**…:
   the lowest number free in its folder when it opened, kept while it lives. Trivial
-  commands (`cd`, `ls`, `clear`) don't rename it; ⌘R names it yourself.
+  commands (`cd`, `ls`, `clear`) don't rename it. To name it yourself, double-click it or press ⌘R
+  and edit the name in place: ↩ saves, Esc cancels, and saving it empty goes back to the automatic
+  name. Hovering a tab shows ✕ to close it.
 - A tab that `cd`s somewhere else stays under its folder and shows where it is in grey.
 - A subfolder of an open folder gets its own header. A folder closes with its last tab.
 - **⌘1–9 picks a folder** (at the tab you last used there), **⌘⇧1–9 a tab** within it. Folders stay
@@ -122,17 +124,22 @@ has "Update Claude Code" and "Update Codex".
 The menu bar and the palette are built from one list of commands in `Commands.swift`.
 tern's shortcuts take priority over terminal key bindings.
 
+Pasting several lines into a program that hasn't turned on bracketed paste (a plain shell would run
+each line) asks first, with a preview. A program that wants to read or set the clipboard through
+escape codes asks too.
+
 ## Settings
 
-Three panes: General (folders, tabs), Appearance (theme), Agents (hooks, usage limits, versions, notifications, resume).
+Three panes: General (folders, tabs), Appearance (theme), Agents (a section each for Claude Code and
+Codex with hooks, usage limits and versions, then notifications and resume).
 
 - **Theme**: Graphite (default), Midnight, Ember, Paper, or Ghostty, which keeps the colours from your
   Ghostty config and builds the sidebar around them. A theme colours the chrome and the terminal
   (background, foreground, cursor, selection, ANSI 16) on top of your Ghostty config, so fonts and
   keys still come from it. The palette has the same choices ("Theme: …"); a change applies at once.
 - **Folder order**: as opened (default), or most recent first.
-- **Find repositories in** (`~/dev`): comma-separated folders the picker searches for git
-  repositories, three levels deep.
+- **Find repositories in** (`~/dev`): the folders the picker searches for git repositories, three
+  levels deep. Add Folder… adds one; a folder that no longer exists is marked "not found".
 - **Worktrees** (off by default): in a git folder, ⌘T gives each new tab its own worktree at
   `<repo>-worktrees/session-N` on a new branch `tern/session-N`, so parallel agents don't edit the
   same checkout. ⌘⇧T does this regardless. Closing such a tab asks whether to remove its
@@ -156,9 +163,18 @@ ternd (Rust, launchd agent dev.tern.ternd)
 ```
 
 - `crates/tern`: the `tern` CLI and the `ternd` daemon, plus the protocol in `src/lib.rs`
-  (one JSON request line, then length-prefixed binary frames).
+  (one JSON request line, then length-prefixed binary frames). ternd lives in `src/bin/ternd/`:
+  `session.rs` (PTYs, attach, agent reports), `screen.rs` (snapshots), `saved.rs` (screens on disk).
+- Versions: the app says `hello` to ternd at launch. ternd answers with its protocol number and a
+  hash of its binary. When the installed ternd is newer than the running one, tern offers to restart
+  it, and warns when the running one speaks an older protocol. Restarting ends the programs in your
+  tabs, but their screens come back and agent conversations resume. You can also restart from the
+  palette (**Restart ternd**) or with `tern daemon restart`.
 - `app/`: SwiftPM app that links `GhosttyKit.xcframework`. `Workspace.swift` holds the model
   (folders → tabs → split tree, each pane a ternd session), saved to `~/Library/Application Support/tern/layout.json`.
+  The layout is versioned and loaded forgivingly: a part that doesn't decode is skipped, not the
+  whole file. If anything was skipped, or the file comes from another layout version, the original
+  is kept beside it as `layout-<reason>-<time>.json` (the last five are kept).
   ternd's `watch` stream supplies live data for each session: cwd, foreground process, branch,
   title, unread output, bells, and the agent's reported state.
 - Tab names: for zsh, ternd points `ZDOTDIR` at its own `.zshenv` (in `~/Library/Application
@@ -219,6 +235,15 @@ files from `.zig-deps/` and the cargo registry):
 python3 scripts/notices.py
 ```
 
+## Checks
+
+```bash
+./scripts/check.sh
+```
+
+Runs the Rust tests, clippy with warnings as errors, the Swift build (failing on new warnings) and
+the Swift tests in `app/Tests`.
+
 ## CLI
 
 ```
@@ -232,11 +257,15 @@ tern hooks [status|install|uninstall|link] [claude|codex]
                                            manage agent hooks (what Settings does)
 tern hook claude|codex                     run by the agents' hooks; reads the event on stdin
 tern statusline                            Claude Code's status line: records its usage limits
+tern daemon [status|restart]               the running ternd against this tern's (JSON); restart
+                                           saves screens, stops it and starts this build's
 ```
 
 `ternd` starts on demand as the launchd agent `dev.tern.ternd`; its log is
 `~/Library/Application Support/tern/ternd.log`. Set `TERN_RUNTIME_DIR` (path under ~100
-characters) to run a private daemon for tests; that one is spawned directly, without launchd.
+characters) to run a private instance for tests: the app keeps its layout, debug files and
+`bin/tern` link there, leaves installed agent hooks alone and doesn't take focus at launch; the
+daemon is spawned directly, without launchd.
 
 ## Spike results (M1)
 
@@ -280,8 +309,6 @@ characters) to run a private daemon for tests; that one is spawned directly, wit
   text), or a long paste shows as Codex's short placeholder. To narrow it down, try it in the Codex
   tab of a `TERN_DEBUG=1` build with logging in `TerminalView.copy`/`paste` and the clipboard
   callbacks in `GhosttyApp.swift`.
-- A paste Ghostty wants confirmed (text with newlines while the program hasn't turned on bracketed
-  paste) is dropped silently: `confirm_read_clipboard_cb` in `GhosttyApp.swift` does nothing.
 
 ## License
 

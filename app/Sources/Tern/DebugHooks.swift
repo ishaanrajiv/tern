@@ -4,7 +4,8 @@ import AppKit
 ///   kill -USR1 <pid>   saves a PNG of each window to <support>/tern/debug/window-N.png
 ///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title;
 ///                      Escape, Return, Tab, Up, Down, Cmd+A, Cmd+C or Cmd+V to press that key;
-///                      Type <text>; Drag X1 Y1 X2 Y2; or Button N to answer an alert sheet)
+///                      Type <text>; Hover, Click or DoubleClick X Y; Drag X1 Y1 X2 Y2; or Button N to
+///                      answer an alert sheet)
 /// An app may capture its own windows without screen-recording permission.
 enum DebugHooks {
     private static var sources: [DispatchSourceSignal] = []
@@ -23,7 +24,7 @@ enum DebugHooks {
                 parent.endSheet(sheet, returnCode: NSApplication.ModalResponse(rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + n - 1))
                 return
             }
-            // "Hover X Y" / "Click X Y": mouse events at window point (X, Y), measured from the top left.
+            // "Hover X Y" / "Click X Y" / "DoubleClick X Y": mouse events at window point (X, Y), from the top left.
             let parts = title.split(separator: " ")
             // "Drag X1 Y1 X2 Y2": a left-button drag, to select text.
             if parts.count == 5, parts[0] == "Drag",
@@ -41,15 +42,20 @@ enum DebugHooks {
                 }
                 return
             }
-            if parts.count == 3, parts[0] == "Hover" || parts[0] == "Click",
+            if parts.count == 3, ["Hover", "Click", "DoubleClick"].contains(parts[0]),
                let x = Double(parts[1]), let y = Double(parts[2]),
                let window = NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
                 let point = NSPoint(x: x, y: window.frame.height - y)
-                let types: [NSEvent.EventType] = parts[0] == "Hover" ? [.mouseMoved] : [.mouseMoved, .leftMouseDown, .leftMouseUp]
-                for type in types {
+                let click: [(NSEvent.EventType, Int)] = [(.leftMouseDown, 1), (.leftMouseUp, 1)]
+                let events: [(NSEvent.EventType, Int)] = switch parts[0] {
+                case "Hover": [(.mouseMoved, 0)]
+                case "Click": [(.mouseMoved, 0)] + click
+                default: [(.mouseMoved, 0)] + click + [(.leftMouseDown, 2), (.leftMouseUp, 2)]
+                }
+                for (type, count) in events {
                     if let e = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
                                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0,
-                                                  clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0) {
+                                                  clickCount: count, pressure: type == .leftMouseDown ? 1 : 0) {
                         window.sendEvent(e)
                     }
                 }

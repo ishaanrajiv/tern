@@ -10,7 +10,7 @@ path = "src/bin/tern.rs"
 
 [[bin]]
 name = "ternd"
-path = "src/bin/ternd.rs"
+path = "src/bin/ternd/main.rs"
 
 [dependencies]
 anyhow = "1"

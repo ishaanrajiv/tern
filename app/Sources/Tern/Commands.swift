@@ -42,6 +42,7 @@ final class Command {
         if t.hasPrefix("Next Needing") { return "bell" }
         if t.hasPrefix("Focus") { return "rectangle.inset.filled" }
         if t.hasPrefix("Theme") { return "paintpalette" }
+        if t.hasPrefix("Restart") { return "arrow.clockwise" }
         return "arrow.right"
     }
 

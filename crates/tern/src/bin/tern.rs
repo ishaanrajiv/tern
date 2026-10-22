@@ -5,6 +5,8 @@
 //!                                              --init types LINE into a new session's shell)
 //!   tern ls [--json]                           list sessions
 //!   tern kill <id>                             hang up a session
+//!   tern daemon [status|restart]              whether the running ternd matches this tern (JSON);
+//!                                              restart it, saving screens first
 //!   tern bench [iterations]                    keystroke round-trip: direct PTY vs through ternd
 //!   tern hooks [status|install|uninstall|link] [claude|codex]
 //!                                              manage agent hooks (link also updates installed ones)
@@ -35,6 +37,7 @@ fn main() {
         Some("attach") => attach(&args[1..]),
         Some("ls") => list(args.get(1).is_some_and(|a| a == "--json")),
         Some("kill") => kill(&args[1..]),
+        Some("daemon") => daemon(args.get(1).map_or("status", String::as_str)),
         Some("bench") => bench(&args[1..]),
         Some("hook") => {
             hooks::run_hook(args.get(1).map_or("claude", String::as_str));
@@ -48,6 +51,7 @@ fn main() {
         _ => {
             eprintln!(
                 "usage: tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
+                 tern daemon [status|restart]\n       \
                  tern hooks [status|install|uninstall|link] [claude|codex]"
             );
             std::process::exit(2);
@@ -183,6 +187,99 @@ fn spawn_detached(ternd: &std::path::Path) -> Result<()> {
         cmd.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(Into::into));
     }
     cmd.spawn().with_context(|| format!("starting {}", ternd.display()))?;
+    Ok(())
+}
+
+/// How the running ternd compares with the one next to this binary.
+#[derive(serde::Serialize)]
+struct DaemonStatus {
+    running: bool,
+    /// None for a daemon from before `hello`.
+    protocol: Option<u32>,
+    expected_protocol: u32,
+    /// Speaks this tern's protocol.
+    compatible: bool,
+    /// Is the build installed next to this tern; false means a restart would upgrade it.
+    current: bool,
+    pid: Option<u32>,
+    version: Option<String>,
+}
+
+/// Asks a running ternd who it is, without starting one. `Ok(None)`: an older
+/// daemon that doesn't know `hello`. `Err`: nothing listening.
+fn hello() -> Result<Option<HelloReply>> {
+    let mut sock = UnixStream::connect(socket_path()).context("ternd is not running")?;
+    sock.set_read_timeout(Some(Duration::from_secs(2)))?;
+    writeln!(sock, "{}", serde_json::to_string(&Request::Hello)?)?;
+    let mut line = String::new();
+    BufReader::new(sock).read_line(&mut line).ok();
+    Ok(serde_json::from_str(&line).ok())
+}
+
+fn daemon_status() -> DaemonStatus {
+    let installed = std::env::current_exe().ok().and_then(|exe| build_id(&exe.with_file_name("ternd")).ok());
+    match hello() {
+        Err(_) => DaemonStatus {
+            running: false,
+            protocol: None,
+            expected_protocol: PROTOCOL,
+            compatible: true,
+            current: true,
+            pid: None,
+            version: None,
+        },
+        Ok(reply) => {
+            let protocol = reply.as_ref().map(|h| h.protocol);
+            let compatible = protocol == Some(PROTOCOL);
+            DaemonStatus {
+                running: true,
+                protocol,
+                expected_protocol: PROTOCOL,
+                compatible,
+                current: compatible && reply.as_ref().is_some_and(|h| Some(&h.build) == installed.as_ref()),
+                pid: reply.as_ref().map(|h| h.pid),
+                version: reply.map(|h| h.version),
+            }
+        }
+    }
+}
+
+fn daemon(action: &str) -> Result<i32> {
+    match action {
+        "status" => println!("{}", serde_json::to_string(&daemon_status())?),
+        "restart" => {
+            restart_daemon()?;
+            println!("{}", serde_json::to_string(&daemon_status())?);
+        }
+        _ => bail!("unknown daemon action {action}"),
+    }
+    Ok(0)
+}
+
+/// Stops the running ternd (it saves every screen on SIGTERM) and starts the one
+/// next to this binary. Attached panes reconnect on their own.
+fn restart_daemon() -> Result<()> {
+    let status = daemon_status();
+    if status.running {
+        // An older daemon can't say its pid; it wrote it down when it started.
+        let pid = match status.pid {
+            Some(pid) => pid as i32,
+            None => std::fs::read_to_string(runtime_dir().join("ternd.pid"))?.trim().parse().context("reading ternd.pid")?,
+        };
+        let name = procinfo::process_name(pid).unwrap_or_default();
+        if name != "ternd" {
+            bail!("pid {pid} is {name:?}, not ternd");
+        }
+        nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), nix::sys::signal::Signal::SIGTERM)?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while UnixStream::connect(socket_path()).is_ok() || procinfo::process_name(pid).as_deref() == Some("ternd") {
+            if Instant::now() > deadline {
+                bail!("ternd (pid {pid}) did not quit");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    connect()?;
     Ok(())
 }
 

@@ -25,6 +25,30 @@ struct SessionInfo: Decodable, Equatable {
     let command: String?
 }
 
+/// How the running ternd compares with this app's, from `tern daemon status`.
+struct DaemonStatus: Decodable {
+    let running: Bool
+    /// Speaks this tern's protocol; an older daemon may misread the app.
+    let compatible: Bool
+    /// The build installed in this app; false means a restart would upgrade it.
+    let current: Bool
+    let version: String?
+
+    /// `tern daemon status` or `tern daemon restart`; nil if tern couldn't run.
+    static func run(_ action: String, tern: String) -> DaemonStatus? {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tern)
+        p.arguments = ["daemon", action]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        return try? JSONDecoder().decode(DaemonStatus.self, from: data)
+    }
+}
+
 /// Talks to ternd over its unix socket (see crates/tern/src/lib.rs for the protocol).
 enum TernClient {
     static let socketPath: String = {

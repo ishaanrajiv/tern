@@ -67,10 +67,7 @@ enum FolderSources {
         return found
     }
 
-    static var roots: [String] {
-        (UserDefaults.standard.string(forKey: Prefs.repoRoots) ?? "")
-            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
-    }
+    static var roots: [String] { Prefs.repoRootList }
 
     static func isDirectory(_ path: String) -> Bool {
         var isDir: ObjCBool = false

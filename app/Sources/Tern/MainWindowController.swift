@@ -15,6 +15,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     /// The window closes when its last tab does, not when it starts out empty.
     private var hadTabs = false
     private var lastFocusKey = ""
+    private var wasRenaming = false
     private let headerLayout = HeaderLayout()
     private let hints = ShortcutHints()
     private var collapseObservation: NSKeyValueObservation?
@@ -26,10 +27,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     var onSync: (() -> Void)?
 
     private let updates: AgentUpdates
+    private let ternBinary: String
 
     init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: AgentUpdates) {
         self.workspace = workspace
         self.updates = updates
+        self.ternBinary = ternBinary
         self.terminalArea = TerminalArea(workspace: workspace, ternBinary: ternBinary)
 
         let window = NSWindow(
@@ -202,6 +205,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             _ = workspace.projects
             _ = workspace.selectedTabID
             _ = workspace.sessions
+            _ = workspace.renamingTabID
         } onChange: { [weak self] in
             DispatchQueue.main.async {
                 self?.sync()
@@ -212,9 +216,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     private func sync() {
         let tab = workspace.selectedTab
-        let focusKey = "\(tab?.id ?? "")/\(tab?.focusedPane ?? "")/\(tab?.zoomed ?? false)"
-        let focusChanged = focusKey != lastFocusKey
+        // Renaming in the sidebar holds the focus; the terminal gets it back afterwards.
+        let renaming = workspace.renamingTabID != nil
+        let focusKey = renaming ? lastFocusKey : "\(tab?.id ?? "")/\(tab?.focusedPane ?? "")/\(tab?.zoomed ?? false)"
+        let focusChanged = focusKey != lastFocusKey || (wasRenaming && !renaming)
         lastFocusKey = focusKey
+        wasRenaming = renaming
         terminalArea.refresh(focus: focusChanged && paletteHost == nil && pickerHost == nil)
 
         if let tab {
@@ -315,6 +322,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Close Folder", menu: "File", key: "w", [.command, .option]) { [weak self] in
                 if let path = w.currentProject?.path { self?.closeFolder(path) }
             },
+
+            Command("Restart ternd", menu: "tern") { [weak self] in self?.restartDaemon() },
 
             Command("Clear Screen", menu: "Edit", key: "k", [.command, .shift]) { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("clear_screen")
@@ -475,20 +484,55 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         confirmClose(panes: project.tabs.flatMap(\.root.panes))
     }
 
+    /// Edits the tab's name in place in the sidebar.
     private func rename(tabID: String) {
-        guard let tab = workspace.allTabs.first(where: { $0.id == tabID }), let window else { return }
+        guard let tab = workspace.allTabs.first(where: { $0.id == tabID }) else { return }
+        if splitController.splitViewItems.first?.isCollapsed == true { splitController.toggleSidebar(nil) }
+        if let project = workspace.projects.first(where: { $0.tabs.contains { $0.id == tab.id } }), project.collapsed {
+            workspace.setCollapsed(project.path, false)
+        }
+        workspace.select(tab.id)
+        workspace.renamingTabID = tab.id
+    }
+
+    // MARK: ternd
+
+    /// After installing a new build, the old ternd keeps running under launchd until
+    /// it's restarted: offer that, since restarting ends what runs in the tabs.
+    func checkDaemon() {
+        let tern = ternBinary
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let status = DaemonStatus.run("status", tern: tern), status.running, !status.current else { return }
+            DispatchQueue.main.async { self?.offerDaemonRestart(status) }
+        }
+    }
+
+    private func offerDaemonRestart(_ status: DaemonStatus) {
         let alert = NSAlert()
-        alert.messageText = "Rename Tab"
-        alert.informativeText = "Leave empty to name it after what's running."
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.stringValue = tab.name ?? workspace.title(for: tab)
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn else { return }
-            self?.workspace.rename(tabID, to: field.stringValue.trimmingCharacters(in: .whitespaces))
+        if status.compatible {
+            alert.messageText = "Restart ternd to finish updating?"
+            alert.informativeText = "tern's background service is still the build from before this one."
+        } else {
+            alert.messageText = "ternd needs a restart"
+            alert.informativeText = "tern's background service is from an older tern and may not understand this one, so tabs can misbehave until it restarts."
+            alert.alertStyle = .warning
+        }
+        alert.informativeText += " Restarting ends the programs running in your tabs. Their screens come back, and Claude Code and Codex conversations resume."
+        alert.addButton(withTitle: "Restart")
+        alert.addButton(withTitle: "Later")
+        presentSheet(alert) { [weak self] response in
+            if response == .alertFirstButtonReturn { self?.restartDaemon() }
+        }
+    }
+
+    private func restartDaemon() {
+        let tern = ternBinary
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let status = DaemonStatus.run("restart", tern: tern)
+            DispatchQueue.main.async {
+                // Panes reconnect on their own once the new daemon is up.
+                if status?.running != true { self?.showError("Couldn't restart ternd", "See ~/Library/Application Support/tern/ternd.log.") }
+            }
         }
     }
 
