@@ -54,8 +54,9 @@ in `app/Tests/TernTests/`. Documentation-only changes need a diff and link revie
 full app build. Report which checks ran and any that could not run.
 
 `./scripts/build-app.sh --debug` selects a debug Swift build. `--install` replaces
-`~/Applications/Tern.app`. `--dist` signs with Developer ID, notarizes and writes `build/Tern.zip`;
-use it when a distribution build is requested. See the README for signing setup.
+`~/Applications/Tern.app`. `--dist` signs with Developer ID, notarizes and writes a versioned ZIP
+and checksum under `build/`. Use it when a distribution build is requested.
+See the README for signing setup.
 
 ## Constraints to preserve
 
