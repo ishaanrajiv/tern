@@ -43,8 +43,7 @@ fn saved_dir() -> PathBuf {
 
 /// The saved screen and its details for a session id, if the id is file-safe.
 fn saved_paths(id: &str) -> Option<(PathBuf, PathBuf)> {
-    let safe = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) && !id.starts_with('.');
-    safe.then(|| {
+    valid_session_id(id).then(|| {
         let dir = saved_dir();
         (dir.join(format!("{id}.screen")), dir.join(format!("{id}.json")))
     })
@@ -189,15 +188,6 @@ fn is_shell(name: &str) -> bool {
     matches!(name, "zsh" | "bash" | "fish" | "sh" | "dash" | "ksh" | "tcsh" | "csh" | "nu" | "login" | "-zsh" | "-bash")
 }
 
-fn shell_quote(arg: &str) -> String {
-    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
-    if plain {
-        arg.to_string()
-    } else {
-        format!("'{}'", arg.replace('\'', "'\\''"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,9 +274,6 @@ mod tests {
 
     #[test]
     fn quoting() {
-        assert_eq!(shell_quote("npm"), "npm");
-        assert_eq!(shell_quote("it's here"), "'it'\\''s here'");
-        assert_eq!(shell_quote(""), "''");
         assert_eq!(resume_command("claude", "abc-1").as_deref(), Some("claude --resume abc-1"));
         assert_eq!(resume_command("codex", "x y").as_deref(), Some("codex resume 'x y'"));
         assert_eq!(resume_command("vim", "x"), None);

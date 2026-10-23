@@ -1,14 +1,13 @@
 //! A session: a PTY, the process on it, and a headless screen that mirrors it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -30,9 +29,97 @@ pub type Sessions = Arc<Mutex<HashMap<String, Arc<Session>>>>;
 
 static NEXT_CLIENT: AtomicU64 = AtomicU64::new(1);
 
+/// The umask ternd started with, for the processes it runs: its own is stricter.
+pub static USER_UMASK: AtomicU32 = AtomicU32::new(0o022);
+
+/// Output a client may fall behind by before it's disconnected. It reattaches from
+/// the screen, so nothing it would show is lost.
+const CLIENT_QUEUE_BYTES: usize = 8 << 20;
+
+#[derive(Debug, PartialEq)]
 enum Msg {
     Output(Vec<u8>),
     Exit(i32),
+}
+
+/// Output waiting to go to one client. Bounded, so a client that stops reading
+/// can't grow ternd's memory or hold up the session.
+#[derive(Default)]
+struct ClientQueue {
+    state: Mutex<QueueState>,
+    ready: Condvar,
+}
+
+#[derive(Default)]
+struct QueueState {
+    output: VecDeque<Vec<u8>>,
+    bytes: usize,
+    exit: Option<i32>,
+    closed: bool,
+}
+
+impl ClientQueue {
+    /// Queues output; false (and closed) once the client is too far behind.
+    fn push(&self, bytes: &[u8]) -> bool {
+        let mut st = self.state.lock().unwrap();
+        if st.closed || st.bytes + bytes.len() > CLIENT_QUEUE_BYTES {
+            st.closed = true;
+            self.ready.notify_all();
+            return false;
+        }
+        st.bytes += bytes.len();
+        st.output.push_back(bytes.to_vec());
+        self.ready.notify_all();
+        true
+    }
+
+    /// The exit code goes after whatever output is still queued: the last thing a
+    /// command printed matters most.
+    fn exit(&self, code: i32) {
+        self.state.lock().unwrap().exit = Some(code);
+        self.ready.notify_all();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().closed = true;
+        self.ready.notify_all();
+    }
+
+    /// The next message, waiting for one; None once closed.
+    fn recv(&self) -> Option<Msg> {
+        let mut st = self.state.lock().unwrap();
+        loop {
+            if st.closed {
+                return None;
+            }
+            if let Some(bytes) = st.output.pop_front() {
+                st.bytes -= bytes.len();
+                return Some(Msg::Output(bytes));
+            }
+            if let Some(code) = st.exit.take() {
+                return Some(Msg::Exit(code));
+            }
+            st = self.ready.wait(st).unwrap();
+        }
+    }
+}
+
+struct Client {
+    id: u64,
+    queue: Arc<ClientQueue>,
+    socket: UnixStream,
+}
+
+impl Client {
+    /// False if the client fell too far behind; it's hung up on, which wakes
+    /// both its threads, and its `tern attach` reattaches.
+    fn send(&self, bytes: &[u8]) -> bool {
+        if self.queue.push(bytes) {
+            return true;
+        }
+        let _ = self.socket.shutdown(std::net::Shutdown::Both);
+        false
+    }
 }
 
 pub struct Session {
@@ -45,7 +132,7 @@ pub struct Session {
 
 pub struct SessionState {
     pub screen: Terminal,
-    clients: Vec<(u64, Sender<Msg>)>,
+    clients: Vec<Client>,
     pub last_output_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
     pub saved_output_ms: u64,
@@ -194,6 +281,14 @@ pub fn spawn_session(
         }
         command.env("ZDOTDIR", commands.parent().unwrap().with_file_name("zsh")).env("TERN_COMMAND_FILE", &commands);
     }
+    let umask = nix::sys::stat::Mode::from_bits_truncate(USER_UMASK.load(Ordering::Relaxed) as _);
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(move || {
+            nix::sys::stat::umask(umask);
+            Ok(())
+        });
+    }
     let child = spawn_on_pty(command, slave).context("spawning session process")?;
     let pid = child.id() as i32;
     // We reap the child ourselves with waitpid once its PTY closes.
@@ -257,7 +352,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 }
                 st.screen.write(bytes);
                 st.last_output_ms = now_ms();
-                st.clients.retain(|(_, tx)| tx.send(Msg::Output(bytes.to_vec())).is_ok());
+                st.clients.retain(|c| c.send(bytes));
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // EIO once the last slave fd closes, i.e. the process exited.
@@ -291,30 +386,34 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
         }
     }
     let st = session.state.lock().unwrap();
-    for (_, tx) in &st.clients {
-        let _ = tx.send(Msg::Exit(code));
+    for c in &st.clients {
+        c.queue.exit(code);
     }
 }
 
 pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: UnixStream, cols: u16, rows: u16) -> Result<()> {
     let client_id = NEXT_CLIENT.fetch_add(1, Ordering::Relaxed);
-    let (tx, rx) = mpsc::channel::<Msg>();
+    let queue = Arc::new(ClientQueue::default());
+    let client = Client { id: client_id, queue: queue.clone(), socket: out.try_clone()? };
 
     // Snapshot and registration happen under one lock so no output is lost or doubled.
     let snapshot = {
         let mut st = session.state.lock().unwrap();
         resize_locked(&session, &mut st, cols, rows);
         let snap = snapshot(&st.screen);
-        st.clients.push((client_id, tx));
+        st.clients.push(client);
         snap
     };
 
+    let writer_queue = queue.clone();
     let writer = thread::spawn(move || {
         let mut out = out;
-        if write_frame(&mut out, FRAME_OUTPUT, &snapshot).is_err() {
+        // In pieces, so no frame is larger than a client will read.
+        if snapshot.chunks(OUTPUT_CHUNK).any(|chunk| write_frame(&mut out, FRAME_OUTPUT, chunk).is_err()) {
+            let _ = out.shutdown(std::net::Shutdown::Both);
             return;
         }
-        for msg in rx {
+        while let Some(msg) = writer_queue.recv() {
             let res = match msg {
                 Msg::Output(b) => write_frame(&mut out, FRAME_OUTPUT, &b),
                 Msg::Exit(code) => {
@@ -332,7 +431,7 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
     let mut buf = Vec::new();
     let mut master = &session.master;
     loop {
-        match read_frame(&mut reader, &mut buf) {
+        match read_frame(&mut reader, &mut buf, MAX_CLIENT_FRAME) {
             Ok(Some(FRAME_INPUT)) => {
                 if master.write_all(&buf).is_err() {
                     break;
@@ -350,7 +449,9 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
         }
     }
 
-    session.state.lock().unwrap().clients.retain(|(id, _)| *id != client_id);
+    session.state.lock().unwrap().clients.retain(|c| c.id != client_id);
+    // The writer may be waiting for output that will never come.
+    queue.close();
     let _ = writer.join();
     Ok(())
 }
@@ -405,6 +506,40 @@ mod tests {
 
     fn report(agent: &str, state: AgentState, session: Option<&str>, message: Option<&str>) -> AgentReport {
         AgentReport { agent: agent.into(), state, at_ms: 0, session: session.map(Into::into), message: message.map(Into::into) }
+    }
+
+    #[test]
+    fn a_client_that_stops_reading_is_hung_up_on() {
+        let (socket, mut peer) = UnixStream::pair().unwrap();
+        let client = Client { id: 1, queue: Arc::default(), socket };
+        let chunk = vec![0u8; 64 * 1024];
+        let sent = (0..1000).take_while(|_| client.send(&chunk)).count();
+        assert_eq!(sent, CLIENT_QUEUE_BYTES / chunk.len());
+        // Hung up: the peer reads end of file, and nothing more is queued.
+        assert_eq!(peer.read(&mut [0u8; 1]).unwrap(), 0);
+        assert!(!client.send(b"x"));
+        assert_eq!(client.queue.recv(), None);
+    }
+
+    #[test]
+    fn the_exit_follows_the_last_output() {
+        let queue = ClientQueue::default();
+        assert!(queue.push(b"last words"));
+        queue.exit(3);
+        assert_eq!(queue.recv(), Some(Msg::Output(b"last words".to_vec())));
+        assert_eq!(queue.recv(), Some(Msg::Exit(3)));
+    }
+
+    #[test]
+    fn closing_wakes_a_waiting_writer() {
+        let queue = Arc::new(ClientQueue::default());
+        let waiting = {
+            let queue = queue.clone();
+            thread::spawn(move || queue.recv())
+        };
+        thread::sleep(Duration::from_millis(50));
+        queue.close();
+        assert_eq!(waiting.join().unwrap(), None);
     }
 
     #[test]

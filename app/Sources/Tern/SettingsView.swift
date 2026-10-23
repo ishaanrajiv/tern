@@ -130,7 +130,7 @@ struct AgentSettings: View {
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
-    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = true
+    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = false
 
     var body: some View {
         Form {
@@ -139,8 +139,10 @@ struct AgentSettings: View {
                                     version: updates.versions["claude"], checking: updates.checking, update: runUpdate)
                 AgentIntegrationRow(hooks: hooks, agent: "codex", name: "Codex",
                                     version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
-                Toggle("Read Claude account usage", isOn: $claudeAccountUsage)
-                    .help("Uses Claude Code's sign-in in the Keychain. Choose Always Allow. Tern never refreshes its token.")
+                Toggle(isOn: $claudeAccountUsage) {
+                    Text("Read Claude account usage")
+                    Text("Reads Claude Code's sign-in from the Keychain, after macOS asks you, and sends it to Anthropic every five minutes to fetch your usage limits. Tern never refreshes the token. Off, limits still show while Claude Code runs in a tern tab with hooks set up.")
+                }
             }
             Section("Notifications and resume") {
                 Toggle("Agent needs your input", isOn: $notifyNeedsYou)

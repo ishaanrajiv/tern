@@ -110,7 +110,7 @@ fn connect() -> Result<UnixStream> {
         return Ok(s);
     }
     let ternd = std::env::current_exe()?.with_file_name("ternd");
-    std::fs::create_dir_all(runtime_dir())?;
+    prepare_runtime_dir()?;
     // One client starts ternd at a time: panes reconnecting together after a
     // restart would otherwise boot out each other's fresh daemon.
     let lock = File::options().create(true).truncate(false).write(true).open(runtime_dir().join("ternd.lock"))?;
@@ -381,7 +381,7 @@ fn attach(args: &[String]) -> Result<i32> {
     let mut buf = Vec::new();
     loop {
         // A reset connection counts as ternd going away, same as a clean close.
-        match read_frame(&mut reader, &mut buf).unwrap_or(None) {
+        match read_frame(&mut reader, &mut buf, MAX_DAEMON_FRAME).unwrap_or(None) {
             Some(FRAME_OUTPUT) => stdout.write_all(&buf)?,
             Some(FRAME_EXIT) => {
                 let code = buf.get(..4).map(|b| i32::from_be_bytes(b.try_into().unwrap())).unwrap_or(0);

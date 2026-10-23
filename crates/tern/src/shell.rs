@@ -53,6 +53,8 @@ pub fn is_zsh(shell: &str) -> bool {
 /// Where a session's shell records its commands.
 pub fn command_file(id: &str) -> PathBuf {
     let dir = runtime_dir();
+    // ternd refuses such ids, but this file is written and removed, so it never leaves its folder.
+    let id = if crate::valid_session_id(id) { id } else { "invalid-session-id" };
     std::path::absolute(&dir).unwrap_or(dir).join("commands").join(id)
 }
 
@@ -111,5 +113,13 @@ mod tests {
         assert_eq!(telling("ls -la"), None);
         assert_eq!(telling("git status; clear").as_deref(), Some("git status"));
         assert_eq!(telling("cargo test\n  --release").as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn command_files_stay_in_their_folder() {
+        let file = super::command_file("../../victim");
+        assert_eq!(file.file_name().unwrap(), "invalid-session-id");
+        assert_eq!(super::finished_file("/tmp/x").file_name().unwrap(), "invalid-session-id.done");
+        assert_eq!(super::command_file("p-1").file_name().unwrap(), "p-1");
     }
 }

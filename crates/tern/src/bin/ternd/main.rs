@@ -12,7 +12,7 @@ mod screen;
 mod vt;
 mod session;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::Arc;
 use std::thread;
@@ -27,8 +27,11 @@ use saved::{forget_saved, prune_saved, save_on_quit, save_periodically};
 use session::{attach, list_sessions, spawn_session, type_when_ready, Sessions};
 
 fn main() -> Result<()> {
-    let dir = runtime_dir();
-    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    // Everything ternd creates (screens, typed commands, the socket) is for this user
+    // only. Sessions get the umask ternd started with back.
+    let umask = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+    session::USER_UMASK.store(umask.bits() as u32, std::sync::atomic::Ordering::Relaxed);
+    let dir = prepare_runtime_dir().with_context(|| format!("preparing {}", runtime_dir().display()))?;
     let path = socket_path();
     // sockaddr_un.sun_path is 104 bytes on macOS.
     if path.as_os_str().len() >= 104 {
@@ -48,6 +51,10 @@ fn main() -> Result<()> {
     };
     let _ = std::fs::remove_file(&path);
     let listener = UnixListener::bind(&path).with_context(|| format!("binding {}", path.display()))?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).with_context(|| format!("securing {}", path.display()))?;
+    }
     std::fs::write(dir.join("ternd.pid"), std::process::id().to_string())?;
     eprintln!("ternd {} (protocol {}, build {}) listening on {}", hello.version, hello.protocol, hello.build, path.display());
 
@@ -78,15 +85,45 @@ fn main() -> Result<()> {
     Ok(())
 }
 
+/// ternd hands out terminal output and takes keystrokes, so only its own user may
+/// talk to it. The socket's mode keeps others out; this refuses one that got in anyway.
+fn verify_peer(conn: &UnixStream, me: nix::unistd::Uid) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid) = (0, 0);
+    if unsafe { nix::libc::getpeereid(conn.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(std::io::Error::last_os_error()).context("reading the peer's credentials");
+    }
+    anyhow::ensure!(uid == me.as_raw(), "refused a connection from uid {uid}");
+    Ok(())
+}
+
 fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Result<()> {
+    verify_peer(&conn, nix::unistd::geteuid())?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
     // Clients probing whether ternd is up connect and hang up without a word.
-    if reader.read_line(&mut line)? == 0 {
+    if reader.by_ref().take(MAX_REQUEST_LINE as u64 + 1).read_line(&mut line)? == 0 {
         return Ok(());
     }
+    anyhow::ensure!(line.len() <= MAX_REQUEST_LINE, "request line over {MAX_REQUEST_LINE} bytes");
     let req: Request = serde_json::from_str(&line).context("bad request line")?;
     let mut out = conn.try_clone()?;
+
+    let id = match &req {
+        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } => Some(id),
+        Request::Hello | Request::List | Request::Watch => None,
+    };
+    if id.is_some_and(|id| !valid_session_id(id)) {
+        // In the shape the caller expects for that request.
+        let reply = match req {
+            Request::Attach { .. } => {
+                serde_json::to_string(&AttachReply { ok: false, created: false, error: Some("invalid session id".into()) })?
+            }
+            _ => serde_json::json!({ "ok": false, "error": "invalid session id" }).to_string(),
+        };
+        writeln!(out, "{reply}")?;
+        return Ok(());
+    }
 
     match req {
         Request::Hello => {
@@ -152,4 +189,61 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hello() -> HelloReply {
+        HelloReply { protocol: PROTOCOL, version: "test".into(), pid: 0, build: String::new() }
+    }
+
+    #[test]
+    fn only_this_user_may_connect() {
+        let (conn, _peer) = UnixStream::pair().unwrap();
+        let me = nix::unistd::geteuid();
+        assert!(verify_peer(&conn, me).is_ok());
+        let other = nix::unistd::Uid::from_raw(me.as_raw() + 1);
+        assert!(verify_peer(&conn, other).is_err());
+    }
+
+    #[test]
+    fn ids_that_are_paths_are_refused_before_touching_files() {
+        let root = std::env::temp_dir().join(format!("ternd-ids-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let victim = root.join("victim");
+        std::fs::write(&victim, "keep").unwrap();
+        let requests = [
+            serde_json::json!({ "op": "attach", "id": victim, "cols": 80, "rows": 24, "cwd": null, "cmd": "true" }),
+            serde_json::json!({ "op": "attach", "id": "../../victim", "cols": 80, "rows": 24, "cwd": null, "cmd": "true" }),
+            serde_json::json!({ "op": "kill", "id": victim }),
+            serde_json::json!({ "op": "report", "id": "../x", "agent": "claude", "state": "idle", "agent_session": null, "message": null }),
+        ];
+        for req in requests {
+            let (server, mut client) = UnixStream::pair().unwrap();
+            writeln!(client, "{req}").unwrap();
+            handle_conn(server, Sessions::default(), &hello()).unwrap();
+            let mut reply = String::new();
+            BufReader::new(client).read_line(&mut reply).unwrap();
+            let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply["ok"], false, "{req}");
+            assert_eq!(reply["error"], "invalid session id");
+        }
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_endless_request_line_is_cut_off() {
+        let (server, client) = UnixStream::pair().unwrap();
+        let writer = thread::spawn(move || {
+            let mut client = client;
+            let chunk = vec![b'x'; 64 * 1024];
+            // Stops once ternd hangs up.
+            while client.write_all(&chunk).is_ok() {}
+        });
+        assert!(handle_conn(server, Sessions::default(), &hello()).is_err());
+        writer.join().unwrap();
+    }
 }

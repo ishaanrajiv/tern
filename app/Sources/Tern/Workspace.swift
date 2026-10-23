@@ -198,7 +198,8 @@ enum Prefs {
     /// Folders searched for git repositories to offer in the folder picker, comma-separated.
     static let repoRoots = "repoRoots"
     static let theme = "theme"
-    /// Read Claude Code's usage limits from the account (needs Claude Code's Keychain item).
+    /// Read Claude Code's usage limits from the account (needs Claude Code's Keychain item). Off until
+    /// the user turns it on: it reads a credential and sends it to Anthropic.
     static let claudeAccountUsage = "claudeAccountUsage"
     static let workingIndicator = "workingIndicator"
 
@@ -206,7 +207,7 @@ enum Prefs {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
-            claudeAccountUsage: true, workingIndicator: WorkingIndicator.trailing.rawValue,
+            claudeAccountUsage: false, workingIndicator: WorkingIndicator.trailing.rawValue,
         ])
     }
 
@@ -809,9 +810,14 @@ final class Workspace {
         if let line = pendingLines.removeValue(forKey: pane) { return line }
         if sessions[pane] == nil, let remote = paneRemote[pane] { return remote.command() }
         guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
-        switch ref.agent {
-        case "claude": return "claude --resume \(ref.session)"
-        case "codex": return "codex resume \(ref.session)"
+        return Self.resumeCommand(agent: ref.agent, session: ref.session)
+    }
+
+    /// The agent's session id comes from its hooks and the saved layout, so it's typed as data.
+    nonisolated static func resumeCommand(agent: String, session: String) -> String? {
+        switch agent {
+        case "claude": return "claude --resume \(quoteShell(session))"
+        case "codex": return "codex resume \(quoteShell(session))"
         default: return nil
         }
     }
@@ -893,7 +899,9 @@ final class Workspace {
         let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"].map { URL(fileURLWithPath: $0, isDirectory: true) }
             ?? FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/tern", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        // Private, like ternd keeps it: it holds the layout, launch presets and terminal output.
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                 attributes: [.posixPermissions: 0o700])
         return dir.appendingPathComponent("layout.json")
     }()
 

@@ -37,8 +37,8 @@ git submodule update --init
 ./scripts/check.sh
 ```
 
-`scripts/check.sh` runs Rust tests, Clippy with warnings denied, a Swift build that rejects new
-warnings except those in `DebugHooks.swift`, and Swift tests. It needs the built
+`scripts/check.sh` runs Rust tests, the build scripts' Python tests, Clippy with warnings denied,
+a Swift build that rejects new warnings except those in `DebugHooks.swift`, and Swift tests. It needs the built
 `vendor/ghostty/macos/GhosttyKit.xcframework`. For focused checks:
 
 ```sh
@@ -86,7 +86,8 @@ its path short, under roughly 100 characters, because Unix socket paths have a f
 Both the app and CLI must use the same value. This isolates layout, debug files and the binary
 link, leaves installed agent hooks alone, and spawns a private daemon without launchd.
 
-`TERN_DEBUG=1` enables the controls documented at the top of `DebugHooks.swift`. `SIGUSR1` saves
+`TERN_DEBUG=1` enables the controls documented at the top of `DebugHooks.swift` in debug builds
+(`swift build`, `./scripts/build-app.sh --debug`); release builds compile them out. `SIGUSR1` saves
 window screenshots under the runtime directory's `debug/` folder. `SIGUSR2` reads `debug/command`
 and runs a palette command or a supported keyboard or mouse action. Use the private app's PID.
 Avoid restarting or killing the user's normal daemon during validation.

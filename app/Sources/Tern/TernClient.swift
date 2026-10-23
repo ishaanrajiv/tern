@@ -104,9 +104,14 @@ nonisolated enum TernClient {
 }
 
 /// A blocking unix-socket connection that speaks newline-delimited JSON.
-private nonisolated final class LineConnection {
+nonisolated final class LineConnection {
+    /// A longer line than any session list is junk; the connection is dropped.
+    static let maxLine = 16 << 20
+
     private let fd: Int32
     private var buffer = Data()
+
+    init(fd: Int32) { self.fd = fd }
 
     init?(path: String) {
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -137,12 +142,16 @@ private nonisolated final class LineConnection {
 
     func readLine() -> Data? {
         var chunk = [UInt8](repeating: 0, count: 16 * 1024)
+        // Bytes already searched for a newline, so a long line isn't rescanned on every read.
+        var searched = 0
         while true {
-            if let nl = buffer.firstIndex(of: 0x0A) {
+            if let nl = buffer[(buffer.startIndex + searched)...].firstIndex(of: 0x0A) {
                 let line = buffer[buffer.startIndex..<nl]
                 buffer.removeSubrange(buffer.startIndex...nl)
                 return Data(line)
             }
+            searched = buffer.count
+            if buffer.count > Self.maxLine { return nil }
             let n = read(fd, &chunk, chunk.count)
             if n <= 0 { return nil }
             buffer.append(chunk, count: n)
