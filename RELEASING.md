@@ -1,9 +1,8 @@
 # Releasing tern
 
-The first release is the private `0.0.1` prerelease for Apple Silicon. Prepare subsequent
-candidates as drafts and record their validation and remaining gaps before publication.
-Repository visibility is a separate decision; see
-[the public-readiness review](docs/public-readiness.md).
+Releases are Apple Silicon prereleases, published on GitHub with their release notes in
+`docs/<version>-release-notes.md`. Prepare each candidate as a draft and record its validation
+and remaining gaps before publishing it.
 
 ## One-time setup
 
@@ -39,12 +38,12 @@ outputs, compiler caches, Git metadata and the download cache. It includes `SOUR
 with toolchain details and instructions for rebuilding the app against modified dependency
 sources. Retain these sources alongside the binary and review `THIRD_PARTY_NOTICES.md`.
 
-Expected outputs:
+Expected outputs, for version `X.Y.Z`:
 
-- `build/Tern-0.0.1-macos-arm64.zip`
-- `build/Tern-0.0.1-macos-arm64.zip.sha256`
-- `build/Tern-0.0.1-source.tar.gz`
-- `build/Tern-0.0.1-source.tar.gz.sha256`
+- `build/Tern-X.Y.Z-macos-arm64.zip`
+- `build/Tern-X.Y.Z-macos-arm64.zip.sha256`
+- `build/Tern-X.Y.Z-source.tar.gz`
+- `build/Tern-X.Y.Z-source.tar.gz.sha256`
 
 The distribution build signs the helpers and app with hardened runtime and secure
 timestamps, submits to Apple, staples and validates the ticket, assesses the app with
@@ -59,12 +58,11 @@ the native library. Smoke-test with a short private `TERN_RUNTIME_DIR`, preservi
 maintainer's installed app, normal daemon and real hooks.
 
 Upload all four assets to a GitHub draft prerelease targeting the exact tested commit.
-Use [the release notes](docs/0.0.1-release-notes.md) and add the commit, notarization outcome,
+Use that version's release notes and add the commit, notarization outcome,
 checks actually performed, and any remaining checks. Verify the uploaded asset digests.
-Keep the release in draft while separate-Mac or quarantine testing is outstanding.
+Publish it as a prerelease, and list in its notes every check below that hasn't been done.
 
-Before publishing, test a quarantined download on a separate Mac, including macOS 14 if
-that version is claimed as tested. Check shell and Codex copy/paste, splits, find,
+Test a quarantined download on a separate Mac, including macOS 14 before claiming that
+version as tested. Check shell and Codex copy/paste, splits, find,
 quit/relaunch reattachment, layout recovery, hooks, agent status, presets and SSH. Daemon
 restart ends running processes, so any restart test must use only the private daemon.
-Public binary distribution also requires the unresolved runtime fixes in the review.

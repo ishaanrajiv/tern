@@ -93,9 +93,15 @@ deserves investigation before distributing a terminal intended for coding agents
 
 ## Next decision
 
-The runtime findings above are fixed. The remaining items before public visibility are the
-remote-history review (Actions logs, closed PRs and their branches) and the privacy/security
-documentation and CI under "Public project preparation".
+The runtime findings above are fixed, merged in PR #4. On 2026-10-23 the remaining review
+found nothing to hold back: the one Actions log, PRs #1 to #4 and the preserved branches hold
+no credentials or personal paths, and there are no artifacts, issues or comments. `SECURITY.md`,
+`CONTRIBUTING.md` and a README Privacy section were added. The repository was made public with
+the 0.0.2 prerelease.
+
+Still open: a CI workflow (it needs the pinned Zig and a Ghostty build on a macOS runner),
+branch protection once CI exists, and the separate-Mac, macOS 14 and real-agent checks listed
+in the release notes.
 
 Earlier: keep visibility unchanged now. Prepare the signing setup and private release candidate,
 then revisit public visibility after the runtime fixes, privacy/security documentation
