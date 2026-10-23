@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from urllib.parse import urlsplit
 
@@ -23,6 +24,20 @@ ARCHIVES = {
     ".tar": ".tar",
     ".zip": ".zip",
 }
+
+
+def unpack(archive, destination):
+    """Unpacks Zig's cached package archive, dropping its leading <hash>/ folder."""
+    with tarfile.open(archive) as tar:
+        members = []
+        for member in tar.getmembers():
+            parts = member.name.split("/", 1)
+            if len(parts) < 2 or not parts[1]:
+                continue
+            member.name = parts[1]
+            members.append(member)
+        # The data filter refuses absolute paths and links leaving the package.
+        tar.extractall(destination, members=members, filter="data")
 
 
 def fetch(expected, url, deps):
@@ -68,18 +83,22 @@ def fetch(expected, url, deps):
                                 check=True, text=True, capture_output=True).stdout.strip()
         if actual != expected:
             raise ValueError(f"package hash mismatch: expected {expected}, got {actual!r}")
-        # Zig 0.17 caches a normalized, filtered archive rooted at the package hash.
+        # Zig 0.17 caches the filtered package as <hash>/..., keeping an archive's
+        # top-level folder. Python unpacks it: macOS tar would fold AppleDouble
+        # ._ files into extended attributes, and Zig counts them as files.
         package = stage / "package"
         package.mkdir()
-        subprocess.run(["tar", "xf", str(cache / "p" / (expected + ".tar.gz")),
-                        "-C", str(package), "--strip-components=1"], check=True)
-        # Rehash the installed layout too, rather than relying on cache tar layout.
+        unpack(cache / "p" / (expected + ".tar.gz"), package)
+        # Zig strips a single top-level folder when hashing an archive, so the
+        # package is either what was unpacked or the one folder in it. Rehash
+        # the candidates rather than guess.
         entries = list(package.iterdir())
-        installed = entries[0] if len(entries) == 1 and entries[0].is_dir() else package
-        installed_hash = subprocess.run(["zig", "fetch", str(installed)], env=env, cwd=stage,
-                                        check=True, text=True, capture_output=True).stdout.strip()
-        if installed_hash != expected:
-            raise ValueError(f"extracted package hash mismatch: expected {expected}, got {installed_hash!r}")
+        candidates = [package] + ([entries[0]] if len(entries) == 1 and entries[0].is_dir() else [])
+        hashes = [subprocess.run(["zig", "fetch", str(c)], env=env, cwd=stage,
+                                 check=True, text=True, capture_output=True).stdout.strip() for c in candidates]
+        if expected not in hashes:
+            raise ValueError(f"extracted package hash mismatch: expected {expected}, got {hashes!r}")
+        installed = candidates[hashes.index(expected)]
         marker.unlink(missing_ok=True)
         if destination.is_symlink():
             destination.unlink()
@@ -94,7 +113,7 @@ def fetch(expected, url, deps):
 if __name__ == "__main__":
     try:
         fetch(*sys.argv[1:])
-    except (ValueError, subprocess.CalledProcessError) as error:
+    except (ValueError, subprocess.CalledProcessError, tarfile.TarError) as error:
         print(error, file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError) and error.stderr:
             print(error.stderr, file=sys.stderr)

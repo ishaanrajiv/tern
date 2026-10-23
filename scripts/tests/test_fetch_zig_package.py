@@ -21,10 +21,16 @@ class FetchTests(unittest.TestCase):
         (self.deps / ".downloads").mkdir()
         (self.deps / ".downloads" / (self.expected + ".archive")).write_bytes(b"archive fixture")
         self.real_run = subprocess.run
+        # What the real package root holds; the fake Zig hashes only that folder right.
+        self.root_marker = "src.txt"
 
     def fake_zig(self, args, **kwargs):
         if args[0] != "zig":
             return self.real_run(args, **kwargs)
+        target = Path(args[-1])
+        if target.is_dir():
+            right = (target / self.root_marker).exists()
+            return subprocess.CompletedProcess(args, 0, (self.expected if right else "other-hash") + "\n", "")
         archive = Path(kwargs["env"]["ZIG_GLOBAL_CACHE_DIR"]) / "p" / (self.expected + ".tar.gz")
         archive.parent.mkdir(parents=True, exist_ok=True)
         with tarfile.open(archive, "w:gz") as tar:
@@ -60,12 +66,9 @@ class FetchTests(unittest.TestCase):
         self.assertEqual(list((self.deps / ".downloads").glob("fetch-*")), [])
 
     def test_failed_extraction_never_publishes_package(self):
-        def fail_tar(args, **kwargs):
-            if args[0] == "tar":
-                raise subprocess.CalledProcessError(1, args)
-            return self.fake_zig(args, **kwargs)
-        with patch.object(fetcher.subprocess, "run", side_effect=fail_tar):
-            with self.assertRaises(subprocess.CalledProcessError):
+        with patch.object(fetcher.subprocess, "run", side_effect=self.fake_zig), \
+                patch.object(fetcher, "unpack", side_effect=fetcher.tarfile.ReadError("truncated")):
+            with self.assertRaises(fetcher.tarfile.TarError):
                 self.fetch()
         self.assertFalse((self.deps / self.expected).exists())
         self.assertFalse((self.deps / ".verified" / self.expected).exists())
@@ -76,7 +79,7 @@ class FetchTests(unittest.TestCase):
             nonlocal calls
             if args[0] == "zig":
                 calls += 1
-                if calls == 2:
+                if calls >= 2:
                     return subprocess.CompletedProcess(args, 0, "wrong-layout\n", "")
             return self.fake_zig(args, **kwargs)
         with patch.object(fetcher.subprocess, "run", side_effect=wrong_layout):
@@ -99,6 +102,34 @@ class FetchTests(unittest.TestCase):
         # The archive first, then what was unpacked from it.
         self.assertTrue(seen[0].endswith(".tar.gz"), seen[0])
         self.assertTrue((self.deps / self.expected / "src.txt").exists())
+
+    def test_apple_double_files_are_kept_as_files(self):
+        # Archives made on a Mac carry ._ files; Zig hashes them, so they must survive unpacking.
+        self.root_marker = "._OFL.txt"
+
+        def fake_zig(args, **kwargs):
+            if args[0] != "zig" or Path(args[-1]).is_dir():
+                return self.fake_zig(args, **kwargs)
+            archive = Path(kwargs["env"]["ZIG_GLOBAL_CACHE_DIR"]) / "p" / (self.expected + ".tar.gz")
+            archive.parent.mkdir(parents=True, exist_ok=True)
+            with tarfile.open(archive, "w:gz") as tar:
+                for name, data in [("OFL.txt", b"licence"), ("._OFL.txt", b"\x00\x05\x16\x07metadata")]:
+                    info = tarfile.TarInfo(self.expected + "/" + name)
+                    info.size = len(data)
+                    tar.addfile(info, io.BytesIO(data))
+            return subprocess.CompletedProcess(args, 0, self.expected + "\n", "")
+
+        with patch.object(fetcher.subprocess, "run", side_effect=fake_zig):
+            self.fetch()
+        self.assertTrue((self.deps / self.expected / "._OFL.txt").is_file())
+        self.assertTrue((self.deps / self.expected / "OFL.txt").is_file())
+
+    def test_a_package_that_is_one_folder_is_not_descended_into(self):
+        # When the unpacked root hashes right, its only folder stays a folder.
+        self.root_marker = "upstream-root"
+        with patch.object(fetcher.subprocess, "run", side_effect=self.fake_zig):
+            self.fetch()
+        self.assertTrue((self.deps / self.expected / "upstream-root" / "src.txt").exists())
 
     def test_rejects_hash_path_traversal(self):
         with self.assertRaisesRegex(ValueError, "invalid package hash"):
