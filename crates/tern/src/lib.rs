@@ -144,6 +144,29 @@ pub struct SessionInfo {
     pub finished_ms: u64,
 }
 
+/// Quotes a string for a POSIX shell. Plain words are left alone; anything
+/// else is single-quoted, with embedded quotes closed, escaped and reopened.
+pub fn shell_quote(arg: &str) -> String {
+    let plain = !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:,+@%".contains(c));
+    if plain {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
+/// Longest session id. Ids become file names with suffixes such as `.screen.tmp`,
+/// and macOS caps a file name at 255 bytes.
+pub const MAX_SESSION_ID: usize = 128;
+
+/// Session ids are also file names, so they must not reach outside the runtime directory.
+pub fn valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= MAX_SESSION_ID
+        && !id.starts_with('.')
+        && id.bytes().all(|c| c.is_ascii_alphanumeric() || b"-_.".contains(&c))
+}
+
 /// Directory holding the daemon socket, log and pid file.
 pub fn runtime_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("TERN_RUNTIME_DIR") {
@@ -151,6 +174,59 @@ pub fn runtime_dir() -> PathBuf {
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/tmp".into());
     home.join("Library/Application Support/tern")
+}
+
+/// Creates the runtime directory private to this user, or makes it so, and tightens
+/// what earlier versions left in it. It holds terminal output, typed commands and
+/// launch presets. Symlinks inside, such as the stable CLI link in `bin/`, are left
+/// alone, and a root that is a symlink or belongs to someone else is refused.
+pub fn prepare_runtime_dir() -> io::Result<PathBuf> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+    let dir = runtime_dir();
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if !meta.is_dir() {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not a directory", dir.display())));
+            }
+            if meta.uid() != nix::unistd::geteuid().as_raw() {
+                return Err(io::Error::new(io::ErrorKind::PermissionDenied, format!("{} belongs to another user", dir.display())));
+            }
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
+        }
+        Err(e) => return Err(e),
+    }
+    secure_tree(&dir)?;
+    Ok(dir)
+}
+
+fn secure_tree(path: &std::path::Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let mode = if meta.is_dir() { 0o700 } else { 0o600 | (meta.permissions().mode() & 0o100) };
+    if meta.permissions().mode() & 0o777 != mode {
+        // A file we can't chmod (another owner, an immutable flag) is no reason not to start.
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            if e.kind() != io::ErrorKind::PermissionDenied {
+                return Err(e);
+            }
+            eprintln!("tern: can't make {} private", path.display());
+        }
+    }
+    if meta.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            match secure_tree(&entry?.path()) {
+                // A running ternd can rename or remove a saved screen meanwhile.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                result => result?,
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn socket_path() -> PathBuf {
@@ -198,8 +274,19 @@ pub fn write_frame(w: &mut impl Write, kind: u8, payload: &[u8]) -> io::Result<(
     w.write_all(&buf)
 }
 
+/// Largest request line a client may send. An attach carries the client's environment.
+pub const MAX_REQUEST_LINE: usize = 1 << 20;
+/// Largest frame ternd accepts from a client. `tern attach` sends 4 KiB of input at most.
+pub const MAX_CLIENT_FRAME: usize = 1 << 20;
+/// Largest frame a client accepts from ternd. A daemon sends output in chunks of at
+/// most `OUTPUT_CHUNK`; older ones sent the whole reattach snapshot in one frame.
+pub const MAX_DAEMON_FRAME: usize = 64 << 20;
+/// ternd splits output, including reattach snapshots, into frames of at most this.
+pub const OUTPUT_CHUNK: usize = 1 << 20;
+
 /// Reads one frame into `buf`, returning its kind. `Ok(None)` means clean EOF.
-pub fn read_frame(r: &mut impl Read, buf: &mut Vec<u8>) -> io::Result<Option<u8>> {
+/// A frame longer than `max` is an error, before anything is allocated for it.
+pub fn read_frame(r: &mut impl Read, buf: &mut Vec<u8>, max: usize) -> io::Result<Option<u8>> {
     let mut header = [0u8; 5];
     match r.read_exact(&mut header) {
         Ok(()) => {}
@@ -207,6 +294,9 @@ pub fn read_frame(r: &mut impl Read, buf: &mut Vec<u8>) -> io::Result<Option<u8>
         Err(e) => return Err(e),
     }
     let len = u32::from_be_bytes(header[1..].try_into().unwrap()) as usize;
+    if len > max {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("a {len}-byte frame is over the {max}-byte limit")));
+    }
     buf.resize(len, 0);
     r.read_exact(buf)?;
     Ok(Some(header[0]))
@@ -249,6 +339,10 @@ pub fn spawn_on_pty(
     command.spawn()
 }
 
+/// Tests that change HOME or TERN_RUNTIME_DIR take turns.
+#[cfg(test)]
+pub(crate) static TEST_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,14 +355,14 @@ mod tests {
         write_frame(&mut wire, FRAME_OUTPUT, b"").unwrap();
         let mut r = wire.as_slice();
         let mut buf = Vec::new();
-        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_INPUT));
+        assert_eq!(read_frame(&mut r, &mut buf, 64).unwrap(), Some(FRAME_INPUT));
         assert_eq!(buf, b"ls\r");
-        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_RESIZE));
+        assert_eq!(read_frame(&mut r, &mut buf, 64).unwrap(), Some(FRAME_RESIZE));
         assert_eq!(parse_resize(&buf), Some((120, 40)));
-        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), Some(FRAME_OUTPUT));
+        assert_eq!(read_frame(&mut r, &mut buf, 64).unwrap(), Some(FRAME_OUTPUT));
         assert!(buf.is_empty());
         // Clean EOF between frames.
-        assert_eq!(read_frame(&mut r, &mut buf).unwrap(), None);
+        assert_eq!(read_frame(&mut r, &mut buf, 64).unwrap(), None);
     }
 
     #[test]
@@ -276,7 +370,83 @@ mod tests {
         let mut wire = Vec::new();
         write_frame(&mut wire, FRAME_OUTPUT, b"hello").unwrap();
         wire.truncate(7);
-        assert!(read_frame(&mut wire.as_slice(), &mut Vec::new()).is_err());
+        assert!(read_frame(&mut wire.as_slice(), &mut Vec::new(), 64).is_err());
+    }
+
+    #[test]
+    fn oversized_frames_are_refused_before_allocating() {
+        let mut wire = std::io::Cursor::new([FRAME_INPUT, 255, 255, 255, 255]);
+        let mut buf = Vec::new();
+        assert_eq!(read_frame(&mut wire, &mut buf, MAX_CLIENT_FRAME).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert!(buf.capacity() < 1024);
+        // At the limit is fine.
+        let mut wire = Vec::new();
+        write_frame(&mut wire, FRAME_INPUT, b"abcd").unwrap();
+        assert_eq!(read_frame(&mut wire.as_slice(), &mut buf, 4).unwrap(), Some(FRAME_INPUT));
+        assert!(read_frame(&mut wire.as_slice(), &mut buf, 3).is_err());
+    }
+
+    #[test]
+    fn session_ids_stay_file_names() {
+        for id in ["", ".", "..", "../x", "/tmp/x", "a/b", "a\\b", ".hidden", "a\n", "a b", "é"] {
+            assert!(!valid_session_id(id), "accepted {id:?}");
+        }
+        assert!(!valid_session_id(&"x".repeat(MAX_SESSION_ID + 1)));
+        for id in ["p-f7dc6598", "bench-0", "s_1.2", &"x".repeat(MAX_SESSION_ID)] {
+            assert!(valid_session_id(id), "refused {id:?}");
+        }
+    }
+
+    #[test]
+    fn quoting() {
+        assert_eq!(shell_quote("npm"), "npm");
+        assert_eq!(shell_quote("it's here"), "'it'\\''s here'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("$(rm -rf ~)"), "'$(rm -rf ~)'");
+    }
+
+    #[test]
+    fn runtime_storage_is_made_private_without_following_links() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777;
+        let _guard = TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("tern-private-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("rt");
+        std::fs::create_dir_all(dir.join("saved")).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(dir.join("saved/p.screen"), "output").unwrap();
+        std::fs::set_permissions(dir.join("saved/p.screen"), std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::fs::write(dir.join("tool"), "#!/bin/sh").unwrap();
+        std::fs::set_permissions(dir.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let outside = root.join("outside");
+        std::fs::write(&outside, "x").unwrap();
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o644)).unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("link")).unwrap();
+
+        std::env::set_var("TERN_RUNTIME_DIR", &dir);
+        prepare_runtime_dir().unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(mode(&dir.join("saved")), 0o700);
+        assert_eq!(mode(&dir.join("saved/p.screen")), 0o600);
+        assert_eq!(mode(&dir.join("tool")), 0o700);
+        // The link's target is not ours to change.
+        assert_eq!(mode(&outside), 0o644);
+
+        // A root that is itself a link is refused, and its target left alone.
+        let linked = root.join("linked");
+        std::os::unix::fs::symlink(&outside, &linked).unwrap();
+        std::env::set_var("TERN_RUNTIME_DIR", &linked);
+        assert!(prepare_runtime_dir().is_err());
+        assert_eq!(mode(&outside), 0o644);
+
+        // A missing root is created private.
+        let fresh = root.join("fresh/rt");
+        std::env::set_var("TERN_RUNTIME_DIR", &fresh);
+        prepare_runtime_dir().unwrap();
+        assert_eq!(mode(&fresh), 0o700);
+        std::env::remove_var("TERN_RUNTIME_DIR");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

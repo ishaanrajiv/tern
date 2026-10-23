@@ -6,6 +6,8 @@ cd "$(dirname "$0")/.."
 
 echo "== cargo test"
 cargo test --quiet
+echo "== script tests"
+python3 -I -m unittest discover -s scripts/tests
 echo "== cargo clippy"
 cargo clippy --all-targets --quiet -- -D warnings
 echo "== swift build"

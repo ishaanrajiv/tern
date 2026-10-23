@@ -48,6 +48,22 @@ Reference: [GitHub's repository visibility documentation](https://docs.github.co
 Repository privacy does not fix any of these application behaviors. Address them
 before broad binary distribution, even if the source remains private.
 
+### Status after the runtime hardening branch
+
+All eight findings are addressed on `security/runtime-hardening`, adapted from the closed PRs
+to current main rather than copied:
+
+| Finding | Change | Tests |
+|---|---|---|
+| Runtime storage and peer UID | `prepare_runtime_dir` refuses a root that is a symlink or another user's, creates it `0700` and repairs the tree (`0700` folders, `0600` files) without following symlinks. ternd runs with umask `077`, sets the socket to `0600` and checks `getpeereid` on every connection. Sessions get the user's original umask back. | `runtime_storage_is_made_private_without_following_links`, `only_this_user_may_connect` |
+| Session IDs | `valid_session_id` (plain file names, at most 128 bytes so suffixes fit) gates attach, kill and report before any file is touched. Saved screens and command files also check it themselves. | `session_ids_stay_file_names`, `ids_that_are_paths_are_refused_before_touching_files`, `command_files_stay_in_their_folder` |
+| Protocol buffers and queues | Request lines are capped at 1 MiB and client frames at 1 MiB before allocation. Snapshots go out in 1 MiB frames; `tern attach` accepts up to 64 MiB for older daemons. Each client's queue holds 8 MiB; past that the client is hung up on and reattaches. The exit code follows the last output. Closing a client wakes its writer. The app's line reader stops at 16 MiB and no longer rescans its buffer. | `oversized_frames_are_refused_before_allocating`, `an_endless_request_line_is_cut_off`, `a_client_that_stops_reading_is_hung_up_on`, `the_exit_follows_the_last_output`, `closing_wakes_a_waiting_writer`, `testAnEndlessLineFromTheDaemonIsDropped` |
+| App resume IDs | `Workspace.resumeCommand` quotes the conversation ID with `quoteShell`. | `testResumeCommandsTypeTheSessionIDAsData` |
+| Hook quoting and config writes | Hook and status line commands single-quote the binary path. Older double-quoted entries are still recognised, so upgrades replace them. Writes go through symlinks to the real file, keep its mode, and put the backup beside it. An emptied Codex `hooks.json` is removed only if tern created it. | `hook_paths_are_quoted_for_the_shell`, `upgrading_from_double_quoted_hooks_replaces_them`, `symlinked_configs_are_written_through_and_keep_their_mode`, `an_empty_codex_file_the_user_made_is_kept` |
+| Debug harness | `DebugHooks` is compiled only under `#if DEBUG`. A release binary contains none of its strings. | Checked with `strings` on debug and release builds |
+| Claude account polling | Off by default. Settings explains the Keychain read and the request to Anthropic. A choice the user already saved is kept. | Manual review |
+| Dependency downloads | `scripts/fetch-zig-package.py` hashes each archive, and then the extracted package, with the pinned Zig. It publishes a package only on a match, including `.tgz` sources. It unpacks with Python rather than macOS `tar`, which folds AppleDouble `._` files into extended attributes. That folding left the old fetcher's JetBrainsMono copy different from its pinned hash. `build-ghostty.sh` requires the exact Zig version and refetches anything without a verification marker. | `scripts/tests/test_fetch_zig_package.py`, plus a full `build-ghostty.sh` run against the real pinned dependencies |
+
 Launch presets can store secrets in plaintext environment values. The README already
 discloses this. Private runtime storage should cover presets as well as terminal
 screens, commands, usage records and layout backups. The privacy documentation must
@@ -77,7 +93,11 @@ deserves investigation before distributing a terminal intended for coding agents
 
 ## Next decision
 
-Keep visibility unchanged now. Prepare the signing setup and private release candidate,
+The runtime findings above are fixed. The remaining items before public visibility are the
+remote-history review (Actions logs, closed PRs and their branches) and the privacy/security
+documentation and CI under "Public project preparation".
+
+Earlier: keep visibility unchanged now. Prepare the signing setup and private release candidate,
 then revisit public visibility after the runtime fixes, privacy/security documentation
 and remaining remote-history review. The preserved changes and release sequence are
 tracked in [the 0.0.1 release plan](0.0.1-release-plan.md).

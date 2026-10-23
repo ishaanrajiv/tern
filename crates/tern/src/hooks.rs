@@ -142,30 +142,40 @@ pub fn link_binary() -> Result<PathBuf> {
     if std::fs::read_link(&link).ok().as_deref() == Some(exe.as_path()) {
         return Ok(link);
     }
+    crate::prepare_runtime_dir()?;
     std::fs::create_dir_all(link.parent().unwrap())?;
     let _ = std::fs::remove_file(&link);
     std::os::unix::fs::symlink(&exe, &link)?;
     Ok(link)
 }
 
+/// The stable binary, quoted for the shell the agent runs hooks with.
+fn stable_command(args: &str) -> Result<String> {
+    Ok(format!("{} {args}", crate::shell_quote(&stable_binary()?.display().to_string())))
+}
+
 fn command(agent: &str) -> Result<String> {
-    Ok(format!("\"{}\" hook {agent}", stable_binary()?.display()))
+    stable_command(&format!("hook {agent}"))
+}
+
+/// Whether a hook or status line command runs our stable binary with `args`. Older
+/// terns double-quoted the path; newer ones single-quote it.
+fn is_our_command(command: &str, args: &str) -> bool {
+    ["\"", "'"].iter().any(|q| command.contains(&format!("/tern/bin/tern{q} {args}")) && command.ends_with(args))
 }
 
 fn is_ours(group: &Value, agent: &str) -> bool {
     group["hooks"].as_array().is_some_and(|hs| {
-        hs.iter().any(|h| {
-            h["command"].as_str().is_some_and(|c| c.contains("/tern/bin/tern\"") && c.ends_with(&format!("hook {agent}")))
-        })
+        hs.iter().any(|h| h["command"].as_str().is_some_and(|c| is_our_command(c, &format!("hook {agent}"))))
     })
 }
 
 fn statusline_command() -> Result<String> {
-    Ok(format!("\"{}\" statusline", stable_binary()?.display()))
+    stable_command("statusline")
 }
 
 fn is_our_statusline(config: &Map<String, Value>) -> bool {
-    config.get("statusLine").and_then(|s| s["command"].as_str()).is_some_and(|c| c.contains("/tern/bin/tern\" statusline"))
+    config.get("statusLine").and_then(|s| s["command"].as_str()).is_some_and(|c| is_our_command(c, "statusline"))
 }
 
 /// Makes `tern statusline` Claude Code's status line, keeping any the user had to run after it.
@@ -208,15 +218,46 @@ fn read_config(path: &Path) -> Result<Map<String, Value>> {
     }
 }
 
+/// The path with `suffix` on its whole file name: `settings.json.tern-backup`.
+fn suffixed(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// The file a config path names, through any symlinks, so a settings.json kept in a
+/// dotfiles repository is updated where it lives and the link stays a link.
+fn resolve(path: &Path) -> PathBuf {
+    let mut path = path.to_path_buf();
+    for _ in 0..32 {
+        let Ok(target) = std::fs::read_link(&path) else { break };
+        // A relative link is relative to the folder holding it.
+        path = path.parent().unwrap_or(Path::new("/")).join(target);
+    }
+    path
+}
+
 fn write_config(path: &Path, config: &Map<String, Value>) -> Result<()> {
-    if path.exists() {
-        std::fs::copy(path, path.with_extension("json.tern-backup"))?;
+    use std::os::unix::fs::PermissionsExt;
+    let path = resolve(path);
+    let mode = std::fs::metadata(&path).ok().map(|m| m.permissions().mode() & 0o7777);
+    if mode.is_some() {
+        std::fs::copy(&path, suffixed(&path, ".tern-backup"))?;
     }
     std::fs::create_dir_all(path.parent().unwrap())?;
-    let tmp = path.with_extension("json.tern-tmp");
+    let tmp = suffixed(&path, ".tern-tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(config)? + "\n")?;
-    std::fs::rename(&tmp, path)?;
+    // The agent's config is the user's: it keeps whatever mode they gave it.
+    if let Some(mode) = mode {
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
+    }
+    std::fs::rename(&tmp, &path)?;
     Ok(())
+}
+
+/// Marks that tern created an agent's hooks file, so removing the hooks may remove it too.
+fn created_marker(agent: &str) -> PathBuf {
+    crate::runtime_dir().join(format!("hooks/{agent}-created"))
 }
 
 /// Removes our hook groups from a config, returning whether any were there.
@@ -241,6 +282,11 @@ pub fn install(agent: &str) -> Result<PathBuf> {
     link_binary()?;
     let path = config_path(agent)?;
     let mut config = read_config(&path)?;
+    if agent == "codex" && std::fs::symlink_metadata(&path).is_err() {
+        let marker = created_marker(agent);
+        std::fs::create_dir_all(marker.parent().unwrap())?;
+        std::fs::write(marker, "")?;
+    }
     strip(&mut config, agent);
     let cmd = command(agent)?;
     let hooks = config.entry("hooks").or_insert_with(|| json!({}));
@@ -263,10 +309,12 @@ pub fn uninstall(agent: &str) -> Result<PathBuf> {
     let mut config = read_config(&path)?;
     let statusline = agent == "claude" && uninstall_statusline(&mut config);
     if strip(&mut config, agent) || statusline {
-        if config.is_empty() && agent == "codex" {
-            // hooks.json held only our hooks, so we created it; leave no trace.
+        if config.is_empty() && agent == "codex" && created_marker(agent).exists() {
+            // tern created hooks.json and nothing else is in it: leave no trace.
+            let file = resolve(&path);
             std::fs::remove_file(&path)?;
-            let _ = std::fs::remove_file(path.with_extension("json.tern-backup"));
+            let _ = std::fs::remove_file(suffixed(&file, ".tern-backup"));
+            let _ = std::fs::remove_file(created_marker(agent));
         } else {
             write_config(&path, &config)?;
         }
@@ -326,13 +374,8 @@ pub fn update_installed() -> Vec<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// These tests point HOME at a scratch folder; they take turns.
-    static HOME_LOCK: Mutex<()> = Mutex::new(());
-
     fn with_home(f: impl FnOnce(&Path)) {
-        let _guard = HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let old = std::env::var_os("HOME");
         let dir = std::env::temp_dir().join(format!("tern-hooks-{}-{:?}", std::process::id(), std::thread::current().id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -389,6 +432,92 @@ mod tests {
             uninstall("claude").unwrap();
             assert_eq!(read(&path), original);
             assert_eq!(status("claude").unwrap()["installed"], false);
+        });
+    }
+
+    #[test]
+    fn hook_paths_are_quoted_for_the_shell() {
+        with_home(|home| {
+            let cmd = command("claude").unwrap();
+            assert!(cmd.starts_with('\''), "{cmd}");
+            assert_eq!(cmd, format!("'{}' hook claude", home.join("Library/Application Support/tern/bin/tern").display()));
+            assert!(is_our_command(&cmd, "hook claude"));
+            assert!(is_our_command(&statusline_command().unwrap(), "statusline"));
+        });
+        // What older terns wrote is still recognised, so upgrading replaces it.
+        let path = "/Users/x/Library/Application Support/tern/bin/tern";
+        assert!(is_our_command(&format!("\"{path}\" hook claude"), "hook claude"));
+        assert!(is_our_command(&format!("'{path}' hook claude"), "hook claude"));
+        assert!(!is_our_command(&format!("'{path}' hook codex"), "hook claude"));
+        assert!(!is_our_command("my-tern hook claude", "hook claude"));
+        assert!(!is_our_command(&format!("'{path}' statusline | other"), "statusline"));
+    }
+
+    #[test]
+    fn upgrading_from_double_quoted_hooks_replaces_them() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let old = format!("\"{}\"", stable_binary().unwrap().display());
+            let config = json!({
+                "hooks": { "Stop": [
+                    { "hooks": [{ "type": "command", "command": format!("{old} hook claude") }] },
+                    { "hooks": [{ "type": "command", "command": "my-stop-hook" }] }
+                ] },
+                "statusLine": { "type": "command", "command": format!("{old} statusline") }
+            });
+            std::fs::write(&path, config.to_string()).unwrap();
+            install("claude").unwrap();
+            let stop = read(&path)["hooks"]["Stop"].clone();
+            assert_eq!(stop.as_array().unwrap().len(), 2, "{stop}");
+            assert!(stop.to_string().contains("my-stop-hook"));
+            assert!(!stop.to_string().contains("\\\"/"), "{stop}");
+            uninstall("claude").unwrap();
+            let after = read(&path);
+            assert_eq!(after["hooks"]["Stop"], json!([{ "hooks": [{ "type": "command", "command": "my-stop-hook" }] }]));
+            assert!(after.get("statusLine").is_none());
+        });
+    }
+
+    #[test]
+    fn symlinked_configs_are_written_through_and_keep_their_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        with_home(|home| {
+            std::fs::create_dir_all(home.join("dotfiles")).unwrap();
+            std::fs::create_dir_all(home.join(".claude")).unwrap();
+            let real = home.join("dotfiles/claude.json");
+            std::fs::write(&real, r#"{"model":"opus"}"#).unwrap();
+            std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let link = home.join(".claude/settings.json");
+            // Relative, as dotfile managers usually make them.
+            std::os::unix::fs::symlink("../dotfiles/claude.json", &link).unwrap();
+
+            for _ in 0..2 {
+                install("claude").unwrap();
+                assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+                assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+                assert_eq!(status("claude").unwrap()["current"], true);
+            }
+            // The backup sits beside the real file, not the link.
+            assert!(home.join("dotfiles/claude.json.tern-backup").exists());
+            assert!(!home.join(".claude/settings.json.tern-backup").exists());
+
+            uninstall("claude").unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(read(&real), json!({ "model": "opus" }));
+            assert_eq!(std::fs::metadata(&real).unwrap().permissions().mode() & 0o777, 0o600);
+        });
+    }
+
+    #[test]
+    fn an_empty_codex_file_the_user_made_is_kept() {
+        with_home(|home| {
+            let path = home.join(".codex/hooks.json");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "{}").unwrap();
+            install("codex").unwrap();
+            uninstall("codex").unwrap();
+            assert_eq!(read(&path), json!({}));
         });
     }
 

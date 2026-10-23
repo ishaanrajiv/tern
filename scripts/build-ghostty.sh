@@ -4,8 +4,9 @@
 # ternd links; Rust builds need it, see crates/tern/build.rs).
 #
 # Zig's own package fetcher has been flaky here (TLS failures, stalls), so this
-# downloads every dependency with curl into .zig-deps/<hash>/ and builds with
-# `zig build --system`, which never touches the network.
+# downloads every dependency with curl into .zig-deps/<hash>/, checks each against
+# the hash its build.zig.zon pins (scripts/fetch-zig-package.py, using Zig's own
+# hashing) and builds with `zig build --system`, which never touches the network.
 #
 # Needs: zig matching vendor/ghostty's minimum_zig_version (brew install zig),
 # and Xcode's Metal toolchain (xcodebuild -downloadComponent MetalToolchain).
@@ -15,6 +16,11 @@ GHOSTTY="$ROOT/vendor/ghostty"
 DEPS="$ROOT/.zig-deps"
 DL="$DEPS/.downloads"
 mkdir -p "$DL"
+REQUIRED_ZIG="$(sed -n 's/.*minimum_zig_version = "\([^"]*\)".*/\1/p' "$GHOSTTY/build.zig.zon")"
+if [ "$(zig version)" != "$REQUIRED_ZIG" ]; then
+  echo "Ghostty needs Zig $REQUIRED_ZIG exactly (package hashes depend on it); found $(zig version)" >&2
+  exit 1
+fi
 
 # Resolve the dependency tree breadth-first: each fetched package's own
 # build.zig.zon can name more dependencies.
@@ -27,7 +33,8 @@ seen = {}
 for f in zons:
     text = open(f).read()
     for url, h in re.findall(r'\.url\s*=\s*"([^"]+)"\s*,\s*\.hash\s*=\s*"([^"]+)"', text):
-        if not os.path.isdir(os.path.join(deps, h)):
+        # Only packages fetch-zig-package.py verified count as present.
+        if not (os.path.isdir(os.path.join(deps, h)) and os.path.isfile(os.path.join(deps, ".verified", h))):
             seen[h] = url
 for h, u in seen.items():
     print(h, u)
@@ -38,28 +45,7 @@ while true; do
   missing="$(fetch_round)"
   [ -z "$missing" ] && break
   while read -r hash url; do
-    case "$url" in
-      git+https://github.com/*)
-        # git+https://github.com/owner/repo(.git)#commit -> codeload tarball
-        repo="${url#git+}"; commit="${repo##*#}"; repo="${repo%%#*}"; repo="${repo%.git}"
-        url="$repo/archive/$commit.tar.gz" ;;
-      git+*)
-        repo="${url#git+}"; commit="${repo##*#}"; repo="${repo%%#*}"
-        tmp="$DL/git-$hash"; rm -rf "$tmp"
-        git clone -q "$repo" "$tmp" && git -C "$tmp" checkout -q "$commit"
-        rm -rf "$tmp/.git"; mv "$tmp" "$DEPS/$hash"
-        echo "fetched $hash (git)"; continue ;;
-    esac
-    file="$DL/$hash.archive"
-    curl -fsSL --retry 3 -o "$file" "$url"
-    mkdir -p "$DEPS/$hash"
-    # Strip the single top-level directory most archives have.
-    if [ "$(tar tf "$file" | cut -d/ -f1 | sort -u | wc -l | tr -d ' ')" = 1 ]; then
-      tar xf "$file" -C "$DEPS/$hash" --strip-components=1
-    else
-      tar xf "$file" -C "$DEPS/$hash"
-    fi
-    echo "fetched $hash"
+    python3 -I "$ROOT/scripts/fetch-zig-package.py" "$hash" "$url" "$DEPS" < /dev/null
   done <<< "$missing"
 done
 

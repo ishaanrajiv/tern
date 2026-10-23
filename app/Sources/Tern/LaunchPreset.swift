@@ -1,6 +1,6 @@
 import Foundation
 
-func quoteShell(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+nonisolated func quoteShell(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
 struct RemoteConnection: Codable, Equatable {
     var host = ""

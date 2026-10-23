@@ -140,11 +140,12 @@ the agent reports again.
 
 - **Codex** logs its limits in its session files (`~/.codex/sessions/…/rollout-*.jsonl`); tern reads
   the newest.
-- **Claude Code**: every 5 minutes tern asks the account for the numbers `/usage` shows, using the
-  sign-in Claude Code keeps in the Keychain (macOS asks once; choose Always Allow). This works wherever
+- **Claude Code**, if you turn on Settings → Agents → Read Claude account usage (off by default):
+  every 5 minutes tern reads the sign-in Claude Code keeps in the Keychain (macOS asks once; choose
+  Always Allow) and sends it to Anthropic's API for the numbers `/usage` shows. This works wherever
   Claude Code runs, the desktop app included. tern never refreshes that token, so it can't sign Claude
-  Code out; an expired one waits for Claude Code to renew it. Deny the prompt, or turn off Settings →
-  Agents → Usage limits, and tern stops asking.
+  Code out; an expired one waits for Claude Code to renew it. Deny the prompt, or turn the setting
+  off, and tern stops asking.
 - Claude Code also passes its limits to its status line command, so setting up Claude Code's hooks
   sets `statusLine` to `tern statusline`. That records them to `usage/claude.json` and prints nothing;
   when it is newer than the account's answer (Claude Code ran in a terminal since), the sidebar uses
@@ -244,6 +245,13 @@ ternd (Rust, launchd agent dev.tern.ternd)
   Because the headless terminal is Ghostty's own engine, a reattaching pane gets back what it showed,
   with the program's modes (bracketed paste, mouse, kitty keyboard flags) and links. Saved screens
   start with a format version and keep colours but not modes.
+- Privacy of the runtime folder: `~/Library/Application Support/tern` holds terminal output, typed
+  commands, the layout and launch presets (their environment values in plain text), so ternd keeps
+  it and everything in it readable only by you (folders `0700`, files `0600`, the socket too) and
+  repairs looser modes on start; symlinks inside it, such as `bin/tern`, are left alone. ternd
+  refuses connections from any other user, session ids that aren't plain file names, request lines
+  over 1 MiB and input frames over 1 MiB. A client that falls 8 MiB behind is disconnected and
+  reattaches from the screen. Programs in your tabs still get your usual umask.
 - Versions: the app says `hello` to ternd at launch. ternd answers with its protocol number and a
   hash of its binary. When the installed ternd is newer than the running one, tern offers to restart
   it, and warns when the running one speaks an older protocol. Restarting ends the programs in your
@@ -387,8 +395,8 @@ tern daemon [status|restart]               the running ternd against this tern's
 
 `ternd` starts on demand as the launchd agent `dev.tern.ternd`; its log is
 `~/Library/Application Support/tern/ternd.log`. Set `TERN_RUNTIME_DIR` (path under ~100
-characters) to run a private instance for tests: the app keeps its layout, debug files and
-`bin/tern` link there, leaves installed agent hooks alone and doesn't take focus at launch; the
+characters) to run a private instance for tests: the app keeps its layout, debug files (debug
+builds only) and `bin/tern` link there, leaves installed agent hooks alone and doesn't take focus at launch; the
 daemon is spawned directly, without launchd.
 
 ## Spike results (M1)
