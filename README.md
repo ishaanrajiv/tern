@@ -6,9 +6,9 @@ Mac-native keys, and sessions that survive quitting the app.
 > [!WARNING]
 > **Early alpha.** tern is a personal project, built for its author's own use and not yet tried by
 > anyone else. Expect rough edges, breaking changes between commits, and settings or saved sessions
-> that don't carry over. The [0.0.1 Apple Silicon prerelease](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1)
-> is available to people with repository access. You can also [build from source](#build).
-> It targets macOS 14 or later; testing on macOS 14 is still outstanding.
+> that don't carry over. Download the [latest Apple Silicon prerelease](https://github.com/ishaanrajiv/tern/releases)
+> or [build from source](#build). It targets macOS 14 or later; testing on macOS 14 is still
+> outstanding.
 
 One window holds a sidebar of folders and their tabs, split panes, a ⌘K command palette and a
 Mac-native keymap. Claude Code and Codex report whether they're working, waiting for you, or done,
@@ -318,8 +318,12 @@ one, and ad-hoc otherwise. `--install` also copies it to `~/Applications`; a run
 working through the swap. Omit `--install` to build without installing, or add `--debug` for a debug
 Swift build. Set `TERN_SIGN_IDENTITY` to choose a signing identity, or `-` for ad-hoc signing.
 
-`build-ghostty.sh` downloads Ghostty's Zig dependencies with curl into `.zig-deps/` and builds
-offline with `zig build --system`, because Zig's own fetcher was unreliable here.
+`build-ghostty.sh` downloads Ghostty's Zig dependencies with curl, checks each archive and its
+unpacked files against the hash Ghostty pins (using Zig's own hashing, so the exact Zig version is
+required), moves them into `.zig-deps/` and builds offline with `zig build --system`, because Zig's
+own fetcher was unreliable here. Checked packages are marked in `.zig-deps/.verified` and not
+checked again. If a cached download fails the check, delete
+`.zig-deps/.downloads/<hash>.archive` and run the script again.
 It builds libghostty for the current Mac's architecture and `zig-out/lib/libghostty-vt.a`, which
 ternd links statically; Cargo builds fail with a pointer to this script until it exists.
 
@@ -328,10 +332,10 @@ them with `scripts/vt-bindings.sh` (needs `cargo install bindgen-cli`).
 
 ### Distribution build
 
-The first Apple Silicon prerelease is [0.0.1](https://github.com/ishaanrajiv/tern/releases/tag/v0.0.1). The
-[release plan](docs/0.0.1-release-plan.md) records signing setup, packaging work and the
-fixes retained from the closed release PRs. The repository remains private during
-[public-readiness review](docs/public-readiness.md).
+Prereleases for Apple Silicon are on the [Releases page](https://github.com/ishaanrajiv/tern/releases).
+[RELEASING.md](RELEASING.md) describes how they're built, checked and published. The
+[public-readiness review](docs/public-readiness.md) records the security fixes made before the
+repository was opened.
 
 To build a signed, notarized copy for another Mac, you need a **Developer ID Application**
 certificate and a notarytool Keychain profile. Store the credentials once:
@@ -439,8 +443,35 @@ daemon is spawned directly, without launchd.
   reporting and the kitty keyboard protocol, not mouse capture. Untested guesses: Codex's redraws
   clear the selection before ⌘C, an image on the clipboard pastes nothing (tern only hands Ghostty
   text), or a long paste shows as Codex's short placeholder. To narrow it down, try it in the Codex
-  tab of a `TERN_DEBUG=1` build with logging in `TerminalView.copy`/`paste` and the clipboard
+  tab of a debug build (`build-app.sh --debug`, launched with `TERN_DEBUG=1`) with logging in `TerminalView.copy`/`paste` and the clipboard
   callbacks in `GhosttyApp.swift`.
+
+## Privacy
+
+tern has no account and no telemetry. It reaches the network only for these:
+
+- **Agent updates.** tern asks the npm registry for the newest Claude Code and Codex versions, five
+  seconds after launch and every six hours. The request names the package, nothing about you.
+- **Claude Code's usage limits, if you turn them on** (Settings → Agents, off by default). tern
+  reads Claude Code's sign-in from the Keychain and sends it to Anthropic's API to fetch your limits.
+- **What you ask for.** SSH connections you open, and the commands in your launch presets and tabs,
+  run as you with your own configuration.
+
+Everything else stays on your Mac in `~/Library/Application Support/tern`: the layout, launch
+presets (environment values in plain text), saved screens (whatever you scrolled past), the commands
+typed in each tab, recorded usage numbers, and ternd's log. None of it is encrypted. ternd keeps the
+folder readable only by you, and its socket refuses other users. See [SECURITY.md](SECURITY.md).
+
+Setting up an agent's hooks in Settings writes to that agent's own config: `~/.claude/settings.json`
+(hooks and the status line, keeping yours to run after it) or `~/.codex/hooks.json`. tern keeps
+your other entries, follows a symlinked config to its real file, keeps its permissions and leaves a
+`.tern-backup` copy beside it. **Remove** takes tern's entries out and puts back the status line you
+had.
+
+## Contributing
+
+Issues and small pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). Report security
+problems privately as [SECURITY.md](SECURITY.md) describes.
 
 ## License
 
