@@ -43,6 +43,24 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertNil(ShortcutRegistry.ruleProblem(try KeyBinding(parsing: "ctrl+alt+space"), global: true))
         XCTAssertNotNil(ShortcutRegistry.ruleProblem(KeyBinding("x", []), global: true))
         XCTAssertNotNil(ShortcutRegistry.ruleProblem(try KeyBinding(parsing: "cmd+space"), global: true))
+        // Registration needs a Carbon key code.
+        XCTAssertNotNil(ShortcutRegistry.ruleProblem(try KeyBinding(parsing: "ctrl+alt+é"), global: true))
+        XCTAssertNotNil(ShortcutRegistry.resolve("app.globalHotkey = ctrl+alt+é").problems.first)
+        XCTAssertEqual(ShortcutRegistry.resolve("app.globalHotkey = ctrl+alt+t").bindings["app.globalHotkey"],
+                       [KeyBinding("t", [.control, .option])])
+    }
+
+    func testShiftedCharactersMatchTheirKeyWithShift() throws {
+        XCTAssertEqual(try KeyBinding(parsing: "cmd+}"), try KeyBinding(parsing: "cmd+shift+]"))
+        XCTAssertEqual(try KeyBinding(parsing: "cmd+Y"), try KeyBinding(parsing: "cmd+shift+y"))
+        XCTAssertEqual(try KeyBinding(parsing: "CMD+Shift+Left"), KeyBinding(Key.left, [.command, .shift]))
+        XCTAssertEqual(KeyBinding("{", [.control, .command]), KeyBinding("[", [.control, .shift, .command]))
+        // So an override can't slip past a clash or the digit rule by naming the shifted character.
+        let clash = ShortcutRegistry.resolve("New Tab = cmd+}")
+        XCTAssertEqual(clash.bindings["tab.new"], ShortcutRegistry.defaults["tab.new"])
+        XCTAssertTrue(clash.problems.contains { $0.contains("Next Tab") }, "\(clash.problems)")
+        XCTAssertFalse(ShortcutRegistry.resolve("New Tab = cmd+#").problems.isEmpty)
+        XCTAssertFalse(ShortcutRegistry.resolve("New Tab = cmd+P").problems.isEmpty)
     }
 
     func testGlobalHotkeyKeyCodes() {
@@ -56,7 +74,7 @@ final class ShortcutRegistryTests: XCTestCase {
         XCTAssertEqual(try KeyBinding(parsing: "cmd+shift+Y"), KeyBinding("y", [.command, .shift]))
         XCTAssertEqual(try KeyBinding(parsing: "control+option+command+left"), KeyBinding(Key.left, [.control, .option, .command]))
         XCTAssertEqual(try KeyBinding(parsing: "cmd+return").label, "⌘↩")
-        XCTAssertEqual(try KeyBinding(parsing: "cmd++"), KeyBinding("+", .command))
+        XCTAssertEqual(try KeyBinding(parsing: "cmd++"), KeyBinding("=", [.command, .shift]))
         for text in ["x", "cmd+", "meta+x", "cmd+xx", "cmd+f13", ""] {
             XCTAssertThrowsError(try KeyBinding(parsing: text), text)
         }

@@ -5,10 +5,29 @@ struct KeyBinding: Hashable {
     let key: String
     let modifiers: NSEvent.ModifierFlags
 
+    /// A shifted character becomes its key plus ⇧, so ⌘} and ⇧⌘] (or ⌘Y and ⇧⌘Y) are one
+    /// binding, as AppKit matches them.
     init(_ key: String, _ modifiers: NSEvent.ModifierFlags = .command) {
-        self.key = key.lowercased()
-        self.modifiers = modifiers.intersection([.command, .shift, .option, .control])
+        var key = key
+        var modifiers = modifiers.intersection([.command, .shift, .option, .control])
+        if key.count == 1, let c = key.first {
+            if let base = Self.shifted[c] {
+                key = String(base)
+                modifiers.insert(.shift)
+            } else if c.isUppercase {
+                key = key.lowercased()
+                modifiers.insert(.shift)
+            }
+        }
+        self.key = key
+        self.modifiers = modifiers
     }
+
+    /// Shifted characters and the key that types them, on the US layout menu key equivalents assume.
+    static let shifted: [Character: Character] = [
+        "~": "`", "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+        "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\", ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/",
+    ]
 
     static func == (a: Self, b: Self) -> Bool { a.key == b.key && a.modifiers == b.modifiers }
     func hash(into hasher: inout Hasher) {
@@ -44,7 +63,8 @@ struct KeyBinding: Hashable {
 
     /// Reads "cmd+shift+]" or "ctrl+tab".
     init(parsing text: String) throws {
-        var tokens = text.lowercased().split(separator: "+", omittingEmptySubsequences: false).map {
+        // Case matters only for the key: "cmd+Y" is ⇧⌘Y.
+        var tokens = text.split(separator: "+", omittingEmptySubsequences: false).map {
             $0.trimmingCharacters(in: .whitespaces)
         }
         // "cmd++": the key is the plus sign.
@@ -52,12 +72,12 @@ struct KeyBinding: Hashable {
         guard let last = tokens.last, tokens.count > 1 else {
             throw ShortcutRegistry.Problem("Write shortcuts as modifiers and a key, like cmd+shift+x.")
         }
-        guard let key = last.count == 1 ? last : Self.named.first(where: { $0.name == last })?.key else {
+        guard let key = last.count == 1 ? last : Self.named.first(where: { $0.name == last.lowercased() })?.key else {
             throw ShortcutRegistry.Problem("Unknown key: \(last). Use one character, or left, right, up, down, return, tab.")
         }
         var mods: NSEvent.ModifierFlags = []
         for token in tokens.dropLast() {
-            switch token {
+            switch token.lowercased() {
             case "cmd", "command": mods.insert(.command)
             case "shift": mods.insert(.shift)
             case "alt", "opt", "option": mods.insert(.option)
@@ -281,6 +301,9 @@ enum ShortcutRegistry {
     static func ruleProblem(_ binding: KeyBinding, global: Bool = false) -> String? {
         if global, binding.modifiers.isEmpty {
             return "\(binding.label) needs a modifier: on its own the key would stop typing everywhere."
+        }
+        if global, TerminalHotkey.keyCodes[binding.key] == nil {
+            return "\(binding.label) can't be a system-wide hotkey. Use a letter, digit, punctuation, Space, Return, Tab, Esc or an arrow."
         }
         if !global, !binding.modifiers.contains(.command) && !(binding.key == "\t" && binding.modifiers.contains(.control)) {
             return "\(binding.label) needs ⌘: keys without it belong to the terminal."
