@@ -51,6 +51,7 @@ final class Command {
         if t.hasPrefix("Clear") { return "eraser" }
         if t.hasPrefix("Quick Settings") { return "slider.horizontal.3" }
         if t.hasPrefix("Settings") { return "gearshape" }
+        if t == "Keyboard Shortcuts" { return "keyboard" }
         if t.hasPrefix("Toggle Sidebar") { return "sidebar.left" }
         if t.hasPrefix("Zoom") { return "arrow.up.left.and.arrow.down.right" }
         if t.contains("Text") || t.hasPrefix("Actual Size") { return "textformat.size" }
@@ -94,7 +95,7 @@ final class CommandRunner: NSObject {
 }
 
 enum MenuBuilder {
-    static let order = ["File", "Edit", "View", "Navigate", "Window"]
+    static let order = ["File", "Edit", "View", "Navigate", "Window", "Help"]
 
     static func build(commands: [Command]) -> NSMenu {
         let main = NSMenu()
@@ -138,6 +139,8 @@ enum MenuBuilder {
                 menu.addItem(standard("window.fullScreen", #selector(NSWindow.toggleFullScreen(_:))))
                 NSApp.windowsMenu = menu
             }
+            // macOS adds its menu search field here.
+            if name == "Help" { NSApp.helpMenu = menu }
             add(menu, title: name, to: main)
         }
         return main

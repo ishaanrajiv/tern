@@ -382,6 +382,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             },
             Command("app.settings") { [weak self] in self?.onOpenSettings?() },
             Command("settings.quick") { [weak self] in self?.showQuickSettings() },
+            Command("help.shortcuts") { [weak self] in
+                self?.showWorkflow(title: "Keyboard Shortcuts", view: ShortcutSheet { [weak self] in self?.workflowWindow?.close() })
+            },
             Command("window.new") { [weak self] in self?.onNewWindow?() },
             Command("window.close") { [weak self] in self?.window?.performClose(nil) },
             Command("tab.toNewWindow") { [weak self] in self?.onMoveTab?(true) },

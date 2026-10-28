@@ -44,6 +44,14 @@ indirect enum SplitNode: Codable, Equatable {
         }
     }
 
+    /// Who takes focus when `id` closes: the pane before it, as Ghostty does, so closing the
+    /// newest split returns to the one it came from. The first pane hands over to the next.
+    func focusAfterRemoving(_ id: String) -> String? {
+        let all = panes
+        guard let i = all.firstIndex(of: id), all.count > 1 else { return nil }
+        return all[i > 0 ? i - 1 : 1]
+    }
+
     func mapPanes(_ transform: (String) -> String) -> SplitNode {
         switch self {
         case .pane(let id): return .pane(transform(id))
@@ -575,10 +583,10 @@ final class Workspace {
             guard let t = projects[p].tabs.firstIndex(where: { $0.root.panes.contains(pane) }) else { continue }
             let tabID = projects[p].tabs[t].id
             if let root = projects[p].tabs[t].root.removing(pane) {
-                projects[p].tabs[t].root = root
                 if projects[p].tabs[t].focusedPane == pane {
-                    projects[p].tabs[t].focusedPane = root.panes.first!
+                    projects[p].tabs[t].focusedPane = projects[p].tabs[t].root.focusAfterRemoving(pane) ?? root.panes[0]
                 }
+                projects[p].tabs[t].root = root
                 projects[p].tabs[t].zoomed = false
             } else {
                 let order = allTabs.map(\.id)
@@ -816,7 +824,7 @@ final class Workspace {
     func detachPane() {
         guard let tab = selectedTab, let project = currentProject,
               let root = tab.root.removing(tab.focusedPane) else { return }
-        mutateTab(tab.id) { $0.root = root; $0.focusedPane = root.panes[0]; $0.zoomed = false }
+        mutateTab(tab.id) { $0.root = root; $0.focusedPane = tab.root.focusAfterRemoving(tab.focusedPane) ?? root.panes[0]; $0.zoomed = false }
         let created = newTab(projectPath: project.path, cwd: cwd(for: tab.focusedPane), paneID: tab.focusedPane)
         mutateTab(created.id) { $0.worktree = tab.worktree }
     }
@@ -828,7 +836,7 @@ final class Workspace {
         let next = project.tabs[(index + 1) % project.tabs.count]
         // A worktree remains owned by its tabs, so moves across worktree boundaries use Detach instead.
         guard tab.worktree == next.worktree else { return }
-        mutateTab(tab.id) { $0.root = root; $0.focusedPane = root.panes[0]; $0.zoomed = false }
+        mutateTab(tab.id) { $0.root = root; $0.focusedPane = tab.root.focusAfterRemoving(tab.focusedPane) ?? root.panes[0]; $0.zoomed = false }
         mutateTab(next.id) { t in
             t.root = .split(.horizontal, ratio: 0.5, t.root, .pane(tab.focusedPane))
             t.focusedPane = tab.focusedPane; t.zoomed = false

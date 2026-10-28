@@ -24,9 +24,9 @@ Mac-native, and sessions survive quitting the app.
   jump between prompts. The Edit menu copies or selects the last command's output in a text window,
   or searches retained output with case and regular-expression controls. ⌘⇧F searches all sessions.
   File → Export Scrollback… opens selectable output with Find, Save and Open in Editor actions.
-- **Files and images.** Drop Finder files to paste quoted paths. ⌘-click a local `path:line:column`
-  diagnostic, or select a path and choose Edit → Open Selected File in Editor. Choose the editor in
-  Settings → General. **Paste Image as File Path** saves a private PNG and pastes its quoted path;
+- **Files and images.** Drop Finder files, or copy them in Finder and paste, to type their quoted
+  full paths. ⌘-click a local `path:line:column` diagnostic, or select a path and choose Edit → Open
+  Selected File in Editor. Choose the editor in Settings → General. **Paste Image as File Path** saves a private PNG and pastes its quoted path;
   programs supporting Kitty clipboard requests can also read image MIME types directly.
 - **Recovery.** File → Detach Tab leaves its processes running. Detached Sessions… reattaches them.
   Reopen Closed Tab restores a recently closed layout. Processes deliberately stopped by closing a
@@ -39,7 +39,7 @@ Mac-native, and sessions survive quitting the app.
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
 - **Splits, Find and links.** ⌘D splits panes, ⌘F searches scrollback, ⌘-click opens URLs. Each
   pane's header shows what runs there and where, with split and close buttons; panes other than the
-  focused one are dimmed. Transitions are short and become fades with Reduce Motion on.
+  focused one are dimmed. Closing a pane focuses the one before it. Transitions are short and become fades with Reduce Motion on.
 - **Quick settings.** ⌘⇧, (tern → Quick Settings…) changes the theme,
   text size, cursor, notifications and more without leaving the keyboard: ←/→ change the selected
   value, and the theme list previews each theme as you move through it (Esc puts yours back).
@@ -74,6 +74,8 @@ optionally (Settings → Agents, off by default) from Anthropic's API using the 
 keeps in the Keychain. tern never refreshes that token.
 
 ## Keys
+
+⌘/ (Help → Keyboard Shortcuts) shows these in the app, with any overrides applied.
 
 <!-- keys:start -->
 | Keys | Action |
@@ -110,6 +112,7 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌘K | Clear screen |
 | ⌘= / ⌘- / ⌘0 | Text size |
 | ⌘, / ⇧⌘, | Settings / quick settings |
+| ⌘/ | Keyboard shortcuts cheat sheet |
 | ⌃⌥Space | Show or hide tern from any app, once enabled in Settings → General |
 <!-- keys:end -->
 

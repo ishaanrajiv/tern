@@ -215,7 +215,7 @@ final class GhosttyApp {
                 guard let pointer = mimes[i] else { continue }
                 let mime = String(cString: pointer)
                 guard seen.insert(mime).inserted else { continue }
-                if mime == "text/plain", let text = board.string(forType: .string) {
+                if mime == "text/plain", let text = pasteText(board) {
                     contents.append((mime, Data(text.utf8)))
                 } else if let type = UTType(mimeType: mime), let bytes = board.data(forType: NSPasteboard.PasteboardType(type.identifier)) {
                     contents.append((mime, bytes))
@@ -232,6 +232,15 @@ final class GhosttyApp {
         guard !contents.isEmpty || list else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
         complete(surface, contents: contents, available: available, state: state, confirmed: false)
         return GHOSTTY_CLIPBOARD_READ_STARTED
+    }
+
+    /// What a paste types. Files copied in Finder carry their name as text; paste their full
+    /// paths instead, quoted for the shell, as dropping them does.
+    static func pasteText(_ board: NSPasteboard) -> String? {
+        if let urls = board.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            return urls.map { quoteShell($0.path) }.joined(separator: " ")
+        }
+        return board.string(forType: .string)
     }
 
     /// Ghostty asks before a paste that could run commands (newlines, and the program hasn't
