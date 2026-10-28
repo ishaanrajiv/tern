@@ -384,6 +384,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 AppUpdates.shared.check()
             },
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
+            // Its key comes from the shortcut registry (id settings.quick), not from here.
+            Command("Quick Settings…", menu: "tern") { [weak self] in self?.showQuickSettings() },
             Command("New Window", menu: "File", key: "n", [.command, .shift]) { [weak self] in self?.onNewWindow?() },
             Command("Close Window", menu: "Window") { [weak self] in self?.window?.performClose(nil) },
             Command("Move Tab to New Window", menu: "Window") { [weak self] in self?.onMoveTab?(true) },
@@ -523,7 +525,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     // MARK: Palette
 
-    func togglePalette() {
+    /// The palette in its settings mode: theme, text size, cursor and the rest, changed in place.
+    func showQuickSettings() {
+        if paletteHost != nil { closePalette() }
+        togglePalette(settings: true)
+    }
+
+    func togglePalette(settings: Bool = false) {
         if paletteHost != nil {
             closePalette()
             return
@@ -547,7 +555,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
         items = sessions + items
 
-        let host = NSHostingView(rootView: CommandPaletteView(items: items, dismiss: { [weak self] in self?.closePalette() }))
+        let quick = QuickSetting.all(
+            openSettings: { [weak self] in self?.onOpenSettings?() },
+            settingsShortcut: commands.first { $0.title == "Settings…" }?.shortcutLabel ?? "")
+        let host = NSHostingView(rootView: CommandPaletteView(items: items, settings: quick, startInSettings: settings,
+                                                              dismiss: { [weak self] in self?.closePalette() }))
         window?.makeFirstResponder(nil)
         host.frame = contentView.bounds
         host.autoresizingMask = [.width, .height]
@@ -556,7 +568,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     private func closePalette() {
-        paletteHost?.removeFromSuperview()
+        if let host = paletteHost {
+            Motion.animate(0.12, { host.animator().alphaValue = 0 }) { host.removeFromSuperview() }
+        }
         paletteHost = nil
         lastFocusKey = ""
         sync()
