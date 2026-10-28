@@ -40,7 +40,7 @@ Mac-native, and sessions survive quitting the app.
 - **Splits, Find and links.** ⌘D splits panes, ⌘F searches scrollback, ⌘-click opens URLs. Each
   pane's header shows what runs there and where, with split and close buttons; panes other than the
   focused one are dimmed. Transitions are short and become fades with Reduce Motion on.
-- **Quick settings.** tern → Quick Settings… (or "quick settings" in the palette) changes the theme,
+- **Quick settings.** ⌘⇧, (tern → Quick Settings…) changes the theme,
   text size, cursor, notifications and more without leaving the keyboard: ←/→ change the selected
   value, and the theme list previews each theme as you move through it (Esc puts yours back).
 - **SSH.** File → Connect over SSH… uses your own SSH config and can reattach to a named tmux
@@ -96,7 +96,7 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌘\ | Toggle sidebar |
 | ⌘⇧K | Clear screen |
 | ⌘= / ⌘- / ⌘0 | Text size |
-| ⌘, | Settings |
+| ⌘, / ⌘⇧, | Settings / quick settings |
 
 tern's shortcuts take priority over terminal bindings. You can rebind both in Settings → Terminal.
 Multiline pastes without bracketed paste, and clipboard access through escape codes, ask first.

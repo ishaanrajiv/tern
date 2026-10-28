@@ -384,8 +384,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 AppUpdates.shared.check()
             },
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
-            // Its key comes from the shortcut registry (id settings.quick), not from here.
-            Command("Quick Settings…", menu: "tern") { [weak self] in self?.showQuickSettings() },
+            // Placeholder key until the shortcut registry lands; it assigns this one as settings.quick.
+            Command("Quick Settings…", menu: "tern", key: ",", [.command, .shift]) { [weak self] in self?.showQuickSettings() },
             Command("New Window", menu: "File", key: "n", [.command, .shift]) { [weak self] in self?.onNewWindow?() },
             Command("Close Window", menu: "Window") { [weak self] in self?.window?.performClose(nil) },
             Command("Move Tab to New Window", menu: "Window") { [weak self] in self?.onMoveTab?(true) },
