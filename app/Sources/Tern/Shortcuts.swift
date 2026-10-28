@@ -432,16 +432,20 @@ enum ShortcutRegistry {
     /// Labels for `id`'s keys: the one shown, then hidden aliases. A trailing `*` stands for 1–9.
     private static func keys(_ id: String, in bindings: [String: [KeyBinding]]) -> (primary: String?, aliases: [String]) {
         if id.hasSuffix(".*") {
-            let base = id.dropLast(1)
-            let all = (1...9).compactMap { bindings["\(base)\($0)"]?.first }
-            guard all.count == 9, Set(all.map(\.modifiers.rawValue)).count == 1,
-                  all.map(\.key) == (1...9).map(String.init) else {
-                return (all.first.map { "\($0.label)…" }, [])
-            }
-            return (String(all[0].label.dropLast()) + "1–9", [])
+            let base = String(id.dropLast(1))
+            if let range = numberRange(base, in: bindings) { return (range, []) }
+            return ((1...9).lazy.compactMap { bindings["\(base)\($0)"]?.first }.first.map { "\($0.label)…" }, [])
         }
         let list = bindings[id] ?? []
         return (list.first?.label, list.dropFirst().map(\.label))
+    }
+
+    /// "⌃⌘1–9" when `base`1 through 9 are bound to the same modifiers and their own digit.
+    private static func numberRange(_ base: String, in bindings: [String: [KeyBinding]]) -> String? {
+        let all = (1...9).compactMap { bindings["\(base)\($0)"]?.first }
+        guard all.count == 9, Set(all.map(\.modifiers.rawValue)).count == 1,
+              all.map(\.key) == (1...9).map(String.init) else { return nil }
+        return String(all[0].label.dropLast()) + "1–9"
     }
 
     struct Section {
@@ -454,21 +458,21 @@ enum ShortcutRegistry {
     }
 
     /// The cheat sheet's sections: every bound command by category, in registry order, with
-    /// Folder 1–9 and Tab 1–9 on one row each. macOS's standard items are left out.
+    /// Folder 1–9 and Tab 1–9 on one row each while they keep a uniform sequence (an override
+    /// lists each one on its own). macOS's standard items are left out.
     static func cheatSheet(_ bindings: [String: [KeyBinding]] = bindings, globalHotkey: Bool = false) -> [Section] {
         ShortcutSpec.Category.allCases.filter { $0 != .standard }.compactMap { category -> Section? in
             var rows: [Section.Row] = []
             for spec in specs where spec.category == category && !spec.reserved && !spec.locked {
                 if spec.global, !globalHotkey { continue }
-                var id = spec.id, title = spec.title
-                if id.hasPrefix("folder.select.") || id.hasPrefix("tab.select.") {
-                    guard id.hasSuffix(".1") else { continue }
-                    id = String(id.dropLast()) + "*"
-                    title = String(title.dropLast(2)) + " by Number"
+                if spec.id.hasPrefix("folder.select.") || spec.id.hasPrefix("tab.select."),
+                   let range = numberRange(String(spec.id.dropLast()), in: bindings) {
+                    if spec.id.hasSuffix(".1") { rows.append(Section.Row(title: String(spec.title.dropLast(2)) + " by Number", keys: [range])) }
+                    continue
                 }
-                let found = keys(id, in: bindings)
+                let found = keys(spec.id, in: bindings)
                 guard let primary = found.primary else { continue }
-                rows.append(Section.Row(title: title, keys: [primary] + found.aliases))
+                rows.append(Section.Row(title: spec.title, keys: [primary] + found.aliases))
             }
             return rows.isEmpty ? nil : Section(category: category, rows: rows)
         }
