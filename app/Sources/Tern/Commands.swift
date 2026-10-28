@@ -49,6 +49,7 @@ final class Command {
         if t.hasPrefix("Rename") { return "pencil" }
         if t.hasPrefix("Close") { return "xmark" }
         if t.hasPrefix("Clear") { return "eraser" }
+        if t.hasPrefix("Quick Settings") { return "slider.horizontal.3" }
         if t.hasPrefix("Settings") { return "gearshape" }
         if t.hasPrefix("Toggle Sidebar") { return "sidebar.left" }
         if t.hasPrefix("Zoom") { return "arrow.up.left.and.arrow.down.right" }

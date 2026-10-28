@@ -154,7 +154,7 @@ enum ShortcutRegistry {
     /// (⌘V / ⌥⌘V, ⌘F / ⌥⌘F).
     static let specs: [ShortcutSpec] = [
         spec("app.settings", "Settings…", .app, "tern", KeyBinding(",", cmd)),
-        spec("settings.quick", "Quick Settings…", .app, "tern", KeyBinding(",", shiftCmd), reserved: true),
+        spec("settings.quick", "Quick Settings…", .app, "tern", KeyBinding(",", shiftCmd)),
         spec("app.secureKeyboard", "Secure Keyboard Entry", .app, "tern"),
         spec("app.checkUpdates", "Check for Tern Updates…", .app, "tern"),
         spec("app.reloadConfig", "Reload Configuration", .app, "tern"),
@@ -422,7 +422,7 @@ enum ShortcutRegistry {
         ("Toggle sidebar", ["view.sidebar"]),
         ("Clear screen", ["terminal.clear"]),
         ("Text size", ["text.bigger", "text.smaller", "text.reset"]),
-        ("Settings", ["app.settings"]),
+        ("Settings / quick settings", ["app.settings", "settings.quick"]),
         ("Show or hide tern from any app, once enabled in Settings → General", ["app.globalHotkey"]),
     ]
 

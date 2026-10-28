@@ -12,6 +12,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var pickerHost: NSView?
     private var picker: FolderPickerModel?
     private var emptyState: NSView?
+    private var emptyHost: NSHostingView<EmptyState>?
     private var contentView: NSView?
     private var settingsObserver: Any?
     private var themeObserver: Any?
@@ -89,9 +90,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
         let content = NSViewController()
         content.view = NSView()
-        // The strip under the titlebar and the terminal share one colour, so they read as one surface.
         content.view.wantsLayer = true
         contentView = content.view
+        terminalArea.onSplit = { [weak self] pane, axis in
+            self?.workspace.focus(pane: pane)
+            self?.workspace.split(axis)
+        }
+        terminalArea.onClosePane = { [weak self] pane in
+            self?.workspace.focus(pane: pane)
+            self?.closeFocusedPane()
+        }
         let header = DraggableHostingView(rootView: ContentHeader(workspace: workspace, layout: headerLayout))
         // It lives in the titlebar strip; without this SwiftUI pushes it below the strip, out of sight.
         header.safeAreaRegions = []
@@ -100,8 +108,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         terminalArea.translatesAutoresizingMaskIntoConstraints = false
         content.view.addSubview(terminalArea)
         let empty = NSHostingView(rootView: EmptyState())
-        empty.translatesAutoresizingMaskIntoConstraints = false
-        content.view.addSubview(empty)
+        emptyHost = empty
+        terminalArea.emptyView = empty
         emptyState = empty
         NSLayoutConstraint.activate([
             header.topAnchor.constraint(equalTo: content.view.topAnchor),
@@ -112,14 +120,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             terminalArea.bottomAnchor.constraint(equalTo: content.view.bottomAnchor),
             terminalArea.leadingAnchor.constraint(equalTo: content.view.leadingAnchor),
             terminalArea.trailingAnchor.constraint(equalTo: content.view.trailingAnchor),
-            empty.centerXAnchor.constraint(equalTo: terminalArea.centerXAnchor),
-            empty.centerYAnchor.constraint(equalTo: terminalArea.centerYAnchor),
         ])
         header.leadingAnchor.constraint(equalTo: content.view.leadingAnchor).isActive = true
         // With the sidebar hidden, the traffic lights and sidebar buttons sit over the header's left end.
         collapseObservation = sidebarItem.observe(\.isCollapsed, options: [.initial, .new]) { [weak self] _, change in
             let collapsed = change.newValue ?? false
-            DispatchQueue.main.async { self?.headerLayout.leadingInset = collapsed ? 146 : 0 }
+            DispatchQueue.main.async {
+                self?.headerLayout.leadingInset = collapsed ? 146 : 0
+                self?.terminalArea.leadingPadding = collapsed ? TerminalArea.padding : 0
+            }
         }
 
         let contentItem = NSSplitViewItem(viewController: content)
@@ -141,11 +150,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
 
         commands = makeCommands()
+        updateEmptyState()
         settingsObserver = NotificationCenter.default.addObserver(forName: TerminalPreferences.didChange, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 GhosttyApp.shared.applyTheme()
                 self.commands = self.makeCommands()
+                self.updateEmptyState()
                 if self.window?.isKeyWindow == true { NSApp.mainMenu = MenuBuilder.build(commands: self.commands) }
             }
         }
@@ -212,8 +223,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         let theme = ThemeStore.shared.theme
         window?.appearance = NSAppearance(named: theme.isDark ? .darkAqua : .aqua)
         window?.backgroundColor = theme.sidebar
-        // The strip under the titlebar and the terminal share one colour, so they read as one surface.
-        contentView?.layer?.backgroundColor = theme.terminal.cgColor
+        // Sidebar, header and the ground under the panes are one surface; the panes sit on it as cards.
+        contentView?.layer?.backgroundColor = theme.sidebar.cgColor
         (splitController.splitView as? ThemedSplitView)?.needsDisplay = true
         terminalArea.themeChanged()
     }
@@ -370,6 +381,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 AppUpdates.shared.check()
             },
             Command("app.settings") { [weak self] in self?.onOpenSettings?() },
+            Command("settings.quick") { [weak self] in self?.showQuickSettings() },
             Command("window.new") { [weak self] in self?.onNewWindow?() },
             Command("window.close") { [weak self] in self?.window?.performClose(nil) },
             Command("tab.toNewWindow") { [weak self] in self?.onMoveTab?(true) },
@@ -503,9 +515,20 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         ] : [])
     }
 
+    /// The empty card names the Open Folder shortcut as it's currently bound.
+    private func updateEmptyState() {
+        emptyHost?.rootView = EmptyState(shortcut: ShortcutRegistry.label("folder.open"))
+    }
+
     // MARK: Palette
 
-    func togglePalette() {
+    /// The palette in its settings mode: theme, text size, cursor and the rest, changed in place.
+    func showQuickSettings() {
+        if paletteHost != nil { closePalette() }
+        togglePalette(settings: true)
+    }
+
+    func togglePalette(settings: Bool = false) {
         if paletteHost != nil {
             closePalette()
             return
@@ -529,7 +552,11 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
         items = sessions + items
 
-        let host = NSHostingView(rootView: CommandPaletteView(items: items, dismiss: { [weak self] in self?.closePalette() }))
+        let quick = QuickSetting.all(
+            openSettings: { [weak self] in self?.onOpenSettings?() },
+            settingsShortcut: commands.first { $0.title == "Settings…" }?.shortcutLabel ?? "")
+        let host = NSHostingView(rootView: CommandPaletteView(items: items, settings: quick, startInSettings: settings,
+                                                              dismiss: { [weak self] in self?.closePalette() }))
         window?.makeFirstResponder(nil)
         host.frame = contentView.bounds
         host.autoresizingMask = [.width, .height]
@@ -538,7 +565,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     private func closePalette() {
-        paletteHost?.removeFromSuperview()
+        if let host = paletteHost {
+            Motion.animate(0.12, { host.animator().alphaValue = 0 }) { host.removeFromSuperview() }
+        }
         paletteHost = nil
         lastFocusKey = ""
         sync()
@@ -738,25 +767,66 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 }
 
-/// The terminal area with nothing open.
+/// The card shown with no tabs: tern's mark and the way to start.
 private struct EmptyState: View {
+    var shortcut = ""
+
     var body: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "folder.badge.plus")
-                .font(.system(size: 28, weight: .light))
+        VStack(spacing: 10) {
+            TernMark()
+                .stroke(style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
                 .foregroundStyle(.tertiary)
+                .frame(width: 44, height: 44)
             Text("Open a folder to start")
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
-            Text(ShortcutRegistry.label("folder.open"))
-                .font(.system(size: 11))
+            if !shortcut.isEmpty {
+                HStack(spacing: 6) {
+                    Text(shortcut)
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .frame(height: 18)
+                        .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.border))
+                    Text("open a folder")
+                }
+                .font(.system(size: 12.5))
                 .foregroundStyle(.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            let card = RoundedRectangle(cornerRadius: PaneCard.radius, style: .continuous)
+            card.fill(Palette.terminal).overlay(card.strokeBorder(Palette.border))
         }
         .themedText()
     }
 }
 
-/// The line between sidebar and terminal, in the theme's border colour.
+/// A tern in flight, drawn in two strokes: wings, then the forked tail.
+private nonisolated struct TernMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let s = min(rect.width, rect.height) / 48
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * s, y: rect.minY + y * s) }
+        var path = Path()
+        path.move(to: p(6, 20))
+        path.addCurve(to: p(24, 28), control1: p(14, 19), control2: p(19, 22))
+        path.addCurve(to: p(42, 20), control1: p(29, 22), control2: p(34, 19))
+        path.move(to: p(21, 40))
+        path.addLine(to: p(24, 28))
+        path.addLine(to: p(27, 40))
+        return path
+    }
+}
+
+/// Sidebar and content share one ground, so the divider takes its colour and the pane cards'
+/// outlines draw the edge.
 final class ThemedSplitView: NSSplitView {
-    override var dividerColor: NSColor { ThemeStore.shared.theme.border }
+    override var dividerColor: NSColor { ThemeStore.shared.theme.sidebar }
+
+    override func drawDivider(in rect: NSRect) {
+        dividerColor.setFill()
+        rect.fill()
+    }
 }

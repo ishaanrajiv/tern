@@ -37,7 +37,12 @@ Mac-native, and sessions survive quitting the app.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
-- **Splits, Find and links.** ⌘D splits panes, ⌘F searches scrollback, ⌘-click opens URLs.
+- **Splits, Find and links.** ⌘D splits panes, ⌘F searches scrollback, ⌘-click opens URLs. Each
+  pane's header shows what runs there and where, with split and close buttons; panes other than the
+  focused one are dimmed. Transitions are short and become fades with Reduce Motion on.
+- **Quick settings.** ⌘⇧, (tern → Quick Settings…) changes the theme,
+  text size, cursor, notifications and more without leaving the keyboard: ←/→ change the selected
+  value, and the theme list previews each theme as you move through it (Esc puts yours back).
 - **SSH.** File → Connect over SSH… uses your own SSH config and can reattach to a named tmux
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
@@ -104,7 +109,7 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌃⌘S, ⌘\ | Toggle sidebar |
 | ⌘K | Clear screen |
 | ⌘= / ⌘- / ⌘0 | Text size |
-| ⌘, | Settings |
+| ⌘, / ⇧⌘, | Settings / quick settings |
 | ⌃⌥Space | Show or hide tern from any app, once enabled in Settings → General |
 <!-- keys:end -->
 

@@ -35,7 +35,7 @@ struct SidebarView: View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             let manual = folderOrder == FolderOrder.manual.rawValue
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 14) {
                     let current = workspace.currentProject?.path
                     ForEach(Array(workspace.orderedProjects.enumerated()), id: \.element.id) { index, project in
                         FolderSection(workspace: workspace, project: project, now: context.date,
@@ -44,7 +44,7 @@ struct SidebarView: View {
                                       tabHints: hints.kind == .tabs && project.path == current)
                     }
                 }
-                .padding(.horizontal, 8)
+                .padding(.horizontal, 10)
                 .padding(.top, layout.titlebarHeight + 6)
                 .padding(.bottom, 16)
                 // Full width even with no folders, or the sidebar shrinks to its padding.
@@ -112,8 +112,10 @@ private struct FolderSection: View {
     let tabHints: Bool
     @State private var dropTarget = false
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 1) {
             FolderHeader(workspace: workspace, project: project, now: now, actions: actions, hint: folderHint)
                 .overlay(alignment: .top) {
                     // Where a dragged folder will land.
@@ -153,9 +155,15 @@ private struct FolderSection: View {
                             }
                             Button("Close Tab") { actions.close(tab.id) }
                         }
+                        // New rows slide in from the left; closed ones fade as the rest close up.
+                        .transition(reduceMotion ? .opacity : .asymmetric(
+                            insertion: .move(edge: .leading).combined(with: .opacity),
+                            removal: .opacity))
                 }
             }
         }
+        .animation(Motion.animation(), value: project.tabs.map(\.id))
+        .animation(Motion.animation(), value: project.collapsed)
     }
 }
 
@@ -173,21 +181,25 @@ private struct FolderHeader: View {
         let waiting = statuses.filter { $0 == .needsYou }.count
         let branch = Worktree.headBranch(at: project.path)
         let place = branch ?? abbreviateHome(project.path)
-        HStack(spacing: 7) {
-            Image(systemName: "chevron.right")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(.secondary)
-                .rotationEffect(.degrees(project.collapsed ? 0 : 90))
-                .frame(width: 10)
+        HStack(spacing: 6) {
             Text(project.name)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 10.5, weight: .semibold))
+                .kerning(0.6)
+                .textCase(.uppercase)
+                .foregroundStyle(.tertiary)
                 .lineLimit(1)
                 .layoutPriority(1)
             Text(project.collapsed ? "\(place) · \(project.tabs.count) tab\(project.tabs.count == 1 ? "" : "s")" : place)
-                .font(.system(size: 11.5))
-                .foregroundStyle(.secondary)
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .opacity(0.8)
                 .lineLimit(1)
                 .truncationMode(.head)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.tertiary)
+                .rotationEffect(.degrees(project.collapsed ? 0 : 90))
+                .opacity(hovering || project.collapsed ? 1 : 0)
             Spacer(minLength: 4)
             // What's inside, at a glance: the most urgent tab, as its row shows it.
             if project.collapsed, let worst = zip(project.tabs, statuses).min(by: { $0.1 < $1.1 }) {
@@ -210,15 +222,17 @@ private struct FolderHeader: View {
                 Button { actions.newTab(project.path) } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 10, weight: .semibold))
-                        .frame(width: 22, height: 22)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
                         .background(Palette.selection, in: RoundedRectangle(cornerRadius: 5))
                 }
                 .buttonStyle(.plain)
                 .help("New tab in \(project.name) (\(ShortcutRegistry.label("tab.new")))")
             }
         }
-        .padding(.horizontal, 8)
-        .frame(height: 30)
+        .padding(.leading, 8)
+        .padding(.trailing, 6)
+        .frame(height: 26)
         .background(hovering ? Palette.hover : .clear, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
@@ -246,6 +260,7 @@ private struct TabRow: View {
     let actions: SidebarActions
     let hint: String?
     @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hovering = false
 
     var body: some View {
@@ -254,36 +269,40 @@ private struct TabRow: View {
         // Weight is for what wants you; selection shows in the background alone.
         let emphasized = status == .needsYou || status == .doneUnread
         let busy = status == .working || status == .starting
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             StatusIcon(status: status, agent: workspace.agent(for: tab), turning: indicator == .turning)
-            let title = workspace.title(for: tab)
-            if workspace.renamingTabID == tab.id {
-                RenameField(initial: tab.name ?? title) { workspace.finishRename(tab.id, name: $0) }
-            } else {
-                Text(title)
-                    .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
-                    .foregroundStyle(status == .dormant || status == .starting ? .secondary : .primary)
-                    .lineLimit(1)
-                    // Short names never truncate; long ones give way last.
-                    .fixedSize(horizontal: title.count <= 14, vertical: false)
-                    .layoutPriority(1)
-            }
-            if let worktree = tab.worktree {
-                Chip(text: (worktree as NSString).lastPathComponent)
-                    .help("Worktree \(abbreviateHome(worktree))")
-            }
-            if let stray = workspace.strayCwd(tab) {
-                Text(stray)
+                // A change of state pops the glyph in its tile.
+                .id(status)
+                .transition(reduceMotion ? .opacity : .scale(scale: 0.55).combined(with: .opacity))
+                .frame(width: 22, height: 22)
+                .background(Palette.chip, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 6) {
+                    let title = workspace.title(for: tab)
+                    if workspace.renamingTabID == tab.id {
+                        RenameField(initial: tab.name ?? title) { workspace.finishRename(tab.id, name: $0) }
+                    } else {
+                        Text(title)
+                            .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
+                            .foregroundStyle(status == .dormant || status == .starting ? .secondary : .primary)
+                            .lineLimit(1)
+                            .layoutPriority(1)
+                    }
+                    if let worktree = tab.worktree {
+                        Chip(text: (worktree as NSString).lastPathComponent)
+                            .help("Worktree \(abbreviateHome(worktree))")
+                    }
+                    if tab.root.panes.count > 1 {
+                        Image(systemName: "rectangle.split.2x1")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .help("\(tab.root.panes.count) panes")
+                    }
+                }
+                subtitle(status)
                     .font(.system(size: 11.5))
-                    .foregroundStyle(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.head)
-            }
-            if tab.root.panes.count > 1 {
-                Image(systemName: "rectangle.split.2x1")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.tertiary)
-                    .help("\(tab.root.panes.count) panes")
+                    .truncationMode(.tail)
             }
             Spacer(minLength: 4)
             if let hint {
@@ -306,33 +325,49 @@ private struct TabRow: View {
                     .help(status.label)
             } else {
                 Text(relativeAge(workspace.lastActivity(tab), now: now))
-                    .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
-                    .foregroundStyle(status == .needsYou ? Palette.amber : status == .working ? Palette.working : .secondary)
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.tertiary)
                     .frame(minWidth: 22, alignment: .trailing)
             }
         }
-        .padding(.leading, 26)
+        .padding(.leading, 10)
         .padding(.trailing, 8)
-        .frame(height: 28)
+        .frame(height: 40)
         .background {
-            let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+            let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
             ZStack {
                 shape.fill(selected ? Palette.selection : hovering ? Palette.hover : .clear)
-                if status == .needsYou { shape.fill(Palette.amber.opacity(0.1)) }
+                if status == .needsYou { shape.fill(Palette.amber.opacity(selected ? 0.14 : 0.1)) }
             }
         }
         .overlay(alignment: .leading) {
             // Needs you is the one state that also marks the row's edge.
             if status == .needsYou {
-                RoundedRectangle(cornerRadius: 1.5).fill(Palette.amber).frame(width: 3, height: 16).padding(.leading, 8)
+                RoundedRectangle(cornerRadius: 1.5).fill(Palette.amber).frame(width: 3, height: 16).padding(.leading, 3)
+                    .transition(.scale(scale: 0.01, anchor: .center).combined(with: .opacity))
             }
         }
+        .animation(reduceMotion ? .easeOut(duration: 0.15) : .spring(response: 0.32, dampingFraction: 0.6), value: status)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         // The first click selects at once; the second of a double-click renames.
         .onTapGesture(count: 2) { actions.rename(tab.id) }
         .simultaneousGesture(TapGesture().onEnded { workspace.select(tab.id) })
         .help(helpText)
+    }
+
+    /// The row's second line: the state in its colour, then what there is to know about it.
+    private func subtitle(_ status: SessionStatus) -> Text {
+        let (color, detail): (Color?, String?) = switch status {
+        case .needsYou: (Palette.amber, workspace.agentMessage(tab))
+        case .working: (Palette.working, workspace.agent(for: tab) == nil ? nil : relativeAge(workspace.stateSince(tab), now: now))
+        case .doneUnread: (Palette.text, "not seen yet")
+        case .starting, .dormant: (nil, nil)
+        case .idle: (nil, workspace.strayCwd(tab))
+        }
+        let label = Text(status.label).fontWeight(.medium).foregroundColor(color ?? Palette.text3)
+        guard let detail, !detail.isEmpty, detail != "now" else { return label }
+        return Text("\(label) · \(detail)").foregroundColor(Palette.text3)
     }
 
     private var helpText: String {

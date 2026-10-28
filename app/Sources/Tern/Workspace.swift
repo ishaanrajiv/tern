@@ -350,6 +350,17 @@ final class Workspace {
         tab.root.panes.map { status(pane: $0, visible: isVisible(tab), now: now) }.min() ?? .starting
     }
 
+    /// One pane's state, as its header shows it.
+    func status(pane: String, now: Date = Date()) -> SessionStatus {
+        let tab = allTabs.first { $0.root.panes.contains(pane) }
+        return status(pane: pane, visible: tab.map(isVisible) ?? false, now: now)
+    }
+
+    /// The agent in one pane, or the one it ran before a restart.
+    func agent(pane: String) -> String? {
+        sessions[pane]?.agent ?? (sessions[pane] == nil ? paneAgent[pane]?.agent : nil)
+    }
+
     private func status(pane: String, visible: Bool, now: Date) -> SessionStatus {
         // No session: being started if it's on screen, otherwise waiting to be opened.
         guard let s = sessions[pane] else { return selectedTab?.root.panes.contains(pane) == true ? .starting : .dormant }

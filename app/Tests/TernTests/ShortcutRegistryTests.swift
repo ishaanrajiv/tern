@@ -113,7 +113,6 @@ final class ShortcutRegistryTests: XCTestCase {
             "New Tab = cmd+c",              // Copy, which is locked
             "Copy = cmd+shift+y",           // locked
             "Nonexistent = cmd+shift+y",
-            "Quick Settings… = cmd+shift+y", // reserved, not yet a command
             "New Tab = ctrl+t",             // no ⌘: the terminal's
             "New Tab = cmd+shift+3",        // screenshot
             "New Tab = cmd+space",          // Spotlight
