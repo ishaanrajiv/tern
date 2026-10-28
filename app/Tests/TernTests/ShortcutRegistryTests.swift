@@ -219,4 +219,33 @@ final class ShortcutRegistryTests: XCTestCase {
         }
         XCTAssertEqual(ran, ids)
     }
+
+    func testCheatSheetListsLiveBindingsByCategory() throws {
+        let bindings = ShortcutRegistry.resolve("New Tab = cmd+shift+y").bindings
+        let sheet = ShortcutRegistry.cheatSheet(bindings)
+        XCTAssertFalse(sheet.contains { $0.category == .standard })
+        let tabs = try XCTUnwrap(sheet.first { $0.category == .tabs }?.rows)
+        XCTAssertEqual(tabs.first { $0.title == "New Tab" }?.keys, ["⇧⌘Y"])
+        XCTAssertEqual(tabs.first { $0.title == "Tab by Number" }?.keys, ["⌃⌘1–9"])
+        XCTAssertFalse(tabs.contains { $0.title == "Tab 2" })
+        XCTAssertEqual(tabs.first { $0.title == "Next Tab" }?.keys, ["⇧⌘]", "⌃⇥"])
+        let app = try XCTUnwrap(sheet.first { $0.category == .app }?.rows)
+        XCTAssertEqual(app.first { $0.title == "Keyboard Shortcuts" }?.keys, ["⌘/"])
+        XCTAssertFalse(app.contains { $0.title == "Show or Hide tern" })
+        XCTAssertTrue(ShortcutRegistry.cheatSheet(bindings, globalHotkey: true)
+            .contains { $0.rows.contains { $0.title == "Show or Hide tern" } })
+        // Commands without keys aren't listed.
+        XCTAssertFalse(app.contains { $0.title == "Restart ternd" })
+    }
+
+    func testPastingCopiedFilesTypesTheirPaths() {
+        let board = NSPasteboard(name: .init("tern-test-\(UUID().uuidString)"))
+        defer { board.releaseGlobally() }
+        board.clearContents()
+        board.writeObjects([URL(fileURLWithPath: "/tmp/a b.txt") as NSURL, URL(fileURLWithPath: "/tmp/it's") as NSURL])
+        XCTAssertEqual(GhosttyApp.pasteText(board), "'/tmp/a b.txt' '/tmp/it'\\''s'")
+        board.clearContents()
+        board.setString("plain text", forType: .string)
+        XCTAssertEqual(GhosttyApp.pasteText(board), "plain text")
+    }
 }

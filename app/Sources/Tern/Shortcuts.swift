@@ -247,6 +247,8 @@ enum ShortcutRegistry {
         spec("pane.toNewWindow", "Move Pane to New Window", .panes, "Window"),
         spec("window.minimize", "Minimize", .standard, "Window", KeyBinding("m", cmd), locked: true),
         spec("window.fullScreen", "Enter Full Screen", .standard, "Window", KeyBinding("f", ctrlCmd), locked: true),
+
+        spec("help.shortcuts", "Keyboard Shortcuts", .app, "Help", KeyBinding("/", cmd)),
     ]
 
     /// Keys macOS or a window keeps for itself, which no command may take.
@@ -423,24 +425,58 @@ enum ShortcutRegistry {
         ("Clear screen", ["terminal.clear"]),
         ("Text size", ["text.bigger", "text.smaller", "text.reset"]),
         ("Settings / quick settings", ["app.settings", "settings.quick"]),
+        ("Keyboard shortcuts cheat sheet", ["help.shortcuts"]),
         ("Show or hide tern from any app, once enabled in Settings → General", ["app.globalHotkey"]),
     ]
 
+    /// Labels for `id`'s keys: the one shown, then hidden aliases. A trailing `*` stands for 1–9.
+    private static func keys(_ id: String, in bindings: [String: [KeyBinding]]) -> (primary: String?, aliases: [String]) {
+        if id.hasSuffix(".*") {
+            let base = id.dropLast(1)
+            let all = (1...9).compactMap { bindings["\(base)\($0)"]?.first }
+            guard all.count == 9, Set(all.map(\.modifiers.rawValue)).count == 1,
+                  all.map(\.key) == (1...9).map(String.init) else {
+                return (all.first.map { "\($0.label)…" }, [])
+            }
+            return (String(all[0].label.dropLast()) + "1–9", [])
+        }
+        let list = bindings[id] ?? []
+        return (list.first?.label, list.dropFirst().map(\.label))
+    }
+
+    struct Section {
+        struct Row: Hashable {
+            let title: String
+            let keys: [String]
+        }
+        let category: ShortcutSpec.Category
+        let rows: [Row]
+    }
+
+    /// The cheat sheet's sections: every bound command by category, in registry order, with
+    /// Folder 1–9 and Tab 1–9 on one row each. macOS's standard items are left out.
+    static func cheatSheet(_ bindings: [String: [KeyBinding]] = bindings, globalHotkey: Bool = false) -> [Section] {
+        ShortcutSpec.Category.allCases.filter { $0 != .standard }.compactMap { category -> Section? in
+            var rows: [Section.Row] = []
+            for spec in specs where spec.category == category && !spec.reserved && !spec.locked {
+                if spec.global, !globalHotkey { continue }
+                var id = spec.id, title = spec.title
+                if id.hasPrefix("folder.select.") || id.hasPrefix("tab.select.") {
+                    guard id.hasSuffix(".1") else { continue }
+                    id = String(id.dropLast()) + "*"
+                    title = String(title.dropLast(2)) + " by Number"
+                }
+                let found = keys(id, in: bindings)
+                guard let primary = found.primary else { continue }
+                rows.append(Section.Row(title: title, keys: [primary] + found.aliases))
+            }
+            return rows.isEmpty ? nil : Section(category: category, rows: rows)
+        }
+    }
+
     /// The Keys table for `bindings`, as Markdown.
     static func markdownTable(_ bindings: [String: [KeyBinding]] = defaults) -> String {
-        func keys(_ id: String) -> (primary: String?, aliases: [String]) {
-            if id.hasSuffix(".*") {
-                let base = id.dropLast(1)
-                let all = (1...9).compactMap { bindings["\(base)\($0)"]?.first }
-                guard all.count == 9, Set(all.map(\.modifiers.rawValue)).count == 1,
-                      all.map(\.key) == (1...9).map(String.init) else {
-                    return (all.first.map { "\($0.label)…" }, [])
-                }
-                return (String(all[0].label.dropLast()) + "1–9", [])
-            }
-            let list = bindings[id] ?? []
-            return (list.first?.label, list.dropFirst().map(\.label))
-        }
+        let keys = { (id: String) in Self.keys(id, in: bindings) }
         var lines = ["| Keys | Action |", "|---|---|"]
         for row in docRows {
             let found = row.ids.map(keys)

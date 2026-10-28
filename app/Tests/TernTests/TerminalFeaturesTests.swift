@@ -37,6 +37,33 @@ final class TerminalFeaturesTests: XCTestCase {
         XCTAssertEqual(w.selectedTab?.root, .pane(second))
     }
 
+    /// ⌘D a few times, then ⌘W: focus returns to the split before, not the first pane.
+    func testClosingAPaneFocusesThePaneBeforeIt() {
+        let w = Workspace()
+        _ = w.newTab(projectPath: "/tmp", cwd: "/tmp", paneID: "a")
+        w.split(.horizontal)
+        let b = w.selectedTab!.focusedPane
+        w.split(.horizontal)
+        let c = w.selectedTab!.focusedPane
+        w.split(.horizontal)
+        let d = w.selectedTab!.focusedPane
+        w.removePane(d)
+        XCTAssertEqual(w.selectedTab?.focusedPane, c)
+        w.removePane(c)
+        XCTAssertEqual(w.selectedTab?.focusedPane, b)
+        // Closing the first pane hands focus to the next one.
+        w.focus(pane: "a")
+        w.removePane("a")
+        XCTAssertEqual(w.selectedTab?.focusedPane, b)
+        // An unfocused pane closing leaves focus where it is.
+        w.split(.horizontal)
+        let e = w.selectedTab!.focusedPane
+        w.split(.horizontal)
+        w.focus(pane: e)
+        w.removePane(b)
+        XCTAssertEqual(w.selectedTab?.focusedPane, e)
+    }
+
     func testMovePaneAndTabPreserveAllPanes() {
         let w = Workspace()
         let first = w.newTab(projectPath: "/tmp", cwd: "/tmp", paneID: "a")
