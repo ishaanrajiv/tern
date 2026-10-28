@@ -11,6 +11,7 @@ mod saved;
 mod screen;
 mod vt;
 mod session;
+mod command;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -32,6 +33,12 @@ fn main() -> Result<()> {
     let umask = nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
     session::USER_UMASK.store(umask.bits() as u32, std::sync::atomic::Ordering::Relaxed);
     let dir = prepare_runtime_dir().with_context(|| format!("preparing {}", runtime_dir().display()))?;
+    if let Some(bytes) = std::fs::read(dir.join("terminal-settings.json")).ok()
+        .and_then(|data| serde_json::from_slice::<serde_json::Value>(&data).ok())
+        .and_then(|value| value.get("scrollback").and_then(|n| n.as_u64()))
+        .filter(|n| (100_000..=1_000_000_000).contains(n)) {
+        session::SCROLLBACK_BYTES.store(bytes as usize, std::sync::atomic::Ordering::Relaxed);
+    }
     let path = socket_path();
     // sockaddr_un.sun_path is 104 bytes on macOS.
     if path.as_os_str().len() >= 104 {
@@ -110,8 +117,8 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
     let mut out = conn.try_clone()?;
 
     let id = match &req {
-        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } => Some(id),
-        Request::Hello | Request::List | Request::Watch => None,
+        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } | Request::ReadOutput { id, .. } => Some(id),
+        Request::Hello | Request::List | Request::Watch | Request::SetScrollback { .. } => None,
     };
     if id.is_some_and(|id| !valid_session_id(id)) {
         // In the shape the caller expects for that request.
@@ -131,6 +138,37 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
         }
         Request::List => {
             writeln!(out, "{}", serde_json::to_string(&list_sessions(&sessions))?)?;
+        }
+        Request::ReadOutput { id, last_command } => {
+            let session = sessions.lock().unwrap().get(&id).cloned();
+            if let Some(session) = session {
+                let (text, truncated) = {
+                    let st = session.state.lock().unwrap();
+                    if last_command {
+                        let mut terminal = vt::Terminal::new(4096, 24, 10_000);
+                        terminal.write(&st.capture.output);
+                        (terminal.format(vt::Format::Plain), st.capture.truncated)
+                    } else {
+                        (st.screen.format(vt::Format::Plain), false)
+                    }
+                };
+                // Keep JSON replies bounded even when the history setting is very large.
+                let max = 8 << 20;
+                let truncated = truncated || text.len() > max;
+                let text = String::from_utf8_lossy(&text[..text.len().min(max)]);
+                writeln!(out, "{}", serde_json::json!({"ok": true, "text": text, "truncated": truncated}))?;
+            } else {
+                writeln!(out, "{}", serde_json::json!({"ok": false, "error": "session no longer exists"}))?;
+            }
+        }
+        Request::SetScrollback { bytes } => {
+            let ok = (100_000..=1_000_000_000).contains(&bytes);
+            if ok {
+                session::SCROLLBACK_BYTES.store(bytes, std::sync::atomic::Ordering::Relaxed);
+                let all: Vec<_> = sessions.lock().unwrap().values().cloned().collect();
+                for session in all { session.state.lock().unwrap().screen.set_scrollback_bytes(bytes); }
+            }
+            writeln!(out, "{}", serde_json::json!({"ok": ok}))?;
         }
         Request::Watch => {
             // Polling keeps this simple: a handful of sessions, a few syscalls each.
@@ -200,6 +238,23 @@ mod tests {
     }
 
     #[test]
+    fn output_and_retention_requests_have_bounded_replies() {
+        for (request, expected) in [
+            (serde_json::json!({"op":"read_output", "id":"missing"}), false),
+            (serde_json::json!({"op":"set_scrollback", "bytes":0}), false),
+            (serde_json::json!({"op":"set_scrollback", "bytes":1_000_000_001u64}), false),
+        ] {
+            let (server, mut client) = UnixStream::pair().unwrap();
+            writeln!(client, "{request}").unwrap();
+            handle_conn(server, Sessions::default(), &hello()).unwrap();
+            let mut reply = String::new();
+            BufReader::new(client).read_line(&mut reply).unwrap();
+            let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+            assert_eq!(reply["ok"], expected);
+        }
+    }
+
+    #[test]
     fn only_this_user_may_connect() {
         let (conn, _peer) = UnixStream::pair().unwrap();
         let me = nix::unistd::geteuid();
@@ -218,6 +273,7 @@ mod tests {
             serde_json::json!({ "op": "attach", "id": victim, "cols": 80, "rows": 24, "cwd": null, "cmd": "true" }),
             serde_json::json!({ "op": "attach", "id": "../../victim", "cols": 80, "rows": 24, "cwd": null, "cmd": "true" }),
             serde_json::json!({ "op": "kill", "id": victim }),
+            serde_json::json!({ "op": "read_output", "id": "../victim", "last_command": true }),
             serde_json::json!({ "op": "report", "id": "../x", "agent": "claude", "state": "idle", "agent_session": null, "message": null }),
         ];
         for req in requests {

@@ -125,7 +125,7 @@ final class TerminalFeaturesTests: XCTestCase {
         XCTAssertEqual(w.allTabs.count, 3)
         let id = w.selectedTab!.root.panes[0]
         XCTAssertEqual(w.resumeCommand(for: id), "echo ready")
-        XCTAssertNil(w.resumeCommand(for: id))
+        XCTAssertEqual(w.resumeCommand(for: id), "echo ready")
     }
 
     func testInvalidPresetDoesNotPartiallyCreateTabs() {

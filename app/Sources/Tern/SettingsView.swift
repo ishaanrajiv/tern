@@ -55,6 +55,9 @@ final class AgentHooks {
 
 /// Folders and tabs.
 struct GeneralSettings: View {
+    @AppStorage("globalHotkey") private var globalHotkey = false
+    @AppStorage(Prefs.notifyCommandDone) private var notifyCommandDone = true
+    @AppStorage("fileEditor") private var fileEditor = "system"
     @AppStorage(Prefs.worktrees) private var worktrees = false
     @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
     @AppStorage(Prefs.repoRoots) private var repoRoots = "~/dev"
@@ -72,6 +75,21 @@ struct GeneralSettings: View {
                 RepoRootsList(text: $repoRoots)
             }
 
+            Section("Files") {
+                Picker("Open file links with", selection: $fileEditor) {
+                    Text("Default application").tag("system")
+                    Text("Visual Studio Code").tag("vscode")
+                    Text("Cursor").tag("cursor")
+                    Text("Zed").tag("zed")
+                }
+            }
+
+            Section("Quick access") {
+                Toggle("Show or hide tern with Control-Option-Space", isOn: $globalHotkey)
+            }
+            Section("Notifications") {
+                Toggle("Notify when a background command takes over 10 seconds", isOn: $notifyCommandDone)
+            }
             Section("Tabs") {
                 Toggle(isOn: $worktrees) {
                     Labeled("New tabs use git worktrees", caption: "⌘⇧T always opens a worktree.")

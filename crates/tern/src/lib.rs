@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod hooks;
+pub mod open;
 pub mod procinfo;
 pub mod shell;
 pub mod usage;
@@ -29,7 +30,7 @@ pub const FRAME_EXIT: u8 = 0x82;
 
 /// Bumped whenever a request, reply or frame changes in a way an older peer
 /// would misread. A client finding a different number asks for a restart.
-pub const PROTOCOL: u32 = 1;
+pub const PROTOCOL: u32 = 2;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -52,6 +53,10 @@ pub enum Request {
         env: Vec<(String, String)>,
     },
     List,
+    /// Read retained terminal text or the last completed command output.
+    ReadOutput { id: String, #[serde(default)] last_command: bool },
+    /// Same byte limit as the app surface; applied to existing and new sessions.
+    SetScrollback { bytes: usize },
     /// Streams the session list as one JSON line whenever it changes.
     Watch,
     Kill {
@@ -142,6 +147,10 @@ pub struct SessionInfo {
     /// hasn't, or has no integration.
     #[serde(default)]
     pub finished_ms: u64,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 /// Quotes a string for a POSIX shell. Plain words are left alone; anything

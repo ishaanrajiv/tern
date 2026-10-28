@@ -68,6 +68,7 @@ final class TerminalArea: NSView {
                 guard let self, self.searchBar.terminal === view else { return }
                 self.searchBar.setSelected(value)
             }
+            view.workingDirectory = { [weak self] in self?.workspace.cwd(for: pane) ?? NSHomeDirectory() }
             view.onFocus = { [weak self] in self?.workspace.focus(pane: pane) }
             view.onClose = { [weak self] in self?.attachEnded(pane) }
             view.onResize = { [weak self] in self?.workspace.noteResize(pane) }
@@ -95,19 +96,28 @@ final class TerminalArea: NSView {
     /// `tern attach` exited. Normally the session ended with it; if ternd still has the
     /// session (the client was killed or crashed), attach again rather than lose the tab.
     private func attachEnded(_ pane: String) {
-        let alive = TernClient.listNow()?.contains { $0.id == pane } == true
-        let recent = reattached[pane].map { -$0.timeIntervalSinceNow < 5 } ?? false
-        guard alive, !recent, let view = terminals[pane] else {
-            reattached[pane] = nil
-            return workspace.removePane(pane)
+        guard let original = terminals[pane] else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self, weak original] in
+            let list = TernClient.listNow()
+            DispatchQueue.main.async {
+                guard let self, let original, self.terminals[pane] === original,
+                      self.workspace.allTabs.contains(where: { $0.root.panes.contains(pane) }) else { return }
+                if let list, !list.contains(where: { $0.id == pane }) {
+                    self.reattached[pane] = nil
+                    self.workspace.removePane(pane)
+                    return
+                }
+                let delay = self.reattached[pane].map { max(0, 2 + $0.timeIntervalSinceNow) } ?? 0
+                self.reattached[pane] = Date()
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak original] in
+                    guard let self, let original, self.terminals[pane] === original else { return }
+                    original.detach(); original.removeFromSuperview()
+                    self.dimmers[pane]?.removeFromSuperview()
+                    self.terminals[pane] = nil; self.dimmers[pane] = nil
+                    self.refresh(focus: self.workspace.selectedTab?.focusedPane == pane)
+                }
+            }
         }
-        reattached[pane] = Date()
-        view.detach()
-        view.removeFromSuperview()
-        dimmers[pane]?.removeFromSuperview()
-        terminals[pane] = nil
-        dimmers[pane] = nil
-        refresh(focus: workspace.selectedTab?.focusedPane == pane)
     }
 
     func themeChanged() {

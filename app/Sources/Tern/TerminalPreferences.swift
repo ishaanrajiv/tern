@@ -59,6 +59,7 @@ struct TerminalPreferences: Codable, Equatable {
         }
         try JSONEncoder().encode(self).write(to: Self.url, options: .atomic)
         Self.current = self
+        TernClient.setScrollback(scrollback)
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }
     enum PreferencesError: LocalizedError {
@@ -137,7 +138,7 @@ struct TerminalSettings: View {
                             Text("Right only").tag("right")
                         }
                         TextField("Scrollback bytes", value: $draft.scrollback, format: .number)
-                            .help("Limits the terminal surface's history in bytes. Reattached sessions retain up to 10,000 daemon history rows.")
+                            .help("Limits retained history in bytes in both the terminal and daemon. Reducing it discards older output.")
                     }
                 }
             } else {

@@ -83,6 +83,15 @@ final class CommandRunner: NSObject {
 
     @objc func run(_ sender: NSMenuItem) {
         guard let command = sender.representedObject as? Command else { return }
+        if let window = NSApp.keyWindow, let document = window.windowController as? OutputDocumentController {
+            switch command.title {
+            case "Close Pane": window.performClose(nil); return
+            case "Find…": document.find(.showFindInterface); return
+            case "Find Next": document.find(.nextMatch); return
+            case "Find Previous": document.find(.previousMatch); return
+            default: break
+            }
+        }
         if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.settings", command.title == "Close Pane" {
             window.performClose(nil)
             return
@@ -110,6 +119,7 @@ enum MenuBuilder {
             item.keyEquivalentModifierMask = command.modifiers
             item.target = CommandRunner.shared
             item.representedObject = command
+            if command.title == "Secure Keyboard Entry" { item.state = SecureKeyboard.shared.enabled ? .on : .off }
             appMenu.addItem(item)
         }
         appMenu.addItem(.separator())
@@ -138,6 +148,10 @@ enum MenuBuilder {
             }
             if name == "Edit" {
                 menu.addItem(.separator())
+                menu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+                let redo = menu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+                redo.keyEquivalentModifierMask = [.command, .shift]
+                menu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
                 menu.addItem(withTitle: "Copy", action: #selector(TerminalView.copy(_:)), keyEquivalent: "c")
                 menu.addItem(withTitle: "Paste", action: #selector(TerminalView.paste(_:)), keyEquivalent: "v")
                 menu.addItem(withTitle: "Select All", action: #selector(TerminalView.selectAll(_:)), keyEquivalent: "a")

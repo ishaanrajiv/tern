@@ -4,13 +4,13 @@ import UserNotifications
 /// Tells you when an agent needs you or finishes while you're looking elsewhere:
 /// a notification, a Dock badge with how many are waiting, and a Dock bounce.
 final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
-    private let workspace: Workspace
+    private var workspaces: [Workspace] = []
+    var activate: ((String) -> Void)?
     private var authorized = false
     /// macOS refused permission (see README: open issue).
     static var unavailable = false
 
-    init(workspace: Workspace) {
-        self.workspace = workspace
+    override init() {
         super.init()
         let center = UNUserNotificationCenter.current()
         center.delegate = self
@@ -23,10 +23,28 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
                 AgentNotifier.unavailable = !granted
             }
         }
-        workspace.onAgentEvent = { [weak self] tab, info in self?.agentChanged(tab: tab, info: info) }
     }
 
-    private func agentChanged(tab: Tab, info: SessionInfo) {
+    func register(_ workspace: Workspace) {
+        workspaces.append(workspace)
+        workspace.onCommandEvent = { [weak self, weak workspace] tab, info in
+            guard let self, let workspace, !workspace.isVisible(tab), (info.durationMs ?? 0) >= 10_000,
+                  UserDefaults.standard.bool(forKey: Prefs.notifyCommandDone) else { return }
+            NSApp.requestUserAttention(.informationalRequest)
+            self.post(tab: tab, title: workspace.title(for: tab) + " finished", body: "Exit \(info.exitCode ?? 0) · " + String(format: "%.1fs", Double(info.durationMs ?? 0) / 1000), sound: false)
+        }
+        workspace.onAgentEvent = { [weak self, weak workspace] tab, info in
+            guard let workspace else { return }
+            self?.agentChanged(tab: tab, info: info, workspace: workspace)
+        }
+    }
+
+    func unregister(_ workspace: Workspace) {
+        workspaces.removeAll { $0 === workspace }
+        workspace.onCommandEvent = nil; workspace.onAgentEvent = nil
+    }
+
+    private func agentChanged(tab: Tab, info: SessionInfo, workspace: Workspace) {
         updateBadge()
         guard !workspace.isVisible(tab) else { return }
         let defaults = UserDefaults.standard
@@ -47,7 +65,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// Dock badge: how many sessions are waiting on you.
     func updateBadge() {
-        let n = workspace.needsYouCount
+        let n = workspaces.reduce(0) { $0 + $1.needsYouCount }
         NSApp.dockTile.badgeLabel = n > 0 ? "\(n)" : nil
     }
 
@@ -74,7 +92,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
                                 withCompletionHandler done: @escaping () -> Void) {
         if let id = response.notification.request.content.userInfo["tab"] as? String {
             DispatchQueue.main.async {
-                self.workspace.select(id)
+                self.activate?(id)
                 NSApp.activate(ignoringOtherApps: true)
             }
         }

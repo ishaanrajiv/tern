@@ -23,7 +23,6 @@ pub enum Format {
     /// colours only, since modes left on would confuse that shell.
     Saved,
     /// Text without escapes.
-    #[cfg(test)]
     Plain,
 }
 
@@ -58,6 +57,13 @@ impl Terminal {
         // No WRITE_PTY callback on purpose: the app's Ghostty answers the program's
         // queries, and a second answer would be typed into the shell.
         Terminal { raw, bells }
+    }
+
+    pub fn set_scrollback_bytes(&mut self, bytes: usize) {
+        unsafe {
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, ptr::null());
+            ghostty_terminal_set(self.raw, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_BYTES, &bytes as *const usize as *const c_void);
+        }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -130,7 +136,6 @@ impl Terminal {
         let options = GhosttyFormatterTerminalOptions {
             size: size_of::<GhosttyFormatterTerminalOptions>(),
             emit: match format {
-                #[cfg(test)]
                 Format::Plain => GHOSTTY_FORMATTER_FORMAT_PLAIN,
                 _ => GHOSTTY_FORMATTER_FORMAT_VT,
             },
@@ -187,6 +192,16 @@ impl Drop for Terminal {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_limit_replaces_the_fixed_row_limit_and_prunes_existing_history() {
+        let mut terminal = Terminal::new(80, 24, 2);
+        terminal.set_scrollback_bytes(20_000_000);
+        for _ in 0..12000 { terminal.write(b"retained row\r\n"); }
+        assert!(terminal.scrollback_rows() > 10_000);
+        terminal.set_scrollback_bytes(100_000);
+        assert!(terminal.scrollback_rows() < 2_000);
+    }
 
     #[test]
     fn reads_text_back() {

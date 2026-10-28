@@ -190,6 +190,7 @@ struct AgentRef: Codable, Equatable {
 /// UserDefaults keys for the settings window.
 enum Prefs {
     static let notifyNeedsYou = "notifyNeedsYou"
+    static let notifyCommandDone = "notifyCommandDone"
     static let notifyDone = "notifyDone"
     static let worktrees = "worktreePerSession"
     static let resumeAgents = "resumeAgents"
@@ -205,7 +206,7 @@ enum Prefs {
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
-            notifyNeedsYou: true, notifyDone: true, worktrees: false, resumeAgents: true,
+            notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
             claudeAccountUsage: false, workingIndicator: WorkingIndicator.trailing.rawValue,
         ])
@@ -234,6 +235,9 @@ enum Prefs {
 
 @Observable
 final class Workspace {
+    let storageURL: URL
+    init(storageURL: URL = Workspace.layoutURL) { self.storageURL = storageURL }
+    nonisolated private static let saveQueue = DispatchQueue(label: "tern.layout-save")
     private(set) var projects: [Project] = []
     var selectedTabID: String?
     /// Live session state from ternd, keyed by pane (session) id.
@@ -263,12 +267,17 @@ final class Workspace {
     /// When each pane was last resized: the shell redraws its prompt then, which isn't news.
     @ObservationIgnored private var resizedAt: [String: Date] = [:]
     private var adoptedOrphans = false
+    var adoptsOrphans = true
+    var keepsEmptyWindow = false
+    private(set) var detachedPanes: Set<String> = []
+    private(set) var closedTabs: [ClosedTab] = []
     /// Whether the user can see the window; nothing is "seen" while tern is in the background.
     var isActive = true {
         didSet { if isActive { markSeen() } }
     }
 
     /// An agent in a pane changed state: (tab, pane, session info).
+    @ObservationIgnored var onCommandEvent: ((Tab, SessionInfo) -> Void)?
     @ObservationIgnored var onAgentEvent: ((Tab, SessionInfo) -> Void)?
 
     @ObservationIgnored var onChange: (() -> Void)?
@@ -444,6 +453,7 @@ final class Workspace {
     /// Adds a tab with one fresh pane to the project at `path` (created if needed).
     @discardableResult
     func newTab(projectPath: String, cwd: String, paneID: String? = nil) -> Tab {
+        keepsEmptyWindow = false
         let pane = paneID ?? Self.newID("p")
         paneCwd[pane] = cwd
         var tab = Tab(id: Self.newID("t"), root: .pane(pane), focusedPane: pane, number: 1)
@@ -486,9 +496,10 @@ final class Workspace {
     /// (or the setting on, in a git project) it gets its own worktree; failures come back
     /// for the caller to show.
     @discardableResult
-    func newTabInCurrentProject(worktree: Bool? = nil) -> Worktree.Failure? {
+    func newTabInCurrentProject(worktree: Bool? = nil, projectRoot: Bool = false) -> Worktree.Failure? {
         guard let project = currentProject else { return nil }
-        return newSession(projectPath: project.path, cwd: project.path, worktree: worktree)
+        let directory = projectRoot || worktree == true ? project.path : selectedTab.map { cwd(for: $0.focusedPane) } ?? project.path
+        return newSession(projectPath: project.path, cwd: directory, worktree: worktree)
     }
 
     @discardableResult
@@ -516,11 +527,12 @@ final class Workspace {
         newTab(projectPath: folder, cwd: folder, paneID: pane)
     }
 
-    func split(_ axis: SplitAxis) {
+    func split(_ axis: SplitAxis, directory: String? = nil, command: String? = nil) {
         guard let tab = selectedTab else { return }
         let pane = Self.newID("p")
-        paneCwd[pane] = cwd(for: tab.focusedPane)
-        if let remote = paneRemote[tab.focusedPane] {
+        paneCwd[pane] = directory ?? cwd(for: tab.focusedPane)
+        if let command { pendingLines[pane] = command }
+        if directory == nil, command == nil, let remote = paneRemote[tab.focusedPane] {
             paneRemote[pane] = remote
             pendingLines[pane] = remote.command()
         }
@@ -578,6 +590,125 @@ final class Workspace {
             changed()
             return
         }
+    }
+
+    func rememberClosedTab(_ id: String, detached: Bool = false) {
+        guard let tab = allTabs.first(where: { $0.id == id }), let project = project(containing: id) else { return }
+        let panes = Set(tab.root.panes)
+        closedTabs.removeAll { $0.id == id }
+        closedTabs.insert(ClosedTab(project: project.path, tab: tab,
+            directories: Dictionary(uniqueKeysWithValues: panes.map { ($0, cwd(for: $0)) }),
+            remotes: paneRemote.filter { panes.contains($0.key) }, detached: detached), at: 0)
+        closedTabs = Array(closedTabs.prefix(20))
+        save()
+    }
+
+    func detachTab(_ id: String) {
+        keepsEmptyWindow = true
+        guard let tab = allTabs.first(where: { $0.id == id }) else { return }
+        rememberClosedTab(id, detached: true)
+        detachedPanes.formUnion(tab.root.panes)
+        _ = takeTab(id)
+        save()
+    }
+
+    /// Removes ownership from this workspace without ending any process.
+    func takeTab(_ id: String) -> TabTransfer? {
+        guard let p = projects.firstIndex(where: { $0.tabs.contains { $0.id == id } }),
+              let t = projects[p].tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = projects[p].tabs[t], panes = Set(tab.root.panes)
+        let transfer = TabTransfer(project: projects[p].path, tab: tab,
+            directories: Dictionary(uniqueKeysWithValues: panes.map { ($0, cwd(for: $0)) }),
+            agents: paneAgent.filter { panes.contains($0.key) }, remotes: paneRemote.filter { panes.contains($0.key) },
+            pending: pendingLines.filter { panes.contains($0.key) })
+        projects[p].tabs.remove(at: t)
+        if projects[p].lastTab == id { projects[p].lastTab = projects[p].tabs.first?.id }
+        if projects[p].tabs.isEmpty { projects.remove(at: p) }
+        if selectedTabID == id { selectedTabID = allTabs.first?.id }
+        for pane in panes { paneCwd[pane] = nil; paneAgent[pane] = nil; paneRemote[pane] = nil; pendingLines[pane] = nil; seen[pane] = nil }
+        changed()
+        return transfer
+    }
+
+    func insertTab(_ transfer: TabTransfer) {
+        keepsEmptyWindow = false
+        guard !allTabs.contains(where: { $0.id == transfer.tab.id }),
+              Set(allTabs.flatMap { $0.root.panes }).isDisjoint(with: transfer.tab.root.panes) else { return }
+        var tab = transfer.tab
+        if let p = projects.firstIndex(where: { $0.path == transfer.project }) {
+            tab.number = projects[p].freeNumber
+            projects[p].tabs.append(tab); projects[p].lastTab = tab.id; projects[p].collapsed = false
+        } else { projects.append(Project(path: transfer.project, tabs: [tab], lastTab: tab.id)) }
+        paneCwd.merge(transfer.directories) { _, new in new }
+        paneAgent.merge(transfer.agents) { _, new in new }
+        paneRemote.merge(transfer.remotes) { _, new in new }
+        pendingLines.merge(transfer.pending) { _, new in new }
+        detachedPanes.subtract(tab.root.panes)
+        selectedTabID = tab.id
+        changed()
+    }
+
+    func rememberDetached(_ transfer: TabTransfer) {
+        detachedPanes.formUnion(transfer.tab.root.panes)
+        closedTabs.removeAll { $0.id == transfer.tab.id }
+        closedTabs.insert(ClosedTab(project: transfer.project, tab: transfer.tab, directories: transfer.directories, remotes: transfer.remotes, detached: true), at: 0)
+        closedTabs = Array(closedTabs.prefix(20))
+        changed()
+        save()
+    }
+
+    func absorbRecovery(from other: Workspace) {
+        detachedPanes.formUnion(other.detachedPanes)
+        let known = Set(closedTabs.map(\.id))
+        closedTabs += other.closedTabs.filter { !known.contains($0.id) }
+        closedTabs = Array(closedTabs.prefix(20))
+        changed()
+        save()
+    }
+
+    func forgetDetached(_ ids: Set<String>) {
+        detachedPanes.subtract(ids)
+        closedTabs.removeAll { $0.detached && !Set($0.tab.root.panes).isDisjoint(with: ids) }
+        save()
+    }
+
+    func reattach(_ id: String) {
+        guard let session = sessions[id], !allTabs.contains(where: { $0.root.panes.contains(id) }) else { return }
+        if let record = closedTabs.first(where: { $0.detached && $0.tab.root.panes.contains(id) }) {
+            restore(record)
+            closedTabs.removeAll { $0.id == record.id }
+        } else {
+            detachedPanes.remove(id)
+            newTab(projectPath: session.gitRoot ?? session.cwd ?? NSHomeDirectory(), cwd: session.cwd ?? NSHomeDirectory(), paneID: id)
+        }
+        save()
+    }
+
+    func reopenClosedTab() {
+        guard !closedTabs.isEmpty else { return }
+        let record = closedTabs.removeFirst()
+        restore(record)
+        save()
+    }
+
+    private func restore(_ record: ClosedTab) {
+        var directories: [String: String] = [:], remotes: [String: RemoteConnection] = [:]
+        let occupied = Set(allTabs.flatMap { $0.root.panes })
+        let mapping = Dictionary(uniqueKeysWithValues: record.tab.root.panes.map { old in
+            let id = record.detached && sessions[old] != nil && !occupied.contains(old) ? old : Self.newID("p")
+            directories[id] = record.directories[old] ?? record.project
+            remotes[id] = record.remotes[old]
+            return (old, id)
+        })
+        var tab = record.tab
+        tab.id = Self.newID("t")
+        tab.root = tab.root.mapPanes { mapping[$0]! }
+        tab.focusedPane = mapping[tab.focusedPane] ?? tab.root.panes[0]
+        tab.zoomed = false
+        // Closing a process cannot undo its termination. Reopened panes are fresh
+        // shells unless the original session was explicitly detached and is alive.
+        insertTab(TabTransfer(project: record.project, tab: tab, directories: directories, agents: [:], remotes: remotes, pending: [:]))
+        detachedPanes.subtract(record.tab.root.panes)
     }
 
     func focus(pane: String) {
@@ -775,7 +906,9 @@ final class Workspace {
         let agentsBefore = paneAgent
         defer { if paneAgent != agentsBefore { save() } }
         sessions = Dictionary(list.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        for s in list {
+        let owned = Set(allTabs.flatMap { $0.root.panes })
+        for s in list where owned.contains(s.id) {
+            pendingLines[s.id] = nil
             if let cwd = s.cwd { paneCwd[s.id] = cwd }
             if seen[s.id] == nil { seen[s.id] = Seen(s) }
             if let at = resizedAt[s.id], -at.timeIntervalSinceNow < 2, var mark = seen[s.id] {
@@ -784,15 +917,19 @@ final class Workspace {
             }
             if let agent = s.agent, let id = s.agentSession { paneAgent[s.id] = AgentRef(agent: agent, session: id) }
             if s.agent == nil, s.agentState == nil, previous[s.id]?.agentState != nil { paneAgent[s.id] = nil }
+            if let old = previous[s.id], let finished = s.finishedMs, finished > (old.finishedMs ?? 0),
+               s.agent == nil, let tab = allTabs.first(where: { $0.root.panes.contains(s.id) }) {
+                onCommandEvent?(tab, s)
+            }
             if let old = previous[s.id], s.agentStateMs != old.agentStateMs, s.agentState != old.agentState,
                let tab = allTabs.first(where: { $0.root.panes.contains(s.id) }) {
                 onAgentEvent?(tab, s)
             }
         }
         markSeen()
-        if !adoptedOrphans {
+        if !adoptedOrphans && adoptsOrphans {
             adoptedOrphans = true
-            adoptOrphans(list)
+            adoptOrphans(list.filter { !detachedPanes.contains($0.id) })
         }
     }
 
@@ -807,7 +944,9 @@ final class Workspace {
     /// The command that resumes the agent conversation a pane had before its session ended
     /// (after a reboot), typed into the fresh shell.
     func resumeCommand(for pane: String) -> String? {
-        if let line = pendingLines.removeValue(forKey: pane) { return line }
+        // Keep startup input until the daemon acknowledges the session. Moving a
+        // pane can destroy its first relay before that relay has sent the attach.
+        if sessions[pane] == nil, let line = pendingLines[pane] { return line }
         if sessions[pane] == nil, let remote = paneRemote[pane] { return remote.command() }
         guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
         return Self.resumeCommand(agent: ref.agent, session: ref.session)
@@ -892,6 +1031,8 @@ final class Workspace {
         var paneAgent: [String: AgentRef]?
         var recents: [String: Date]?
         var paneRemote: [String: RemoteConnection]? = nil
+        var detachedPanes: [String]? = nil
+        var closedTabs: [ClosedTab]? = nil
     }
 
     /// With TERN_RUNTIME_DIR set (a private ternd for testing), everything tern keeps goes there instead.
@@ -907,15 +1048,28 @@ final class Workspace {
 
     /// Reads what it can: a folder, tab or field that doesn't decode is skipped, not the
     /// whole file. Anything lost that way is kept aside first, since the next save overwrites it.
-    func load() {
-        guard let data = try? Data(contentsOf: Self.layoutURL) else { return }
+    func load(excluding occupied: Set<String> = []) {
+        guard let data = try? Data(contentsOf: storageURL) else { return }
         let (saved, dropped) = Self.decodeLayout(data)
         if saved == nil || dropped > 0 || saved?.version != Self.layoutVersion {
-            Self.keepAside(data, reason: saved == nil ? "unreadable" : "v\(saved?.version ?? 0)")
+            Self.keepAside(data, url: storageURL, reason: saved == nil ? "unreadable" : "v\(saved?.version ?? 0)")
         }
         guard let saved else { return }
-        projects = saved.projects.filter { !$0.tabs.isEmpty }
+        var owned = occupied, tabIDs = Set<String>(), skipped = false
+        projects = saved.projects.compactMap { project in
+            var project = project
+            project.tabs = project.tabs.compactMap { tab in
+                let panes = Set(tab.root.panes)
+                guard panes.count == tab.root.panes.count, owned.isDisjoint(with: panes), tabIDs.insert(tab.id).inserted else { skipped = true; return nil }
+                owned.formUnion(panes)
+                return tab
+            }
+            return project.tabs.isEmpty ? nil : project
+        }
+        if skipped { Self.keepAside(data, url: storageURL, reason: "duplicate-sessions") }
         for i in projects.indices { projects[i].numberTabs() }
+        detachedPanes = Set(saved.detachedPanes ?? [])
+        closedTabs = Array((saved.closedTabs ?? []).prefix(20))
         let panes = Set(allTabs.flatMap { $0.root.panes })
         let tabs = Set(allTabs.map(\.id))
         selectedTabID = saved.selectedTabID.flatMap { tabs.contains($0) ? $0 : nil } ?? projects.first?.tabs.first?.id
@@ -940,8 +1094,8 @@ final class Workspace {
     }
 
     /// Copies a layout this build can't fully read to layout-<reason>-<time>.json, keeping the last five.
-    private static func keepAside(_ data: Data, reason: String) {
-        let dir = layoutURL.deletingLastPathComponent()
+    private static func keepAside(_ data: Data, url: URL, reason: String) {
+        let dir = url.deletingLastPathComponent()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
         try? data.write(to: dir.appendingPathComponent("layout-\(reason)-\(stamp).json"))
         NSLog("tern: kept the saved layout aside (\(reason)) before replacing it")
@@ -958,13 +1112,22 @@ final class Workspace {
         for name in old { try? fm.removeItem(at: dir.appendingPathComponent(name)) }
     }
 
+    nonisolated static func finishSaving() { saveQueue.sync {} }
+
     func save() {
         let saved = Saved(version: Self.layoutVersion, projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd,
-                          paneAgent: paneAgent, recents: recents, paneRemote: paneRemote)
+                          paneAgent: paneAgent, recents: recents, paneRemote: paneRemote, detachedPanes: Array(detachedPanes).sorted(), closedTabs: closedTabs)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(saved) else { return }
-        try? data.write(to: Self.layoutURL, options: .atomic)
+        let url = storageURL
+        Self.saveQueue.async {
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                try data.write(to: url, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+            } catch { NSLog("tern: couldn't save layout: %@", error.localizedDescription) }
+        }
     }
 }
 
@@ -1035,7 +1198,7 @@ extension Project {
 }
 
 extension Workspace.Saved {
-    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents, paneRemote }
+    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents, paneRemote, detachedPanes, closedTabs }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1046,5 +1209,7 @@ extension Workspace.Saved {
         paneAgent = c.lenient([String: AgentRef].self, .paneAgent, decoder: decoder)
         paneRemote = c.lenient([String: RemoteConnection].self, .paneRemote, decoder: decoder)
         recents = c.lenient([String: Date].self, .recents, decoder: decoder)
+        detachedPanes = c.lenient([String].self, .detachedPanes, decoder: decoder)
+        closedTabs = c.lossyArray(ClosedTab.self, .closedTabs, decoder: decoder)
     }
 }

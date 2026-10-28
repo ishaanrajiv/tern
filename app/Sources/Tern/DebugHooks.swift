@@ -71,7 +71,7 @@ enum DebugHooks {
             // "Type <text>" enters text into whatever has focus (say, the folder picker).
             if title.hasPrefix("Type ") {
                 let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
-                (window?.firstResponder as? NSTextView)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
+                (window?.firstResponder as? any NSTextInputClient)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
                 return
             }
             let arrow = { (k: Int) in String(UnicodeScalar(UInt16(k))!) }
@@ -116,6 +116,16 @@ enum DebugHooks {
                                                       [.boundsIgnoreFraming, .bestResolution]) else { continue }
             let rep = NSBitmapImageRep(cgImage: image)
             try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("window-\(i).png"))
+        }
+        let state: [[String: Any]] = windows.map { window in
+            ["title": window.title, "number": window.windowNumber, "key": window.isKeyWindow,
+             "frame": NSStringFromRect(window.frame), "identifier": window.identifier?.rawValue ?? "",
+             "terminals": TerminalView.all.allObjects.filter { $0.window === window && !$0.isHidden }.map {
+                ["id": $0.sessionID, "text": $0.visibleText(), "selection": $0.accessibilitySelectedText() ?? ""]
+             }]
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: dir.appendingPathComponent("state.json"), options: .atomic)
         }
         NSLog("tern debug: saved %d window snapshot(s)", windows.count)
     }
