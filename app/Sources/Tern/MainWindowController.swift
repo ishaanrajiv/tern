@@ -28,7 +28,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var savedLayout: ([Project], String?)?
     private(set) var commands: [Command] = []
     var paletteSessions: (() -> [PaletteItem])?
-    var onNextAttention: (() -> Void)?
+    /// Jumps to the next tab needing attention in any window; true goes backward.
+    var onNextAttention: ((Bool) -> Void)?
     var onNewWindow: (() -> Void)?
     var onMoveTab: ((Bool) -> Void)?
     var onFocusWindow: (() -> Void)?
@@ -169,10 +170,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         sync()
     }
 
-    /// ⌘⇧1–9 picks a tab in the current folder. A menu key equivalent can't say it:
-    /// with shift held the key reads "!", "@"… depending on the layout.
+    /// Watches modifiers for the number hints. Number keys themselves are menu items.
     private func installKeyMonitor() {
-        let digits: [UInt16: Int] = [18: 1, 19: 2, 20: 3, 21: 4, 23: 5, 22: 6, 26: 7, 28: 8, 25: 9]
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
             if event.type == .flagsChanged {
@@ -181,11 +180,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             }
             // Any key press means the user knows what they want; the hints go.
             self.setHints(nil)
-            guard event.window === self.window,
-                  event.modifierFlags.intersection(.deviceIndependentFlagsMask) == [.command, .shift],
-                  let n = digits[event.keyCode] else { return event }
-            self.workspace.selectTabInFolder(index: n - 1)
-            return nil
+            return event
         }
     }
 
@@ -197,13 +192,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
-    /// Holding ⌘ numbers the folders; ⌘⇧ numbers the current folder's tabs.
+    /// Holding Folder 1's modifiers (⌘) numbers the folders; Tab 1's (⌃⌘) numbers the current folder's tabs.
     private func modifiersChanged(_ flags: NSEvent.ModifierFlags) {
-        let kind: ShortcutHints.Kind? = switch flags {
-        case [.command]: .folders
-        case [.command, .shift]: .tabs
-        default: nil
-        }
+        let folders = ShortcutRegistry.primary("folder.select.1")?.modifiers
+        let tabs = ShortcutRegistry.primary("tab.select.1")?.modifiers
+        let held = flags.intersection([.command, .shift, .option, .control])
+        let kind: ShortcutHints.Kind? = held == folders ? .folders : held == tabs ? .tabs : nil
         guard window?.isKeyWindow == true else { return setHints(nil) }
         setHints(kind)
     }
@@ -327,7 +321,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         let item = NSToolbarItem(itemIdentifier: id)
         item.image = NSImage(systemSymbolName: "folder.badge.plus", accessibilityDescription: "Open Folder")
         item.label = "Open Folder"
-        item.toolTip = "Open Folder (⌘N)"
+        item.toolTip = "Open Folder (\(ShortcutRegistry.label("folder.open")))"
         item.isBordered = true
         item.target = self
         item.action = #selector(openFolderAction)
@@ -372,155 +366,158 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     // MARK: Commands (the keymap)
 
+    /// Actions for the shortcuts declared in `ShortcutRegistry`, in menu order.
     private func makeCommands() -> [Command] {
         let w = workspace
         return [
-            Command("Secure Keyboard Entry", menu: "tern") {
+            Command("app.secureKeyboard") {
                 SecureKeyboard.shared.toggle()
-                for item in NSApp.mainMenu?.items.first?.submenu?.items ?? [] where item.title == "Secure Keyboard Entry" { item.state = SecureKeyboard.shared.enabled ? .on : .off }
+                for item in NSApp.mainMenu?.items.first?.submenu?.items ?? [] where (item.representedObject as? Command)?.id == "app.secureKeyboard" {
+                    item.state = SecureKeyboard.shared.enabled ? .on : .off
+                }
             },
-            Command("Check for Tern Updates…", menu: "tern") { [weak self] in
+            Command("app.checkUpdates") { [weak self] in
                 self?.showWorkflow(title: "Tern Updates", view: AppUpdatesView())
                 AppUpdates.shared.check()
             },
-            Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
-            // Placeholder key until the shortcut registry lands; it assigns this one as settings.quick.
-            Command("Quick Settings…", menu: "tern", key: ",", [.command, .shift]) { [weak self] in self?.showQuickSettings() },
-            Command("New Window", menu: "File", key: "n", [.command, .shift]) { [weak self] in self?.onNewWindow?() },
-            Command("Close Window", menu: "Window") { [weak self] in self?.window?.performClose(nil) },
-            Command("Move Tab to New Window", menu: "Window") { [weak self] in self?.onMoveTab?(true) },
-            Command("Move Tab to Next Window", menu: "Window") { [weak self] in self?.onMoveTab?(false) },
-            Command("Move Pane to New Window", menu: "Window") { [weak self] in
+            Command("app.settings") { [weak self] in self?.onOpenSettings?() },
+            Command("settings.quick") { [weak self] in self?.showQuickSettings() },
+            Command("window.new") { [weak self] in self?.onNewWindow?() },
+            Command("window.close") { [weak self] in self?.window?.performClose(nil) },
+            Command("tab.toNewWindow") { [weak self] in self?.onMoveTab?(true) },
+            Command("tab.toNextWindow") { [weak self] in self?.onMoveTab?(false) },
+            Command("pane.toNewWindow") { [weak self] in
                 self?.workspace.detachPane(); self?.onMoveTab?(true)
             },
-            Command("Open Folder…", menu: "File", key: "n") { [weak self] in self?.toggleFolderPicker() },
-            Command("Project Launch Presets…", menu: "File") { [weak self] in self?.showPresets() },
-            Command("Connect over SSH…", menu: "File") { [weak self] in self?.showRemote() },
-            Command("New Tab", menu: "File", key: "t") { [weak self] in self?.newTab() },
-            Command("New Tab at Project Root", menu: "File") { [weak self] in
+            Command("folder.open") { [weak self] in self?.toggleFolderPicker() },
+            Command("folder.presets") { [weak self] in self?.showPresets() },
+            Command("remote.ssh") { [weak self] in self?.showRemote() },
+            Command("tab.new") { [weak self] in self?.newTab() },
+            Command("tab.newAtRoot") { [weak self] in
                 self?.newSession { $0.newTabInCurrentProject(worktree: false, projectRoot: true) }
             },
-            Command("Paste Image as File Path", menu: "Edit") { [weak self] in self?.terminalArea.focusedTerminal()?.pasteImagePath(nil) },
-            Command("Open Selected File in Editor", menu: "Edit") { [weak self] in self?.terminalArea.focusedTerminal()?.openSelectedFile(nil) },
-            Command("New Tab in Worktree", menu: "File", key: "t", [.command, .shift]) { [weak self] in self?.newTab(worktree: true) },
-            Command("Browse for Folder…", menu: "File", key: "o") { [weak self] in self?.browseForFolder() },
-            Command("Split Right", menu: "File", key: "d") { w.split(.horizontal) },
-            Command("Split Down", menu: "File", key: "d", [.command, .shift]) { w.split(.vertical) },
-            Command("Rename Tab…", menu: "File", key: "r") { [weak self] in
+            Command("edit.pasteImagePath") { [weak self] in self?.terminalArea.focusedTerminal()?.pasteImagePath(nil) },
+            Command("file.openSelected") { [weak self] in self?.terminalArea.focusedTerminal()?.openSelectedFile(nil) },
+            Command("tab.newWorktree") { [weak self] in self?.newTab(worktree: true) },
+            Command("folder.browse") { [weak self] in self?.browseForFolder() },
+            Command("pane.splitRight") { w.split(.horizontal) },
+            Command("pane.splitDown") { w.split(.vertical) },
+            Command("tab.rename") { [weak self] in
                 if let id = w.selectedTabID { self?.rename(tabID: id) }
             },
-            Command("Detach Tab", menu: "File") { [weak self] in
+            Command("tab.detach") { [weak self] in
                 guard let self, let id = self.workspace.selectedTabID else { return }
                 self.workspace.detachTab(id)
             },
-            Command("Detached Sessions…", menu: "File") { [weak self] in
+            Command("tab.detached") { [weak self] in
                 guard let self else { return }
                 let owned = self.ownedPanes()
                 self.showWorkflow(title: "Detached Sessions", view: DetachedSessionsView(sessions: self.workspace.sessions.values.filter { !owned.contains($0.id) }.sorted { $0.id < $1.id }) { [weak self] id in self?.onReattach?(id) })
             },
-            Command("Reopen Closed Tab", menu: "File") { w.reopenClosedTab() },
-            Command("Close Pane", menu: "File", key: "w") { [weak self] in self?.closeFocusedPane() },
-            Command("Close Tab", menu: "File", key: "w", [.command, .shift]) { [weak self] in
+            Command("tab.reopen") { w.reopenClosedTab() },
+            Command("pane.close") { [weak self] in self?.closeFocusedPane() },
+            Command("tab.close") { [weak self] in
                 if let id = w.selectedTabID { self?.closeTab(id) }
             },
-            Command("Close Folder", menu: "File", key: "w", [.command, .option]) { [weak self] in
+            Command("folder.close") { [weak self] in
                 if let path = w.currentProject?.path { self?.closeFolder(path) }
             },
 
-            Command("Reload Configuration", menu: "tern") { GhosttyApp.shared.applyTheme() },
-            Command("Restart ternd", menu: "tern") { [weak self] in self?.restartDaemon() },
+            Command("app.reloadConfig") { GhosttyApp.shared.applyTheme() },
+            Command("daemon.restart") { [weak self] in self?.restartDaemon() },
 
-            Command("Previous Prompt", menu: "Navigate", key: Key.up, [.command, .shift]) { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:-1") },
-            Command("Next Prompt", menu: "Navigate", key: Key.down, [.command, .shift]) { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:1") },
-            Command("Copy Last Command Output", menu: "Edit") { [weak self] in self?.showOutput(lastCommand: true, copy: true) },
-            Command("Select Last Command Output…", menu: "Edit") { [weak self] in self?.showOutput(lastCommand: true) },
-            Command("Export Scrollback…", menu: "File") { [weak self] in self?.showOutput(lastCommand: false) },
-            Command("Advanced Find…", menu: "Edit") { [weak self] in self?.searchOutput(all: false) },
-            Command("Search All Terminal Output…", menu: "Edit", key: "f", [.command, .shift]) { [weak self] in self?.searchOutput(all: true) },
-            Command("Find…", menu: "Edit", key: "f") { [weak self] in self?.terminalArea.find() },
-            Command("Find Next", menu: "Edit", key: "g") { [weak self] in self?.terminalArea.findNext() },
-            Command("Find Previous", menu: "Edit", key: "g", [.command, .shift]) { [weak self] in self?.terminalArea.findNext(previous: true) },
-            Command("Use Selection for Find", menu: "Edit", key: "e") { [weak self] in
+            Command("prompt.previous") { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:-1") },
+            Command("prompt.next") { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:1") },
+            Command("output.copyLast") { [weak self] in self?.showOutput(lastCommand: true, copy: true) },
+            Command("output.selectLast") { [weak self] in self?.showOutput(lastCommand: true) },
+            Command("output.export") { [weak self] in self?.showOutput(lastCommand: false) },
+            Command("search.advanced") { [weak self] in self?.searchOutput(all: false) },
+            Command("search.all") { [weak self] in self?.searchOutput(all: true) },
+            Command("search.find") { [weak self] in self?.terminalArea.find() },
+            Command("search.next") { [weak self] in self?.terminalArea.findNext() },
+            Command("search.previous") { [weak self] in self?.terminalArea.findNext(previous: true) },
+            Command("search.useSelection") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("search_selection")
             },
-            Command("Clear Screen", menu: "Edit", key: "k", [.command, .shift]) { [weak self] in
+            Command("terminal.clear") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("clear_screen")
             },
 
-            Command("Command Palette", menu: "View", key: "k", inPalette: false) { [weak self] in self?.togglePalette() },
-            Command("Toggle Sidebar", menu: "View", key: "\\") { [weak self] in
+            Command("palette.toggle") { [weak self] in self?.togglePalette() },
+            Command("view.sidebar") { [weak self] in
                 self?.splitController.toggleSidebar(nil)
             },
+            Command("tab.moveEarlier") { w.shiftTab(-1) },
+            Command("tab.moveLater") { w.shiftTab(1) },
+            Command("pane.swapPrevious") { w.swapPane(-1) },
+            Command("pane.swapNext") { w.swapPane(1) },
+            Command("pane.toNewTab") { w.detachPane() },
+            Command("pane.toNextTab") { w.movePaneToNextTab() },
+            Command("pane.equalize") { w.equalizePanes() },
+            Command("pane.widen") { w.resizePane(axis: .horizontal, delta: 0.05) },
+            Command("pane.narrow") { w.resizePane(axis: .horizontal, delta: -0.05) },
+            Command("pane.taller") { w.resizePane(axis: .vertical, delta: 0.05) },
+            Command("pane.shorter") { w.resizePane(axis: .vertical, delta: -0.05) },
             // ⌘↩ also opens the picker's choice in a worktree: the menu sees the key before the picker does.
-            Command("Move Tab Earlier", menu: "Navigate") { w.shiftTab(-1) },
-            Command("Move Tab Later", menu: "Navigate") { w.shiftTab(1) },
-            Command("Swap Pane with Previous", menu: "View") { w.swapPane(-1) },
-            Command("Swap Pane with Next", menu: "View") { w.swapPane(1) },
-            Command("Move Pane to New Tab", menu: "View") { w.detachPane() },
-            Command("Move Pane to Next Tab", menu: "View") { w.movePaneToNextTab() },
-            Command("Equalize Panes", menu: "View") { w.equalizePanes() },
-            Command("Widen Pane", menu: "View", key: Key.right, [.command, .control]) { w.resizePane(axis: .horizontal, delta: 0.05) },
-            Command("Narrow Pane", menu: "View", key: Key.left, [.command, .control]) { w.resizePane(axis: .horizontal, delta: -0.05) },
-            Command("Taller Pane", menu: "View", key: Key.up, [.command, .control]) { w.resizePane(axis: .vertical, delta: 0.05) },
-            Command("Shorter Pane", menu: "View", key: Key.down, [.command, .control]) { w.resizePane(axis: .vertical, delta: -0.05) },
-            Command("Zoom Pane", menu: "View", key: "\r") { [weak self] in
+            Command("pane.zoom") { [weak self] in
                 if let picker = self?.picker { picker.submit(worktree: true) } else { w.toggleZoom() }
             },
-            Command("Bigger Text", menu: "View", key: "=") { [weak self] in
+            Command("text.bigger") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("increase_font_size:1")
             },
-            Command("Smaller Text", menu: "View", key: "-") { [weak self] in
+            Command("text.smaller") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("decrease_font_size:1")
             },
-            Command("Actual Size", menu: "View", key: "0") { [weak self] in
+            Command("text.reset") { [weak self] in
                 self?.terminalArea.focusedTerminal()?.performBinding("reset_font_size")
             },
 
-            Command("Next Needing Attention", menu: "Navigate", key: "j") { [weak self] in
-                if let jump = self?.onNextAttention { jump() }
+            Command("attention.next") { [weak self] in
+                if let jump = self?.onNextAttention { jump(false) }
                 else if !w.jumpToNextUnread() { NSSound.beep() }
             },
-            Command("Next Tab", menu: "Navigate", key: "]", [.command, .shift]) { w.cycleTab(1) },
-            Command("Previous Tab", menu: "Navigate", key: "[", [.command, .shift]) { w.cycleTab(-1) },
-            Command("Next Tab", menu: "Navigate", key: "\t", .control, inMenu: false, inPalette: false) { w.cycleTab(1) },
-            Command("Previous Tab", menu: "Navigate", key: "\t", [.control, .shift], inMenu: false, inPalette: false) { w.cycleTab(-1) },
+            Command("attention.previous") { [weak self] in
+                if let jump = self?.onNextAttention { jump(true) }
+                else if !w.jumpToNextUnread(backward: true) { NSSound.beep() }
+            },
+            Command("tab.next") { w.cycleTab(1) },
+            Command("tab.previous") { w.cycleTab(-1) },
+            Command("folder.next") { w.cycleFolder(1) },
+            Command("folder.previous") { w.cycleFolder(-1) },
         ]
-        + (1...9).map { n in
-            Command("Folder \(n)", menu: "Navigate", key: "\(n)", inPalette: false) { w.selectFolder(index: n - 1) }
-        }
-        // Listed for reference; the key monitor handles ⌘⇧1–9.
-        + (1...9).map { n in
-            Command("Tab \(n)", menu: "Navigate", key: "\(n)", [.command, .shift], inPalette: false) { w.selectTabInFolder(index: n - 1) }
-        }
+        + (1...9).map { n in Command("folder.select.\(n)") { w.selectFolder(index: n - 1) } }
+        + (1...9).map { n in Command("tab.select.\(n)") { w.selectTabInFolder(index: n - 1) } }
         + [
-            Command("Focus Pane Left", menu: "Navigate", key: Key.left, [.command, .option]) { w.moveFocus(.left) },
-            Command("Focus Pane Right", menu: "Navigate", key: Key.right, [.command, .option]) { w.moveFocus(.right) },
-            Command("Focus Pane Above", menu: "Navigate", key: Key.up, [.command, .option]) { w.moveFocus(.up) },
-            Command("Focus Pane Below", menu: "Navigate", key: Key.down, [.command, .option]) { w.moveFocus(.down) },
-            Command("Focus Next Pane", menu: "Navigate", key: "]") { w.cyclePane(1) },
-            Command("Focus Previous Pane", menu: "Navigate", key: "[") { w.cyclePane(-1) },
+            Command("pane.focusLeft") { w.moveFocus(.left) },
+            Command("pane.focusRight") { w.moveFocus(.right) },
+            Command("pane.focusUp") { w.moveFocus(.up) },
+            Command("pane.focusDown") { w.moveFocus(.down) },
+            Command("pane.next") { w.cyclePane(1) },
+            Command("pane.previous") { w.cyclePane(-1) },
         ]
         // Palette-only: "theme" finds them all.
         + (Theme.builtIn.map { ($0.id, $0.name) } + [("ghostty", "Ghostty Colours")]).map { id, name in
-            Command("Theme: \(name)", menu: "View", inMenu: false) {
+            Command(id: "theme.\(id)", title: "Theme: \(name)", menu: "View", inMenu: false) {
                 UserDefaults.standard.set(id, forKey: Prefs.theme)
             }
         }
         // Each agent's own updater, whether or not tern has seen a newer version yet.
         + ["claude", "codex"].map { AgentUpdates.Version(agent: $0) }.map { version in
-            Command("Update \(version.name)", menu: "tern", inMenu: false) { [weak self] in self?.runUpdate(version) }
+            Command(id: "agent.update.\(version.agent)", title: "Update \(version.name)", menu: "tern", inMenu: false) { [weak self] in
+                self?.runUpdate(version)
+            }
         }
         // For the debug harness, which can't hold a modifier down.
         + (ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" ? [
-            Command("Debug Hints Folders", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.folders) },
-            Command("Debug Hints Tabs", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.tabs) },
-            Command("Debug Hints Off", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(nil) },
+            Command(id: "debug.hints.folders", title: "Debug Hints Folders", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.folders) },
+            Command(id: "debug.hints.tabs", title: "Debug Hints Tabs", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.tabs) },
+            Command(id: "debug.hints.off", title: "Debug Hints Off", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(nil) },
         ] : [])
     }
 
     /// The empty card names the Open Folder shortcut as it's currently bound.
     private func updateEmptyState() {
-        emptyHost?.rootView = EmptyState(shortcut: commands.first { $0.title == "Open Folder…" }?.shortcutLabel ?? "")
+        emptyHost?.rootView = EmptyState(shortcut: ShortcutRegistry.label("folder.open"))
     }
 
     // MARK: Palette
@@ -770,7 +767,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 }
 
-/// The terminal area with nothing open.
 /// The card shown with no tabs: tern's mark and the way to start.
 private struct EmptyState: View {
     var shortcut = ""

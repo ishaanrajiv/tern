@@ -3,7 +3,7 @@ import AppKit
 #if DEBUG
 /// Development aid in debug builds (`build-app.sh --debug`), on only when launched with TERN_DEBUG=1:
 ///   kill -USR1 <pid>   saves a PNG of each window to <support>/tern/debug/window-N.png
-///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title;
+///   kill -USR2 <pid>   runs the command named in <support>/tern/debug/command (a palette title or id;
 ///                      Escape, Return, Tab, Up, Down, Cmd+A, Cmd+C or Cmd+V to press that key;
 ///                      Type <text>; Hover, Click or DoubleClick X Y; Drag X1 Y1 X2 Y2; or Button N to
 ///                      answer an alert sheet; Window <title> focuses an auxiliary window)
@@ -100,7 +100,7 @@ enum DebugHooks {
                                                charactersIgnoringModifiers: chars, isARepeat: false, keyCode: code) {
                     if !window.performKeyEquivalent(with: down) { window.sendEvent(down) }
                 }
-            } else if let command = commands().first(where: { $0.title == title }) {
+            } else if let command = commands().first(where: { $0.title == title || $0.id == title }) {
                 command.action()
             } else {
                 NSLog("tern debug: no command named %@", title)

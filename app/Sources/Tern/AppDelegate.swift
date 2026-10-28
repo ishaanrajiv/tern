@@ -22,6 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        // Overrides that break a rule or clash are logged and left out.
+        ShortcutRegistry.reload()
+        assert(ShortcutRegistry.clashes(ShortcutRegistry.defaults).isEmpty, "Default shortcuts clash")
         _ = GhosttyApp.shared
         DispatchQueue.global(qos: .utility).async { [hooks] in hooks.link(); DispatchQueue.main.async { hooks.refresh() } }
         let notifier = AgentNotifier()
@@ -74,12 +77,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             } ?? []
         }
-        controller.onNextAttention = { [weak self, weak controller] in
+        controller.onNextAttention = { [weak self, weak controller] backward in
             guard let self, let controller else { return }
             let tabs = self.windows.flatMap { owner in owner.workspace.allTabs.map { (owner, $0) } }
             guard !tabs.isEmpty else { NSSound.beep(); return }
-            let start = tabs.firstIndex { $0.1.id == controller.workspace.selectedTabID } ?? -1
-            let order = (1...tabs.count).map { tabs[(start + $0 + tabs.count) % tabs.count] }.filter { $0.1.id != controller.workspace.selectedTabID }
+            let step = backward ? -1 : 1
+            let start = tabs.firstIndex { $0.1.id == controller.workspace.selectedTabID } ?? (backward ? tabs.count : -1)
+            let order = (1...tabs.count).map { tabs[((start + step * $0) % tabs.count + tabs.count) % tabs.count] }
+                .filter { $0.1.id != controller.workspace.selectedTabID }
             let now = Date()
             let next = order.first { $0.0.workspace.status(for: $0.1, now: now) == .needsYou }
                 ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .doneUnread }
