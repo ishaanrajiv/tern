@@ -742,7 +742,7 @@ final class Workspace {
         if let id = folder.lastTab ?? folder.tabs.first?.id { select(id) }
     }
 
-    /// ⌘⇧1–9: the nth tab in the current folder.
+    /// ⌃⌘1–9: the nth tab in the current folder.
     func selectTabInFolder(index: Int) {
         guard let tabs = currentProject?.tabs, tabs.indices.contains(index) else { return }
         select(tabs[index].id)
@@ -832,14 +832,29 @@ final class Workspace {
         select(tabs[(i + delta + tabs.count) % tabs.count].id)
     }
 
+    /// ⌥⌘[ / ⌥⌘]: the folder before or after the current one, wrapping past folders without tabs.
+    func cycleFolder(_ delta: Int) {
+        let folders = orderedProjects
+        guard !folders.isEmpty else { return }
+        let start = folders.firstIndex { $0.path == currentProject?.path } ?? (delta > 0 ? -1 : 0)
+        let step = delta > 0 ? 1 : -1
+        for offset in 1...folders.count {
+            let i = ((start + step * offset) % folders.count + folders.count) % folders.count
+            if !folders[i].tabs.isEmpty { return selectFolder(index: i) }
+        }
+    }
+
     /// Selects the next tab that wants attention: an agent waiting on you first,
-    /// then one that finished, then any unread output. Searches after the current tab, wrapping.
+    /// then one that finished, then any unread output. Searches after the current tab
+    /// (before it, `backward`), wrapping.
     @discardableResult
-    func jumpToNextUnread() -> Bool {
+    func jumpToNextUnread(backward: Bool = false) -> Bool {
         let tabs = allTabs
         guard !tabs.isEmpty else { return false }
-        let start = tabs.firstIndex { $0.id == selectedTabID } ?? -1
-        let order = (1...tabs.count).map { tabs[(start + $0 + tabs.count) % tabs.count] }.filter { $0.id != selectedTabID }
+        let step = backward ? -1 : 1
+        let start = tabs.firstIndex { $0.id == selectedTabID } ?? (backward ? tabs.count : -1)
+        let order = (1...tabs.count).map { tabs[((start + step * $0) % tabs.count + tabs.count) % tabs.count] }
+            .filter { $0.id != selectedTabID }
         let now = Date()
         let pick = order.first { status(for: $0, now: now) == .needsYou }
             ?? order.first { status(for: $0, now: now) == .doneUnread }

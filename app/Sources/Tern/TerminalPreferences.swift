@@ -30,21 +30,7 @@ struct TerminalPreferences: Codable, Equatable {
               ["false", "true", "left", "right"].contains(option) else {
             throw PreferencesError.invalid("Check the font size, scrollback limit, and font name.")
         }
-        let custom = try Self.parseShortcuts(shortcuts)
-        for title in custom.keys where Command.defaults[title] == nil {
-            throw PreferencesError.invalid("Unknown app command: \(title). Copy its exact title from the palette.")
-        }
-        var effective: [String: Shortcut] = Command.defaults
-        for (title, shortcut) in custom { effective[title] = shortcut }
-        let reserved: [Shortcut] = [Shortcut(key: "c", modifiers: .command), Shortcut(key: "v", modifiers: .command), Shortcut(key: "a", modifiers: .command), Shortcut(key: "q", modifiers: .command), Shortcut(key: "h", modifiers: .command), Shortcut(key: "m", modifiers: .command), Shortcut(key: "k", modifiers: .command)]
-        for (title, shortcut) in custom {
-            if ("123456789".contains(shortcut.key) && (shortcut.modifiers == .command || shortcut.modifiers == [.command, .shift])) {
-                throw PreferencesError.invalid("Folder and tab number shortcuts are reserved.")
-            }
-            if reserved.contains(where: { $0.key == shortcut.key && $0.modifiers == shortcut.modifiers }) || effective.contains(where: { $0.key != title && $0.value.key == shortcut.key && $0.value.modifiers == shortcut.modifiers }) {
-                throw PreferencesError.invalid("Shortcut for \(title) conflicts with another command.")
-            }
-        }
+        if let problem = ShortcutRegistry.resolve(shortcuts).problems.first { throw PreferencesError.invalid(problem) }
         let candidate = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("terminal-settings-check")
         try config.write(to: candidate, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: candidate) }
@@ -60,40 +46,12 @@ struct TerminalPreferences: Codable, Equatable {
         try JSONEncoder().encode(self).write(to: Self.url, options: .atomic)
         Self.current = self
         TernClient.setScrollback(scrollback)
+        ShortcutRegistry.reload()
         NotificationCenter.default.post(name: Self.didChange, object: nil)
     }
     enum PreferencesError: LocalizedError {
         case invalid(String)
         var errorDescription: String? { switch self { case .invalid(let text): text } }
-    }
-    struct Shortcut {
-        var key: String
-        var modifiers: NSEvent.ModifierFlags
-    }
-    static func parseShortcuts(_ text: String) throws -> [String: Shortcut] {
-        var result: [String: Shortcut] = [:]
-        var used = Set<String>()
-        for line in text.split(separator: "\n") where !line.trimmingCharacters(in: .whitespaces).isEmpty {
-            let pair = line.split(separator: "=", maxSplits: 1).map { $0.trimmingCharacters(in: .whitespaces) }
-            guard pair.count == 2, !pair[0].isEmpty else { throw PreferencesError.invalid("Use Command title = cmd+shift+x, one per line.") }
-            let tokens = pair[1].lowercased().split(separator: "+").map(String.init)
-            guard let key = tokens.last, key.count == 1 else { throw PreferencesError.invalid("Shortcut keys must be a single character.") }
-            var mods: NSEvent.ModifierFlags = []
-            for token in tokens.dropLast() {
-                switch token {
-                case "cmd": mods.insert(.command)
-                case "shift": mods.insert(.shift)
-                case "alt": mods.insert(.option)
-                case "ctrl": mods.insert(.control)
-                default: throw PreferencesError.invalid("Unknown modifier: \(token)")
-                }
-            }
-            guard !mods.isEmpty, used.insert("\(mods.rawValue):\(key)").inserted, result[pair[0]] == nil else {
-                throw PreferencesError.invalid("Shortcuts need a modifier and cannot repeat a key or command.")
-            }
-            result[pair[0]] = Shortcut(key: key, modifiers: mods)
-        }
-        return result
     }
 }
 
@@ -144,10 +102,10 @@ struct TerminalSettings: View {
             } else {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(page == .shortcuts
-                         ? "Use exact command palette titles. App shortcuts take priority."
+                         ? "Use command palette titles; none removes a shortcut. App shortcuts take priority."
                          : "Use Ghostty key binding syntax, one binding per line.")
                         .font(.callout).foregroundStyle(.secondary)
-                    Text(page == .shortcuts ? "New Tab = cmd+shift+y" : "ctrl+shift+c=copy_to_clipboard")
+                    Text(page == .shortcuts ? "New Tab = cmd+shift+y\nMove Tab Later = none" : "ctrl+shift+c=copy_to_clipboard")
                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                     TextEditor(text: page == .shortcuts ? $draft.shortcuts : $draft.bindings)
                         .font(.system(.body, design: .monospaced))
