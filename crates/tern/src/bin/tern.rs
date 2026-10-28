@@ -34,6 +34,8 @@ nix::ioctl_read_bad!(get_winsize, nix::libc::TIOCGWINSZ, Winsize);
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.first().map(String::as_str) {
+        Some("open") => tern::open::run(&args[1..]),
+        Some(".") => tern::open::run(&args),
         Some("attach") => attach(&args[1..]),
         Some("ls") => list(args.get(1).is_some_and(|a| a == "--json")),
         Some("kill") => kill(&args[1..]),
@@ -50,7 +52,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
+                "usage: tern open [DIR] [--window | --split right|down] [--command CMD | -- ARGS...]\n       tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
                  tern daemon [status|restart]\n       \
                  tern hooks [status|install|uninstall|link] [claude|codex]"
             );

@@ -14,9 +14,26 @@ Mac-native, and sessions survive quitting the app.
 - **Folders and tabs.** The sidebar groups tabs by folder. ⌘N opens the folder picker (open
   folders, recent ones, [zoxide](https://github.com/ajeetdsouza/zoxide) history, and git repos
   under `~/dev`). ⌘T opens a tab in the current folder, ⌘⇧T opens one in a new git worktree.
+  Ordinary new tabs inherit the focused pane's directory; **New Tab at Project Root** starts at the folder root.
   Tabs name themselves after what they run. Double-click or ⌘R to rename.
+- **Windows.** ⌘⇧N opens another window. Move a tab or pane to a new window from the Window menu,
+  or move a tab to the next window. Each window remembers its layout and position. Settings →
+  General can enable Control-Option-Space to show or hide tern.
+  Worktree removal waits until no window or detached tab uses it.
+- **Commands and output.** zsh, bash and fish report prompt and command boundaries. ⌘⇧↑ / ⌘⇧↓
+  jump between prompts. The Edit menu copies or selects the last command's output in a text window,
+  or searches retained output with case and regular-expression controls. ⌘⇧F searches all sessions.
+  File → Export Scrollback… opens selectable output with Find, Save and Open in Editor actions.
+- **Files and images.** Drop Finder files to paste quoted paths. ⌘-click a local `path:line:column`
+  diagnostic, or select a path and choose Edit → Open Selected File in Editor. Choose the editor in
+  Settings → General. **Paste Image as File Path** saves a private PNG and pastes its quoted path;
+  programs supporting Kitty clipboard requests can also read image MIME types directly.
+- **Recovery.** File → Detach Tab leaves its processes running. Detached Sessions… reattaches them.
+  Reopen Closed Tab restores a recently closed layout. Processes deliberately stopped by closing a
+  tab return as fresh shells; reopening cannot undo their termination. Closing a window while
+  others remain detaches its tabs. Quitting preserves all open windows and sessions.
 - **Agent status.** Claude Code and Codex report whether they're working, waiting for you, or done.
-  ⌘J jumps to the next tab that needs you, and the Dock badge counts the waiting ones.
+  ⌘J jumps across windows to the next tab that needs you, and the Dock badge counts the waiting ones.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
@@ -25,7 +42,12 @@ Mac-native, and sessions survive quitting the app.
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
   commands and environment variables, and recreates them later.
-- **Agent updates.** tern checks npm for newer Claude Code and Codex releases and offers to update.
+- **Updates.** tern checks npm for newer Claude Code and Codex releases and offers to update.
+  tern → Check for Tern Updates… checks GitHub alpha releases. Download and Verify checks the
+  checksum, archive paths, signing team and Gatekeeper assessment before offering Install and
+  Relaunch. Installation is explicit; the running daemon is left alone until you accept a restart.
+- **Native controls.** The terminal has a context menu and exposes visible text and selection to
+  accessibility tools. tern → Secure Keyboard Entry protects keyboard input while tern is active.
 
 ### Agent status
 
@@ -50,9 +72,9 @@ keeps in the Keychain. tern never refreshes that token.
 
 | Keys | Action |
 |---|---|
-| ⌘K | Command palette |
+| ⌘K | Command palette and session search across windows |
 | ⌘J | Next tab needing attention |
-| ⌘N | Open a folder |
+| ⌘N / ⌘⇧N | Open a folder / new window |
 | ⌘T / ⌘⇧T | New tab / new tab in its own worktree |
 | ⌘O | Browse for a folder in Finder |
 | ⌘D / ⌘⇧D | Split right / split down |
@@ -63,6 +85,8 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌘⇧[ / ⌘⇧], ⌃⇥ | Previous / next tab |
 | ⌘W / ⌘⇧W / ⌘⌥W | Close pane / tab / folder |
 | ⌘F, ⌘G / ⌘⇧G | Find, next / previous match |
+| ⌘⇧F | Search output across sessions |
+| ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
 | ⌘R | Rename tab |
 | ⌘\ | Toggle sidebar |
 | ⌘⇧K | Clear screen |
@@ -147,6 +171,20 @@ at `~/Library/Application Support/tern/ternd.log`.
 The `tern` CLI lives in `Tern.app/Contents/Helpers`. Run it with no arguments to list its commands,
 which include `ls`, `kill`, `hooks` and `daemon status|restart`.
 
+Add `~/Library/Application Support/tern/bin` to your shell's `PATH` to use the stable CLI link
+that tern maintains. The CLI can open a folder in the running app:
+
+```sh
+tern .
+tern open ~/dev/project --window
+tern open . --split right -- cargo test
+tern open . --command 'npm run dev'
+```
+
+`--` preserves the following command's individual arguments; `--command` accepts a shell command.
+Finder's Services menu also offers **Open in tern**. External `tern://open?path=/absolute/path` URLs
+open folders and cannot execute commands.
+
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
 testing. It keeps its own layout and spawns its own daemon without launchd.
 
@@ -163,15 +201,26 @@ testing. It keeps its own layout and spawns its own daemon without launchd.
   apps. The Dock badge, Dock bounce and ⌘J still work.
 - **⌘C and ⌘V don't work inside Codex.** They work in a plain shell, and the keys do reach tern.
   The cause is unknown.
-- Bare file paths with line numbers aren't detected as links yet.
+- File-link clicking recognises whitespace-delimited paths. Select paths containing spaces and
+  use Open Selected File in Editor. Line navigation requires the chosen editor's URL support.
+- Inline terminal images render while attached, but the VT formatter does not preserve image
+  pixels on reattachment. Image clipboard input and saved PNG paths are independent of this.
+- Command-output capture keeps up to 4 MiB per completed command. Output documents/search retrieve
+  up to 8 MiB per session and report truncation. Retained history is byte-limited at page granularity.
+- Bash integrations with an existing DEBUG trap keep that trap. On the system's older bash this
+  can limit command-start detection. Fish integration still needs interactive verification here.
+- The update installer supports the symlink-free Apple Silicon bundles produced by this repo.
+  Unsigned/ad-hoc builds need a signed release installed manually before using in-app updates.
 
 ## Privacy
 
-tern has no account and no telemetry. It reaches the network only to check npm for agent updates,
+tern has no account and no telemetry. It reaches the network to check npm for agent updates,
+to check/download GitHub releases when you request an app update,
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
 
 Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, launch presets
-(environment values in plain text), saved screens, typed commands, usage numbers and ternd's log.
+(environment values in plain text), saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.
+Saved image and output files remain until you remove them from that folder.
 ternd keeps that folder readable only by you, and its socket refuses other users. Setting up hooks
 leaves a `.tern-backup` copy of each agent config it edits. See [SECURITY.md](SECURITY.md).
 

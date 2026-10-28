@@ -6,7 +6,7 @@ use std::io::{BufReader, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,7 @@ use crate::screen::snapshot;
 use crate::vt::Terminal;
 
 const SCROLLBACK_LINES: usize = 10_000;
+pub static SCROLLBACK_BYTES: AtomicUsize = AtomicUsize::new(10_000_000);
 
 nix::ioctl_write_ptr_bad!(set_winsize, nix::libc::TIOCSWINSZ, Winsize);
 
@@ -132,6 +133,7 @@ pub struct Session {
 
 pub struct SessionState {
     pub screen: Terminal,
+    pub capture: super::command::CommandCapture,
     clients: Vec<Client>,
     pub last_output_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
@@ -187,6 +189,7 @@ fn session_info(s: &Session) -> SessionInfo {
     };
     let cwd = fg.cwd.or_else(|| procinfo::process_cwd(s.pid)).or_else(|| s.start_cwd.clone());
     let git = cwd.as_deref().and_then(|d| procinfo::git_info(std::path::Path::new(d)));
+    let st = s.state.lock().unwrap();
     SessionInfo {
         id: s.id.clone(),
         pid: s.pid,
@@ -206,7 +209,9 @@ fn session_info(s: &Session) -> SessionInfo {
         agent_session: report.as_ref().and_then(|r| r.3.clone()),
         agent_message: report.and_then(|r| r.4),
         command,
-        finished_ms: shell::finished_ms(&s.id),
+        finished_ms: if st.capture.finished_ms > 0 { st.capture.finished_ms } else { shell::finished_ms(&s.id) },
+        exit_code: st.capture.exit_code,
+        duration_ms: st.capture.duration_ms,
     }
 }
 
@@ -261,26 +266,18 @@ pub fn spawn_session(
         }
         None => {
             let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-            let mut c2 = Command::new(&shell);
-            c2.arg("-l");
-            c2
+            Command::new(&shell)
         }
     };
     if let Some(dir) = &cwd {
         command.current_dir(dir);
     }
-    let zsh = cmd.is_none() && shell::is_zsh(&std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()));
-    let user_zdotdir = env.iter().find(|(k, _)| k == "ZDOTDIR").map(|(_, v)| v.clone());
-    command.envs(env).env("TERN_SESSION_ID", id);
+    command.envs(env.clone()).env("TERN_SESSION_ID", id);
+    if cmd.is_none() { shell::configure(&mut command, &std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()), &env); }
     let commands = shell::command_file(id);
     let _ = std::fs::remove_file(&commands);
     let _ = std::fs::remove_file(shell::finished_file(id));
-    if zsh && runtime_dir().join("zsh/.zshenv").exists() {
-        if let Some(dir) = user_zdotdir {
-            command.env("TERN_ZDOTDIR", dir);
-        }
-        command.env("ZDOTDIR", commands.parent().unwrap().with_file_name("zsh")).env("TERN_COMMAND_FILE", &commands);
-    }
+    command.env("TERN_COMMAND_FILE", &commands);
     let umask = nix::sys::stat::Mode::from_bits_truncate(USER_UMASK.load(Ordering::Relaxed) as _);
     unsafe {
         use std::os::unix::process::CommandExt;
@@ -295,6 +292,7 @@ pub fn spawn_session(
     std::mem::forget(child);
 
     let mut screen = Terminal::new(cols, rows, SCROLLBACK_LINES);
+    screen.set_scrollback_bytes(SCROLLBACK_BYTES.load(Ordering::Relaxed));
     // Lay the saved screen down before the new shell prints anything.
     let restored = load_saved(id).map(|(meta, saved)| {
         screen.write(&saved);
@@ -308,6 +306,7 @@ pub fn spawn_session(
         master,
         state: Mutex::new(SessionState {
             screen,
+            capture: super::command::CommandCapture::default(),
             clients: Vec::new(),
             last_output_ms: now_ms(),
             saved_output_ms: 0,
@@ -350,6 +349,7 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 if command.is_some() {
                     st.command = command;
                 }
+                st.capture.write(bytes);
                 st.screen.write(bytes);
                 st.last_output_ms = now_ms();
                 st.clients.retain(|c| c.send(bytes));

@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import UniformTypeIdentifiers
 
 /// Owns the libghostty app instance and routes its runtime callbacks.
 final class GhosttyApp {
@@ -32,8 +33,8 @@ final class GhosttyApp {
         runtime.action_cb = { app, target, action in
             MainActor.assumeIsolated { GhosttyApp.shared.handle(target: target, action: action) }
         }
-        runtime.read_clipboard_cb = { userdata, location, state, _, _, _ in
-            MainActor.assumeIsolated { GhosttyApp.readClipboard(userdata, location: location, state: state) }
+        runtime.read_clipboard_cb = { userdata, location, state, mimes, count, list in
+            MainActor.assumeIsolated { GhosttyApp.readClipboard(userdata, location: location, state: state, mimes: mimes, count: count, list: list) }
         }
         runtime.confirm_read_clipboard_cb = { userdata, confirm, state, request in
             MainActor.assumeIsolated {
@@ -138,6 +139,17 @@ final class GhosttyApp {
             : nil
 
         switch action.tag {
+        case GHOSTTY_ACTION_SELECTION_CHANGED:
+            if let view { NSAccessibility.post(element: view, notification: .selectedTextChanged) }
+            return true
+        case GHOSTTY_ACTION_SECURE_INPUT:
+            guard NSApp.isActive else { return false }
+            switch action.action.secure_input {
+            case GHOSTTY_SECURE_INPUT_ON: if !SecureKeyboard.shared.enabled { SecureKeyboard.shared.toggle() }
+            case GHOSTTY_SECURE_INPUT_OFF: SecureKeyboard.shared.disable()
+            default: SecureKeyboard.shared.toggle()
+            }
+            return true
         case GHOSTTY_ACTION_SET_TITLE:
             guard let ptr = action.action.set_title.title else { return true }
             let title = String(cString: ptr)
@@ -190,28 +202,35 @@ final class GhosttyApp {
     }
 
     private static func readClipboard(
-        _ userdata: UnsafeMutableRawPointer?,
-        location: ghostty_clipboard_e,
-        state: UnsafeMutableRawPointer?
+        _ userdata: UnsafeMutableRawPointer?, location: ghostty_clipboard_e,
+        state: UnsafeMutableRawPointer?, mimes: UnsafePointer<UnsafePointer<CChar>?>?, count: Int, list: Bool
     ) -> ghostty_clipboard_read_result_e {
         guard location == GHOSTTY_CLIPBOARD_STANDARD,
-              let view = TerminalView.from(userdata),
-              let surface = view.surface
-        else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
-
-        let text = NSPasteboard.general.string(forType: .string) ?? ""
-        let mime = strdup("text/plain")!
-        defer { free(mime) }
-        text.withCString { data in
-            var content = ghostty_clipboard_content_s(mime: mime, data: data, len: strlen(data))
-            withUnsafePointer(to: &content) { contentPtr in
-                var complete = ghostty_clipboard_complete_s(
-                    contents: contentPtr, contents_len: 1,
-                    available: nil, available_len: 0,
-                    confirmed: false, remember: false)
-                ghostty_surface_complete_clipboard_request(surface, &complete, state)
+              let view = TerminalView.from(userdata), let surface = view.surface else { return GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
+        let board = NSPasteboard.general
+        var contents: [(mime: String, data: Data)] = []
+        var seen = Set<String>()
+        if let mimes {
+            for i in 0..<count {
+                guard let pointer = mimes[i] else { continue }
+                let mime = String(cString: pointer)
+                guard seen.insert(mime).inserted else { continue }
+                if mime == "text/plain", let text = board.string(forType: .string) {
+                    contents.append((mime, Data(text.utf8)))
+                } else if let type = UTType(mimeType: mime), let bytes = board.data(forType: NSPasteboard.PasteboardType(type.identifier)) {
+                    contents.append((mime, bytes))
+                } else if mime == "image/png", let bytes = board.data(forType: .tiff), let image = NSBitmapImageRep(data: bytes), let png = image.representation(using: .png, properties: [:]) {
+                    contents.append((mime, png))
+                }
             }
         }
+        let available = list ? Array(Set((board.types ?? []).compactMap { type -> String? in
+            if type == .string { return "text/plain" }
+            if type == .tiff { return "image/png" }
+            return UTType(type.rawValue)?.preferredMIMEType
+        })).sorted() : []
+        guard !contents.isEmpty || list else { return GHOSTTY_CLIPBOARD_READ_UNAVAILABLE }
+        complete(surface, contents: contents, available: available, state: state, confirmed: false)
         return GHOSTTY_CLIPBOARD_READ_STARTED
     }
 
@@ -231,12 +250,13 @@ final class GhosttyApp {
             guard let mime = item.mime, let data = item.data else { return nil }
             return (String(cString: mime), Data(bytes: data, count: item.len))
         }
+        let available = (0..<confirm.pointee.available_len).compactMap { i in confirm.pointee.available[i].map { String(cString: $0) } }
         let text = contents.first { $0.mime == "text/plain" }.map { String(decoding: $0.data, as: UTF8.self) } ?? ""
         DispatchQueue.main.async {
             askClipboard(text: text, request: request, in: view.window) { allowed in
                 guard let surface = view.surface else { return }
                 guard allowed else { return ghostty_surface_deny_clipboard_request(surface, state) }
-                complete(surface, contents: contents, state: state)
+                complete(surface, contents: contents, available: available, state: state)
             }
         }
     }
@@ -269,7 +289,7 @@ final class GhosttyApp {
     }
 
     private static func complete(_ surface: ghostty_surface_t, contents: [(mime: String, data: Data)],
-                                 state: UnsafeMutableRawPointer?) {
+                                 available: [String] = [], state: UnsafeMutableRawPointer?, confirmed: Bool = true) {
         // Pointers into these copies live only for the call.
         let mimes = contents.map { strdup($0.mime)! }
         let datas = contents.map { item -> UnsafeMutablePointer<CChar> in
@@ -284,12 +304,17 @@ final class GhosttyApp {
         let items = contents.indices.map { i in
             ghostty_clipboard_content_s(mime: mimes[i], data: datas[i], len: contents[i].data.count)
         }
-        items.withUnsafeBufferPointer { buf in
-            var done = ghostty_clipboard_complete_s(
-                contents: buf.baseAddress, contents_len: buf.count,
-                available: nil, available_len: 0,
-                confirmed: true, remember: false)
-            ghostty_surface_complete_clipboard_request(surface, &done, state)
+        let types = available.map { strdup($0)! }
+        defer { types.forEach { free($0) } }
+        let typePointers = types.map { Optional(UnsafePointer($0)) }
+        typePointers.withUnsafeBufferPointer { typesBuffer in
+            items.withUnsafeBufferPointer { buf in
+                var done = ghostty_clipboard_complete_s(
+                    contents: buf.baseAddress, contents_len: buf.count,
+                    available: typesBuffer.baseAddress, available_len: typesBuffer.count,
+                    confirmed: confirmed, remember: false)
+                ghostty_surface_complete_clipboard_request(surface, &done, state)
+            }
         }
     }
 
@@ -299,16 +324,15 @@ final class GhosttyApp {
         len: Int
     ) {
         guard location == GHOSTTY_CLIPBOARD_STANDARD, let content else { return }
-        for i in 0..<len {
-            let item = content[i]
-            guard let mime = item.mime, String(cString: mime) == "text/plain", let data = item.data else { continue }
-            let bytes = Data(bytes: data, count: item.len)
-            let text = String(decoding: bytes, as: UTF8.self)
-            DispatchQueue.main.async {
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-            }
-            return
+        let values: [(NSPasteboard.PasteboardType, Data)] = (0..<len).compactMap { index in
+            let item = content[index]
+            guard let raw = item.mime, let pointer = item.data else { return nil }
+            let mime = String(cString: raw)
+            guard let type = mime == "text/plain" ? NSPasteboard.PasteboardType.string : UTType(mimeType: mime).map({ NSPasteboard.PasteboardType($0.identifier) }) else { return nil }
+            return (type, Data(bytes: pointer, count: item.len))
         }
+        guard !values.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        for (type, data) in values { NSPasteboard.general.setData(data, forType: type) }
     }
 }

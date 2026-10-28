@@ -2,9 +2,11 @@ import AppKit
 import SwiftUI
 
 final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindowDelegate {
+    let windowID: String
     let workspace: Workspace
     private let terminalArea: TerminalArea
     private let splitController = NSSplitViewController()
+    var outputDocuments: [OutputDocumentController] = []
     private var workflowWindow: NSWindowController?
     private var paletteHost: NSView?
     private var pickerHost: NSView?
@@ -24,6 +26,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var saveScheduled = false
     private var savedLayout: ([Project], String?)?
     private(set) var commands: [Command] = []
+    var paletteSessions: (() -> [PaletteItem])?
+    var onNextAttention: (() -> Void)?
+    var onNewWindow: (() -> Void)?
+    var onMoveTab: ((Bool) -> Void)?
+    var onFocusWindow: (() -> Void)?
+    var onWindowClosed: (() -> Void)?
+    var onGeometryChanged: (() -> Void)?
+    var ownedPanes: () -> Set<String> = { [] }
+    var worktreeInUse: ((String) -> Bool)?
+    var onReattach: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     /// Runs after every model change (the Dock badge follows it).
     var onSync: (() -> Void)?
@@ -31,7 +43,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private let updates: AgentUpdates
     private let ternBinary: String
 
-    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: AgentUpdates) {
+    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: AgentUpdates, windowID: String = "main", restoredFrame: NSRect? = nil) {
+        self.windowID = windowID
         self.workspace = workspace
         self.updates = updates
         self.ternBinary = ternBinary
@@ -42,6 +55,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false)
+        window.identifier = NSUserInterfaceItemIdentifier("tern.window." + windowID)
         window.title = "tern"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -117,8 +131,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
-        window.setFrameAutosaveName("tern.main")
-        if !window.setFrameUsingName("tern.main") { window.center() }
+        if let frame = restoredFrame, let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) {
+            window.setFrame(window.constrainFrameRect(frame, to: screen), display: false)
+        } else {
+            let available = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1180, height: 760)
+            window.setContentSize(NSSize(width: min(1180, available.width), height: min(760, max(320, available.height - 40))))
+            window.center()
+        }
 
         commands = makeCommands()
         settingsObserver = NotificationCenter.default.addObserver(forName: TerminalPreferences.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -126,7 +145,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 guard let self else { return }
                 GhosttyApp.shared.applyTheme()
                 self.commands = self.makeCommands()
-                NSApp.mainMenu = MenuBuilder.build(commands: self.commands)
+                if self.window?.isKeyWindow == true { NSApp.mainMenu = MenuBuilder.build(commands: self.commands) }
             }
         }
         applyTheme()
@@ -159,6 +178,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
     }
 
+    isolated deinit {
+        if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+        if let themeObserver { NotificationCenter.default.removeObserver(themeObserver) }
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    }
+
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     /// Holding ⌘ numbers the folders; ⌘⇧ numbers the current folder's tabs.
@@ -179,7 +204,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         withTransaction(transaction) { hints.kind = kind }
     }
 
-    func windowDidResignKey(_ notification: Notification) { setHints(nil) }
+    func windowDidResignKey(_ notification: Notification) { setHints(nil); workspace.isActive = false }
 
     /// Runs the agent's own updater in a new tab in Home, where its output stays readable.
     func runUpdate(_ version: AgentUpdates.Version) {
@@ -205,7 +230,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if headerLayout.titlebarHeight != height { headerLayout.titlebarHeight = height }
     }
 
-    func windowDidResize(_ notification: Notification) { measureTitlebar() }
+    func windowDidResize(_ notification: Notification) { measureTitlebar(); onGeometryChanged?() }
+    func windowDidMove(_ notification: Notification) { onGeometryChanged?() }
+    func windowDidBecomeKey(_ notification: Notification) { onFocusWindow?() }
     func windowDidEnterFullScreen(_ notification: Notification) { measureTitlebar() }
     func windowDidExitFullScreen(_ notification: Notification) { measureTitlebar() }
 
@@ -247,7 +274,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
         let empty = workspace.allTabs.isEmpty
         emptyState?.isHidden = !empty
-        if empty && hadTabs {
+        if empty && hadTabs && !workspace.keepsEmptyWindow {
             // Last pane closed: like any terminal, the window goes with it.
             window?.close()
         }
@@ -269,7 +296,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     func windowWillClose(_ notification: Notification) {
+        for document in outputDocuments { document.close() }
         workspace.save()
+        onWindowClosed?()
     }
 
     // MARK: Toolbar
@@ -319,7 +348,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         showWorkflow(title: "SSH Connection", view: RemoteSessionView(workspace: workspace) { [weak self] in self?.workflowWindow?.close() })
     }
 
-    private func showWorkflow<V: View>(title: String, view: V) {
+    func showWorkflow<V: View>(title: String, view: V) {
         workflowWindow?.close()
         let window = NSWindow(contentViewController: NSHostingController(rootView: view))
         window.title = title
@@ -335,11 +364,31 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private func makeCommands() -> [Command] {
         let w = workspace
         return [
+            Command("Secure Keyboard Entry", menu: "tern") {
+                SecureKeyboard.shared.toggle()
+                for item in NSApp.mainMenu?.items.first?.submenu?.items ?? [] where item.title == "Secure Keyboard Entry" { item.state = SecureKeyboard.shared.enabled ? .on : .off }
+            },
+            Command("Check for Tern Updates…", menu: "tern") { [weak self] in
+                self?.showWorkflow(title: "Tern Updates", view: AppUpdatesView())
+                AppUpdates.shared.check()
+            },
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
+            Command("New Window", menu: "File", key: "n", [.command, .shift]) { [weak self] in self?.onNewWindow?() },
+            Command("Close Window", menu: "Window") { [weak self] in self?.window?.performClose(nil) },
+            Command("Move Tab to New Window", menu: "Window") { [weak self] in self?.onMoveTab?(true) },
+            Command("Move Tab to Next Window", menu: "Window") { [weak self] in self?.onMoveTab?(false) },
+            Command("Move Pane to New Window", menu: "Window") { [weak self] in
+                self?.workspace.detachPane(); self?.onMoveTab?(true)
+            },
             Command("Open Folder…", menu: "File", key: "n") { [weak self] in self?.toggleFolderPicker() },
             Command("Project Launch Presets…", menu: "File") { [weak self] in self?.showPresets() },
             Command("Connect over SSH…", menu: "File") { [weak self] in self?.showRemote() },
             Command("New Tab", menu: "File", key: "t") { [weak self] in self?.newTab() },
+            Command("New Tab at Project Root", menu: "File") { [weak self] in
+                self?.newSession { $0.newTabInCurrentProject(worktree: false, projectRoot: true) }
+            },
+            Command("Paste Image as File Path", menu: "Edit") { [weak self] in self?.terminalArea.focusedTerminal()?.pasteImagePath(nil) },
+            Command("Open Selected File in Editor", menu: "Edit") { [weak self] in self?.terminalArea.focusedTerminal()?.openSelectedFile(nil) },
             Command("New Tab in Worktree", menu: "File", key: "t", [.command, .shift]) { [weak self] in self?.newTab(worktree: true) },
             Command("Browse for Folder…", menu: "File", key: "o") { [weak self] in self?.browseForFolder() },
             Command("Split Right", menu: "File", key: "d") { w.split(.horizontal) },
@@ -347,6 +396,16 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Rename Tab…", menu: "File", key: "r") { [weak self] in
                 if let id = w.selectedTabID { self?.rename(tabID: id) }
             },
+            Command("Detach Tab", menu: "File") { [weak self] in
+                guard let self, let id = self.workspace.selectedTabID else { return }
+                self.workspace.detachTab(id)
+            },
+            Command("Detached Sessions…", menu: "File") { [weak self] in
+                guard let self else { return }
+                let owned = self.ownedPanes()
+                self.showWorkflow(title: "Detached Sessions", view: DetachedSessionsView(sessions: self.workspace.sessions.values.filter { !owned.contains($0.id) }.sorted { $0.id < $1.id }) { [weak self] id in self?.onReattach?(id) })
+            },
+            Command("Reopen Closed Tab", menu: "File") { w.reopenClosedTab() },
             Command("Close Pane", menu: "File", key: "w") { [weak self] in self?.closeFocusedPane() },
             Command("Close Tab", menu: "File", key: "w", [.command, .shift]) { [weak self] in
                 if let id = w.selectedTabID { self?.closeTab(id) }
@@ -358,6 +417,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("Reload Configuration", menu: "tern") { GhosttyApp.shared.applyTheme() },
             Command("Restart ternd", menu: "tern") { [weak self] in self?.restartDaemon() },
 
+            Command("Previous Prompt", menu: "Navigate", key: Key.up, [.command, .shift]) { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:-1") },
+            Command("Next Prompt", menu: "Navigate", key: Key.down, [.command, .shift]) { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:1") },
+            Command("Copy Last Command Output", menu: "Edit") { [weak self] in self?.showOutput(lastCommand: true, copy: true) },
+            Command("Select Last Command Output…", menu: "Edit") { [weak self] in self?.showOutput(lastCommand: true) },
+            Command("Export Scrollback…", menu: "File") { [weak self] in self?.showOutput(lastCommand: false) },
+            Command("Advanced Find…", menu: "Edit") { [weak self] in self?.searchOutput(all: false) },
+            Command("Search All Terminal Output…", menu: "Edit", key: "f", [.command, .shift]) { [weak self] in self?.searchOutput(all: true) },
             Command("Find…", menu: "Edit", key: "f") { [weak self] in self?.terminalArea.find() },
             Command("Find Next", menu: "Edit", key: "g") { [weak self] in self?.terminalArea.findNext() },
             Command("Find Previous", menu: "Edit", key: "g", [.command, .shift]) { [weak self] in self?.terminalArea.findNext(previous: true) },
@@ -397,8 +463,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 self?.terminalArea.focusedTerminal()?.performBinding("reset_font_size")
             },
 
-            Command("Next Needing Attention", menu: "Navigate", key: "j") {
-                if !w.jumpToNextUnread() { NSSound.beep() }
+            Command("Next Needing Attention", menu: "Navigate", key: "j") { [weak self] in
+                if let jump = self?.onNextAttention { jump() }
+                else if !w.jumpToNextUnread() { NSSound.beep() }
             },
             Command("Next Tab", menu: "Navigate", key: "]", [.command, .shift]) { w.cycleTab(1) },
             Command("Previous Tab", menu: "Navigate", key: "[", [.command, .shift]) { w.cycleTab(-1) },
@@ -451,7 +518,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             PaletteItem(title: c.title, subtitle: "", shortcut: c.shortcutLabel, symbol: c.symbol, action: c.action)
         }
         let tabs = workspace.allTabs
-        items = tabs.map { tab in
+        let sessions = paletteSessions?() ?? tabs.map { tab in
             let s = workspace.sessions[tab.focusedPane]
             let title = workspace.title(for: tab)
             let folder = workspace.project(containing: tab.id)?.name
@@ -461,7 +528,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 shortcut: "",
                 symbol: Workspace.agents.contains(s?.process ?? "") ? "sparkles" : "terminal",
                 action: { [weak self] in self?.workspace.select(tab.id) })
-        } + items
+        }
+        items = sessions + items
 
         let host = NSHostingView(rootView: CommandPaletteView(items: items, dismiss: { [weak self] in self?.closePalette() }))
         window?.makeFirstResponder(nil)
@@ -588,7 +656,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// A closed tab leaves its worktree behind: offer to remove it, branch kept.
     func offerWorktreeRemoval(_ path: String) {
-        guard !workspace.allTabs.contains(where: { $0.worktree == path }) else { return }
+        guard !(worktreeInUse?(path) ?? workspace.usesWorktree(path)) else { return }
         guard FileManager.default.fileExists(atPath: path) else { return }
         let name = URL(fileURLWithPath: path).lastPathComponent
         let changes = Worktree.changes(in: path)
@@ -609,9 +677,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
         let removeButton: NSApplication.ModalResponse = changes.isEmpty ? .alertFirstButtonReturn : .alertSecondButtonReturn
         presentSheet(alert) { [weak self] response in
-            guard response == removeButton else { return }
+            guard response == removeButton, let self,
+                  !(self.worktreeInUse?(path) ?? self.workspace.usesWorktree(path)) else { return }
             if let failure = Worktree.remove(path, force: !changes.isEmpty) {
-                self?.showError("Couldn't remove the worktree", failure.description)
+                self.showError("Couldn't remove the worktree", failure.description)
             }
         }
     }
@@ -645,13 +714,15 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     private func closeTab(_ id: String) {
         guard let tab = workspace.allTabs.first(where: { $0.id == id }) else { return }
-        confirmClose(panes: tab.root.panes)
+        confirmClose(panes: tab.root.panes, tabID: id)
     }
 
     /// Ends sessions, asking first if any of them is running something.
-    private func confirmClose(panes: [String]) {
+    private func confirmClose(panes: [String], tabID: String? = nil) {
         let busy = panes.compactMap { workspace.sessions[$0]?.process }.filter { !Workspace.shells.contains($0) }
         let close = { [weak self] in
+            if let tabID { self?.workspace.rememberClosedTab(tabID) }
+            else if let tab = self?.workspace.selectedTab, tab.root.panes == panes { self?.workspace.rememberClosedTab(tab.id) }
             for pane in panes {
                 TernClient.kill(pane)
                 self?.workspace.removePane(pane)

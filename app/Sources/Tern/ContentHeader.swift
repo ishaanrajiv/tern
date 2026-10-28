@@ -10,6 +10,7 @@ struct ContentHeader: View {
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
             HStack(spacing: 8) {
+                if SecureKeyboard.shared.enabled { Image(systemName: "lock.fill").help("Secure Keyboard Entry is enabled").accessibilityLabel("Secure Keyboard Entry enabled") }
                 if let tab = workspace.selectedTab {
                     let s = workspace.sessions[tab.focusedPane]
                     Text(workspace.title(for: tab))
@@ -32,6 +33,11 @@ struct ContentHeader: View {
                             .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
+                    }
+                    if s?.agent == nil, let code = s?.exitCode {
+                        Text("last exit \(code)" + (s?.durationMs.map { String(format: " · %.1fs", Double($0) / 1000) } ?? ""))
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(code == 0 ? Color.secondary : Color.red)
                     }
                     Spacer(minLength: 12)
                     // Only what needs saying: an agent at work or waiting, with how long. An idle

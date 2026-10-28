@@ -1,4 +1,4 @@
-//! zsh integration: a preexec hook that writes each command line, as typed, to
+//! Shell integration: a preexec hook that writes each command line, as typed, to
 //! a file per session, so a tab can be named after what it runs ("npm run dev").
 //! Watching the foreground process alone misses quick commands like `git status`.
 //! A precmd hook touches a second file each time a command finishes, which is when
@@ -24,12 +24,18 @@ fi
     [[ ! -r "$_tern_file" ]] || 'builtin' 'source' '--' "$_tern_file"
 } always {
     if [[ -o 'interactive' && -n "$TERN_COMMAND_FILE" ]]; then
-        _tern_preexec() { _tern_ran=1; { 'builtin' 'print' -rn -- "$1" >| "$TERN_COMMAND_FILE" } 2>/dev/null }
+        _tern_preexec() { 'builtin' 'printf' '\033]133;C\007' > /dev/tty; _tern_ran=1; { 'builtin' 'print' -rn -- "$1" >| "$TERN_COMMAND_FILE" } 2>/dev/null }
         # Only after a command ran: not for the first prompt, or ↩ on an empty line.
         _tern_precmd() {
-            [[ -n "$_tern_ran" ]] || 'builtin' 'return' 0
-            _tern_ran=
-            { 'builtin' 'print' -n >| "$TERN_COMMAND_FILE.done" } 2>/dev/null
+            local _tern_status=$?
+            if [[ -n "$_tern_ran" ]]; then
+                'builtin' 'printf' '\033]133;D;%s\007' "$_tern_status" > /dev/tty
+                _tern_ran=
+                { 'builtin' 'print' -n >| "$TERN_COMMAND_FILE.done" } 2>/dev/null
+            fi
+            'builtin' 'printf' '\033]133;A\007' > /dev/tty
+            [[ "$PS1" == *$'\e]133;B'* ]] || PS1+=$'%{\e]133;B\a%}'
+            return $_tern_status
         }
         'builtin' 'autoload' -Uz add-zsh-hook && add-zsh-hook preexec _tern_preexec && add-zsh-hook precmd _tern_precmd
     fi
@@ -37,12 +43,117 @@ fi
 }
 "#;
 
+const BASHRC: &str = r#"# Tern starts this interactive shell with the user's login startup sequence.
+[[ -r /etc/profile ]] && source /etc/profile
+for _tern_profile in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+    if [[ -r "$_tern_profile" ]]; then source "$_tern_profile"; break; fi
+done
+unset _tern_profile
+_tern_running=
+_tern_before() {
+    [[ -n "$_tern_running" ]] && return
+    _tern_running=1
+    printf '\033]133;C\007'
+    local _tern_line=${1:-}
+    if [[ -z "$_tern_line" ]]; then
+        _tern_line=$(LC_ALL=C HISTTIMEFORMAT= builtin history 1)
+        _tern_line=${_tern_line#*[[:digit:]][* ] }
+    fi
+    printf '%s' "${_tern_line:-$BASH_COMMAND}" > "$TERN_COMMAND_FILE"
+}
+_tern_prompt() {
+    local _tern_status=$?
+    if [[ -n "$_tern_running" ]]; then
+        printf '\033]133;D;%s\007' "$_tern_status" > /dev/tty
+        : > "$TERN_COMMAND_FILE.done"
+    fi
+    printf '\033]133;A\007' > /dev/tty
+    [[ "$PS1" == *$'\e]133;B'* ]] || PS1+=$'\[\e]133;B\a\]'
+    _tern_running=
+    return "$_tern_status"
+}
+# Cooperate with bash-preexec when installed. Otherwise preserve the user's DEBUG
+# trap and use PS0 on modern bash, or a guarded DEBUG trap on the system bash.
+if declare -p preexec_functions >/dev/null 2>&1; then
+    preexec_functions+=(_tern_before)
+    precmd_functions+=(_tern_prompt)
+else
+    _tern_user_prompt=("${PROMPT_COMMAND[@]}")
+    _tern_prompt_chain() {
+        local _tern_status=$?
+        # Finish the command before a user's prompt hook writes its own output.
+        (exit "$_tern_status")
+        _tern_prompt
+        local _tern_command
+        for _tern_command in "${_tern_user_prompt[@]}"; do
+            (exit "$_tern_status")
+            eval "$_tern_command"
+        done
+        [[ "$PS1" == *$'\e]133;B'* ]] || PS1+=$'\[\e]133;B\a\]'
+        return "$_tern_status"
+    }
+    PROMPT_COMMAND=_tern_prompt_chain
+    if [[ -z "$(trap -p DEBUG)" ]]; then
+        trap '[[ "$BASH_COMMAND" == _tern_prompt_chain || "$BASH_COMMAND" == _tern_prompt ]] || _tern_before' DEBUG
+    else
+        # Never replace an unrelated DEBUG trap. Existing prompt hooks still work.
+        # PS0 assigns the marker in the parent shell so precmd can finish it.
+        PS0='${_tern_running:=$(_tern_before)}'"$PS0"
+    fi
+fi
+"#;
+
+const FISH: &str = r#"# Installed for this shell only, after the user's startup files.
+function _tern_before --on-event fish_preexec
+    printf '\e]133;C\a'
+    printf '%s' "$argv[1]" > "$TERN_COMMAND_FILE"
+end
+function _tern_after --on-event fish_postexec
+    set -l code $status
+    printf '\e]133;D;%s\a' $code
+    printf '' > "$TERN_COMMAND_FILE.done"
+end
+function _tern_prompt --on-event fish_prompt
+    printf '\e]133;A\a'
+end
+# Wrap only the prompt function in this shell, keeping the user's implementation.
+if functions -q fish_prompt
+    functions -c fish_prompt _tern_user_fish_prompt
+    function fish_prompt
+        _tern_user_fish_prompt
+        printf '\e]133;B\a'
+    end
+end
+"#;
+
+/// Configure only the shell being spawned; user dotfiles are never edited.
+pub fn configure(command: &mut std::process::Command, shell: &str, env: &[(String, String)]) {
+    let dir = std::path::absolute(runtime_dir()).unwrap_or_else(|_| runtime_dir());
+    let name = Path::new(shell).file_name().and_then(|s| s.to_str()).unwrap_or("");
+    match name {
+        "zsh" if dir.join("zsh/.zshenv").exists() => {
+            if let Some((_, value)) = env.iter().find(|(k, _)| k == "ZDOTDIR") {
+                command.env("TERN_ZDOTDIR", value);
+            }
+            command.env("ZDOTDIR", dir.join("zsh"));
+            command.arg("-l");
+        }
+        "bash" => { command.args(["--rcfile"]).arg(dir.join("shell/bashrc")).arg("-i"); }
+        "fish" => { command.args(["-l", "--init-command"]).arg(format!("source {}", crate::shell_quote(&dir.join("shell/tern.fish").to_string_lossy()))); }
+        _ => { command.arg("-l"); }
+    }
+}
+
 /// Writes the integration's .zshenv and returns its directory, for ZDOTDIR.
 pub fn install_zsh() -> std::io::Result<PathBuf> {
     let dir = runtime_dir();
     let dir = std::path::absolute(&dir).unwrap_or(dir).join("zsh");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(dir.join(".zshenv"), ZSHENV)?;
+    let scripts = runtime_dir().join("shell");
+    std::fs::create_dir_all(&scripts)?;
+    std::fs::write(scripts.join("bashrc"), BASHRC)?;
+    std::fs::write(scripts.join("tern.fish"), FISH)?;
     Ok(dir)
 }
 
@@ -106,6 +217,70 @@ pub fn is_trivial(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::telling;
+
+    #[test]
+    fn interactive_shells_keep_startup_and_command_boundaries() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsFd, OwnedFd};
+        use std::time::{Duration, Instant};
+        let _guard = crate::TEST_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("tern-shell-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("TERN_RUNTIME_DIR", &root);
+        super::install_zsh().unwrap();
+        std::fs::create_dir_all(root.join("commands")).unwrap();
+        std::fs::write(root.join(".zshrc"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
+        std::fs::write(root.join(".bash_profile"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
+        let mut shells = vec![("/bin/zsh".to_string(), false), ("/bin/bash".to_string(), false)];
+        // Exercise PS0 with an existing DEBUG trap when modern bash is available.
+        if let Ok(shell) = std::env::var("TERN_TEST_BASH") { shells.push((shell, true)); }
+        for (shell, debug_trap) in shells {
+            if debug_trap {
+                std::fs::write(root.join(".bash_profile"), "printf 'USER-STARTUP\\n'\nPS1='test> '\ntrap ':' DEBUG\n").unwrap();
+            }
+            let pty = nix::pty::openpty(None, None).unwrap();
+            let mut command = std::process::Command::new(&shell);
+            command.env("HOME", &root).env("TERN_COMMAND_FILE", root.join("commands/test")).env_remove("ZDOTDIR");
+            super::configure(&mut command, &shell, &[]);
+            let slave: OwnedFd = pty.slave;
+            let mut child = crate::spawn_on_pty(command, slave).unwrap();
+            let mut master = std::fs::File::from(pty.master);
+            let mut output = Vec::new();
+            let until = Instant::now() + Duration::from_secs(5);
+            let mut sent = 0;
+            let mut first_command = None;
+            let line = "cd /tmp && printf 'COMMAND-OUTPUT\\n'; false";
+            while Instant::now() < until {
+                let mut fds = [nix::poll::PollFd::new(master.as_fd(), nix::poll::PollFlags::POLLIN)];
+                if nix::poll::poll(&mut fds, 100u16).unwrap() == 0 { continue; }
+                let mut bytes = [0u8; 4096];
+                let Ok(n) = master.read(&mut bytes) else { break };
+                if n == 0 { break; }
+                output.extend_from_slice(&bytes[..n]);
+                if sent == 0 && output.windows(6).any(|w| w == b"133;A\x07") {
+                    master.write_all(format!("{line}\r").as_bytes()).unwrap();
+                    sent = 1;
+                }
+                if sent == 1 && output.windows(8).any(|w| w == b"133;D;1\x07") {
+                    first_command = std::fs::read_to_string(root.join("commands/test")).ok();
+                    master.write_all(b"printf 'SECOND-OUTPUT\\n'\r").unwrap();
+                    sent = 2;
+                }
+                if sent == 2 && output.windows(8).any(|w| w == b"133;D;0\x07") { break; }
+            }
+            let _ = child.kill(); let _ = child.wait();
+            assert_eq!(first_command.as_deref().map(str::trim), Some(line), "{shell}");
+            let output = String::from_utf8_lossy(&output);
+            assert!(output.contains("USER-STARTUP"), "{shell}: {output:?}");
+            assert!(output.contains("COMMAND-OUTPUT"), "{shell}: {output:?}");
+            assert!(output.contains("133;C"), "{shell}: {output:?}");
+            assert!(output.contains("133;D;1"), "{shell}: {output:?}");
+            assert!(output.contains("SECOND-OUTPUT") && output.contains("133;D;0"), "{shell}: {output:?}");
+            assert_eq!(std::fs::read_to_string(root.join("commands/test")).unwrap().trim(), "printf 'SECOND-OUTPUT\\n'", "{shell}");
+        }
+        std::env::remove_var("TERN_RUNTIME_DIR");
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn picks_the_telling_part() {

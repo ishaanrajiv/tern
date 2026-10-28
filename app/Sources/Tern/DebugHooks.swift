@@ -15,10 +15,17 @@ enum DebugHooks {
         guard ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" else { return }
         let dir = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("debug")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? String(ProcessInfo.processInfo.processIdentifier).write(to: dir.appendingPathComponent("app.pid"), atomically: true, encoding: .utf8)
         on(SIGUSR1) { snapshot(to: dir) }
         on(SIGUSR2) {
             guard let text = try? String(contentsOf: dir.appendingPathComponent("command"), encoding: .utf8) else { return }
             let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer { try? title.write(to: dir.appendingPathComponent("last-command"), atomically: true, encoding: .utf8) }
+            if title.hasPrefix("WindowID "), let window = NSApp.windows.first(where: { $0.identifier?.rawValue == String(title.dropFirst(9)) }) {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                return
+            }
             // Target auxiliary editors explicitly when checking an isolated app.
             if title.hasPrefix("Window "), let window = NSApp.windows.first(where: { $0.title == String(title.dropFirst(7)) }) {
                 NSApp.activate(ignoringOtherApps: true)
@@ -71,7 +78,7 @@ enum DebugHooks {
             // "Type <text>" enters text into whatever has focus (say, the folder picker).
             if title.hasPrefix("Type ") {
                 let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
-                (window?.firstResponder as? NSTextView)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
+                (window?.firstResponder as? any NSTextInputClient)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
                 return
             }
             let arrow = { (k: Int) in String(UnicodeScalar(UInt16(k))!) }
@@ -116,6 +123,16 @@ enum DebugHooks {
                                                       [.boundsIgnoreFraming, .bestResolution]) else { continue }
             let rep = NSBitmapImageRep(cgImage: image)
             try? rep.representation(using: .png, properties: [:])?.write(to: dir.appendingPathComponent("window-\(i).png"))
+        }
+        let state: [[String: Any]] = windows.map { window in
+            ["title": window.title, "number": window.windowNumber, "key": window.isKeyWindow,
+             "frame": NSStringFromRect(window.frame), "identifier": window.identifier?.rawValue ?? "",
+             "terminals": TerminalView.all.allObjects.filter { $0.window === window && !$0.isHidden }.map {
+                ["id": $0.sessionID, "text": $0.visibleText(), "selection": $0.accessibilitySelectedText() ?? ""]
+             }]
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: state, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: dir.appendingPathComponent("state.json"), options: .atomic)
         }
         NSLog("tern debug: saved %d window snapshot(s)", windows.count)
     }

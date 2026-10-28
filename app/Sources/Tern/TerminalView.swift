@@ -7,6 +7,8 @@ import GhosttyKit
 ///
 /// Keyboard handling follows Ghostty's own SurfaceView_AppKit (MIT).
 final class TerminalView: NSView, NSTextInputClient {
+    var workingDirectory: () -> String = { NSHomeDirectory() }
+    private var openedFileClick = false
     let sessionID: String
     // Only touched on the main thread; nonisolated so deinit can free it.
     nonisolated(unsafe) private(set) var surface: ghostty_surface_t?
@@ -36,6 +38,7 @@ final class TerminalView: NSView, NSTextInputClient {
         self.sessionID = sessionID
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
+        registerForDraggedTypes([.fileURL])
 
         var config = ghostty_surface_config_new()
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
@@ -327,11 +330,26 @@ final class TerminalView: NSView, NSTextInputClient {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        if event.modifierFlags.contains(.command), let ref = fileReference(at: event) {
+            openedFileClick = true
+            FileEditor.open(ref)
+            return
+        }
         mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT)
     }
-    override func mouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT) }
-    override func rightMouseDown(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) }
-    override func rightMouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) }
+    override func mouseUp(with event: NSEvent) {
+        if openedFileClick { openedFileClick = false; return }
+        mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        guard let surface else { return }
+        if !ghostty_surface_mouse_captured(surface) || event.modifierFlags.contains(.shift) {
+            NSMenu.popUpContextMenu(terminalContextMenu(), with: event, for: self)
+        } else { mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_RIGHT) }
+    }
+    override func rightMouseUp(with event: NSEvent) {
+        if let surface, ghostty_surface_mouse_captured(surface), !event.modifierFlags.contains(.shift) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_RIGHT) }
+    }
     override func otherMouseDown(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE) }
     override func otherMouseUp(with event: NSEvent) { mouseButton(event, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE) }
     override func mouseMoved(with event: NSEvent) { mousePosition(event) }

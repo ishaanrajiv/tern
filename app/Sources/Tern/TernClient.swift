@@ -25,6 +25,8 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let command: String?
     /// When the shell last finished a command (Unix ms); nil from an older ternd.
     let finishedMs: UInt64?
+    var exitCode: Int? = nil
+    var durationMs: UInt64? = nil
 }
 
 /// How the running ternd compares with this app's, from `tern daemon status`.
@@ -61,11 +63,11 @@ nonisolated enum TernClient {
             .appendingPathComponent("Library/Application Support/tern/ternd.sock").path
     }()
 
-    private static let decoder: JSONDecoder = {
+    private static var decoder: JSONDecoder {
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase
         return d
-    }()
+    }
 
     /// The current session list, or nil if ternd isn't running.
     static func listNow() -> [SessionInfo]? {
@@ -79,6 +81,21 @@ nonisolated enum TernClient {
         DispatchQueue.global().async {
             guard let conn = LineConnection(path: socketPath) else { return }
             conn.send(["op": "kill", "id": id])
+            _ = conn.readLine()
+        }
+    }
+
+    static func output(_ id: String, lastCommand: Bool = false) -> TerminalOutput? {
+        guard let conn = LineConnection(path: socketPath, maximumLine: 64 << 20) else { return nil }
+        conn.send(["op": "read_output", "id": id, "last_command": lastCommand])
+        guard let data = conn.readLine() else { return nil }
+        return try? JSONDecoder().decode(TerminalOutput.self, from: data)
+    }
+
+    static func setScrollback(_ bytes: Int) {
+        DispatchQueue.global(qos: .utility).async {
+            guard let conn = LineConnection(path: socketPath) else { return }
+            conn.send(["op": "set_scrollback", "bytes": bytes])
             _ = conn.readLine()
         }
     }
@@ -108,14 +125,21 @@ nonisolated final class LineConnection {
     /// A longer line than any session list is junk; the connection is dropped.
     static let maxLine = 16 << 20
 
+    private let maximumLine: Int
     private let fd: Int32
     private var buffer = Data()
 
-    init(fd: Int32) { self.fd = fd }
+    init(fd: Int32) { self.fd = fd; maximumLine = Self.maxLine }
 
-    init?(path: String) {
+    init?(path: String, maximumLine: Int = LineConnection.maxLine) {
+        self.maximumLine = maximumLine
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
+        var noSignal: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
+        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let maxLen = MemoryLayout.size(ofValue: addr.sun_path)
@@ -137,7 +161,15 @@ nonisolated final class LineConnection {
     func send(_ object: [String: Any]) {
         guard var data = try? JSONSerialization.data(withJSONObject: object) else { return }
         data.append(0x0A)
-        data.withUnsafeBytes { _ = write(fd, $0.baseAddress, $0.count) }
+        data.withUnsafeBytes { buffer in
+            var offset = 0
+            while offset < buffer.count {
+                let n = write(fd, buffer.baseAddress!.advanced(by: offset), buffer.count - offset)
+                if n < 0 && errno == EINTR { continue }
+                guard n > 0 else { return }
+                offset += n
+            }
+        }
     }
 
     func readLine() -> Data? {
@@ -146,12 +178,13 @@ nonisolated final class LineConnection {
         var searched = 0
         while true {
             if let nl = buffer[(buffer.startIndex + searched)...].firstIndex(of: 0x0A) {
+                guard buffer.distance(from: buffer.startIndex, to: nl) <= maximumLine else { return nil }
                 let line = buffer[buffer.startIndex..<nl]
                 buffer.removeSubrange(buffer.startIndex...nl)
                 return Data(line)
             }
             searched = buffer.count
-            if buffer.count > Self.maxLine { return nil }
+            if buffer.count > maximumLine { return nil }
             let n = read(fd, &chunk, chunk.count)
             if n <= 0 { return nil }
             buffer.append(chunk, count: n)
