@@ -65,6 +65,7 @@ nonisolated enum UpdateArchive {
         guard count > 0, count < 65535 else { throw UpdateError.message("Unsupported update archive size.") }
         var offset = Int(try number(end + 16, 4)), total: UInt64 = 0
         let directoryStart = offset
+        guard end - directoryStart == Int(try number(end + 12, 4)), try number(end + 8, 2) == UInt64(count) else { throw UpdateError.message("Invalid archive directory bounds.") }
         var paths = Set<String>()
         for _ in 0..<count {
             guard try number(offset, 4) == 0x02014b50 else { throw UpdateError.message("Invalid archive directory.") }
@@ -74,7 +75,7 @@ nonisolated enum UpdateArchive {
             let mode = (try number(offset + 38, 4)) >> 16
             guard offset + 46 + length <= end, let path = String(data: data[(offset + 46)..<(offset + 46 + length)], encoding: .utf8),
                   !path.hasPrefix("/"), !path.contains("\\"), !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-                  !path.split(separator: "/").contains(".."),
+                  !path.split(separator: "/").contains(where: { $0 == ".." || $0 == "." }),
                   path.hasPrefix("Tern.app/") || path.hasPrefix("__MACOSX/") || path == "Tern.app",
                   mode & 0xf000 != 0xa000, flags & 1 == 0, size < 512 << 20 else {
                 throw UpdateError.message("The update archive contains an unsafe or unsupported entry.")
@@ -195,7 +196,7 @@ nonisolated enum UpdateInstaller {
     var notes: String { release?.body ?? "" }
     func check() {
         guard !busy else { return }
-        busy = true; message = "Checking GitHub releases…"
+        busy = true; staged = nil; message = "Checking GitHub releases…"
         Task {
             defer { busy = false }
             do {
@@ -215,7 +216,7 @@ nonisolated enum UpdateInstaller {
     }
     func download() {
         guard !busy, let release else { return }
-        busy = true; message = "Downloading and verifying the update…"
+        busy = true; staged = nil; message = "Downloading and verifying the update…"
         let current = Bundle.main.bundleURL
         let directory = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("updates/" + UUID().uuidString)
         Task {

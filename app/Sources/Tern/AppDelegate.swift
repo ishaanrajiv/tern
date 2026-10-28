@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var latestSessions: [SessionInfo] = []
     private var ready = false
     private var terminating = false
+    private var lastFocusedWindowID: String?
     private var notifier: AgentNotifier?
     private var hotkey: TerminalHotkey?
     private lazy var hooks = AgentHooks(ternBinary: ternBinary)
@@ -38,7 +39,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             workspace.load(excluding: ownedPanes)
             _ = makeWindow(workspace: workspace, id: record.id, frame: record.rect)
         }
+        lastFocusedWindowID = records.first(where: \.active)?.id ?? windows.first?.windowID
         ready = true
+        saveWindows()
         if let record = records.first(where: \.active), let controller = windows.first(where: { $0.windowID == record.id }) { controller.window?.makeKeyAndOrderFront(nil) }
         DebugHooks.install { [weak self] in self?.mainWindow?.commands ?? [] }
         NSApp.servicesProvider = self
@@ -60,6 +63,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = MainWindowController(workspace: workspace, ternBinary: ternBinary, hooks: hooks, usage: usage, updates: updates, windowID: id, restoredFrame: frame)
         windows.append(controller)
         notifier?.register(workspace)
+        controller.paletteSessions = { [weak self] in
+            self?.windows.enumerated().flatMap { index, owner in
+                owner.workspace.allTabs.map { tab in
+                    PaletteItem(title: owner.workspace.title(for: tab),
+                        subtitle: (owner.workspace.project(containing: tab.id)?.name ?? "") + " · Window \(index + 1)",
+                        shortcut: "", symbol: "terminal", action: { [weak owner] in
+                            owner?.workspace.select(tab.id); owner?.showWindow(nil); owner?.window?.makeKeyAndOrderFront(nil)
+                        })
+                }
+            } ?? []
+        }
+        controller.onNextAttention = { [weak self, weak controller] in
+            guard let self, let controller else { return }
+            let tabs = self.windows.flatMap { owner in owner.workspace.allTabs.map { (owner, $0) } }
+            guard !tabs.isEmpty else { NSSound.beep(); return }
+            let start = tabs.firstIndex { $0.1.id == controller.workspace.selectedTabID } ?? -1
+            let order = (1...tabs.count).map { tabs[(start + $0 + tabs.count) % tabs.count] }.filter { $0.1.id != controller.workspace.selectedTabID }
+            let now = Date()
+            let next = order.first { $0.0.workspace.status(for: $0.1, now: now) == .needsYou }
+                ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .doneUnread }
+                ?? order.first { $0.0.workspace.isUnread($0.1) }
+            guard let (owner, tab) = next else { NSSound.beep(); return }
+            owner.workspace.select(tab.id); owner.showWindow(nil); owner.window?.makeKeyAndOrderFront(nil)
+        }
         controller.onOpenSettings = { [weak self] in self?.openSettings() }
         controller.onNewWindow = { [weak self] in let window = self?.makeWindow(); window?.showFolderPicker() }
         controller.onMoveTab = { [weak self, weak controller] new in
@@ -82,6 +109,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.onFocusWindow = { [weak self, weak controller] in
             guard let self, let controller else { return }
+            self.lastFocusedWindowID = controller.windowID
             for window in self.windows { window.workspace.isActive = window === controller && NSApp.isActive }
             NSApp.mainMenu = MenuBuilder.build(commands: controller.commands)
             self.saveWindows()
@@ -95,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             recipient.workspace.absorbRecovery(from: controller.workspace)
             self.notifier?.unregister(controller.workspace)
             self.windows.removeAll { $0 === controller }
+            if self.lastFocusedWindowID == controller.windowID { self.lastFocusedWindowID = recipient.windowID }
             self.saveWindows()
         }
         controller.onGeometryChanged = { [weak self] in self?.saveWindows() }
@@ -130,7 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private func saveWindows() {
         guard ready else { return }
-        WindowCatalog.save(windows.map { WindowRecord(id: $0.windowID, frame: $0.window.map { NSStringFromRect($0.frame) }, active: $0.window?.isKeyWindow == true) })
+        WindowCatalog.save(windows.map { WindowRecord(id: $0.windowID, frame: $0.window.map { NSStringFromRect($0.frame) }, active: $0.windowID == lastFocusedWindowID) })
     }
     private func open(_ request: AppOpenRequest) {
         guard ready else { pendingOpens.append(request); return }

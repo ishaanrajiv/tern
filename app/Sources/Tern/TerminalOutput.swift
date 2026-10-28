@@ -21,6 +21,16 @@ nonisolated struct OutputMatch: Identifiable, Sendable {
 }
 
 nonisolated enum OutputMatcher {
+    static func range(ofLine line: Int, in text: String) -> NSRange? {
+        guard line > 0 else { return nil }
+        var offset = 0
+        for (index, value) in text.components(separatedBy: "\n").enumerated() {
+            let length = (value as NSString).length
+            if index + 1 == line { return NSRange(location: offset, length: length) }
+            offset += length + 1
+        }
+        return nil
+    }
     static func matches(_ text: String, source: OutputSource, query: String, regex: Bool, caseSensitive: Bool) throws -> [OutputMatch] {
         guard !query.isEmpty else { return [] }
         let expression = try NSRegularExpression(pattern: regex ? query : NSRegularExpression.escapedPattern(for: query), options: caseSensitive ? [] : [.caseInsensitive])
@@ -104,13 +114,15 @@ struct OutputSearchView: View {
 
 /// Native, selectable output with macOS find, copy and export. A captured command's
 /// output can be selected without disturbing the terminal's live cursor or input.
-final class OutputDocumentController: NSWindowController {
+final class OutputDocumentController: NSWindowController, NSWindowDelegate {
+    var onClose: (() -> Void)?
     private let textView = NSTextView()
     private let text: String
-    init(title: String, text: String, truncated: Bool) {
+    init(title: String, text: String, truncated: Bool, selectedLine: Int? = nil) {
         self.text = text
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 850, height: 560), styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         super.init(window: window)
+        window.delegate = self
         window.identifier = NSUserInterfaceItemIdentifier("tern.output")
         window.title = title + (truncated ? " · truncated" : "")
         let scroll = NSScrollView()
@@ -145,9 +157,13 @@ final class OutputDocumentController: NSWindowController {
         ])
         window.center()
         window.makeFirstResponder(textView)
-        textView.selectAll(nil)
+        if let selectedLine, let range = OutputMatcher.range(ofLine: selectedLine, in: text) {
+            textView.setSelectedRange(range)
+            DispatchQueue.main.async { [weak self] in self?.textView.scrollRangeToVisible(range) }
+        } else { textView.selectAll(nil) }
     }
     required init?(coder: NSCoder) { fatalError("not supported") }
+    func windowWillClose(_ notification: Notification) { onClose?() }
     func find(_ action: NSTextFinder.Action) {
         let sender = NSMenuItem(); sender.tag = action.rawValue
         textView.performTextFinderAction(sender)
@@ -178,6 +194,15 @@ final class OutputDocumentController: NSWindowController {
 }
 
 extension MainWindowController {
+    func presentOutput(_ document: OutputDocumentController) {
+        outputDocuments.append(document)
+        document.onClose = { [weak self, weak document] in
+            guard let document else { return }
+            self?.outputDocuments.removeAll { $0 === document }
+        }
+        document.showWindow(nil)
+    }
+
     func showOutput(lastCommand: Bool, copy: Bool = false) {
         guard let tab = workspace.selectedTab else { return }
         let pane = tab.focusedPane, title = workspace.title(for: tab)
@@ -193,8 +218,7 @@ extension MainWindowController {
                 if copy { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string) }
                 else {
                     let document = OutputDocumentController(title: title + (lastCommand ? " · last command" : " · scrollback"), text: text, truncated: output.truncated == true)
-                    self.outputDocument = document
-                    document.showWindow(nil)
+                    self.presentOutput(document)
                 }
             }
         }
@@ -211,17 +235,17 @@ extension MainWindowController {
                 self.workspace.select(tab.id)
                 self.workspace.focus(pane: match.source.id)
             }
-            self.showOutputForSession(match.source.id, title: match.source.title)
+            self.showOutputForSession(match.source.id, title: match.source.title, line: match.line)
         })
     }
 
-    private func showOutputForSession(_ id: String, title: String) {
+    private func showOutputForSession(_ id: String, title: String, line: Int) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let output = TernClient.output(id)
             DispatchQueue.main.async {
                 guard let self, let output, output.ok, let text = output.text else { return }
-                let document = OutputDocumentController(title: title, text: text, truncated: output.truncated == true)
-                self.outputDocument = document; document.showWindow(nil)
+                let document = OutputDocumentController(title: title, text: text, truncated: output.truncated == true, selectedLine: line)
+                self.presentOutput(document)
             }
         }
     }

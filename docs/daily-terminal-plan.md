@@ -1,97 +1,138 @@
 # Daily terminal implementation plan
 
-Started 2026-10-28. One branch, `codex/daily-terminal-parity`, and one PR.
+Started 2026-10-28. Branch `codex/daily-terminal-parity`.
+Single draft PR: https://github.com/ishaanrajiv/tern/pull/6
 
-## Scope
+## Scope and status
 
-Build the daily-use terminal capabilities agreed in chat. Remote workflow enhancements and
-profiles/configuration are excluded. Preserve existing SSH and launch presets. Do not restart
-the normal daemon or replace the installed app while developing. Do not automatically install
-an application update or end a user's sessions.
+Implementation is complete for the agreed scope. Remote workflow enhancements and
+profiles/configuration are excluded. Existing SSH and launch presets are preserved.
+The PR remains a draft for review and the manual release checks below.
+
+The installed app was not replaced and the normal daemon was not restarted. App updates
+are staged and require an explicit Install and Relaunch action. Updating the app does not
+restart ternd or end its running processes.
 
 ## Milestones
 
-- [ ] 1. Files and launching: inherit the focused directory for ordinary new tabs, retain an
-  explicit project-root action, file drops with shell quoting, image paste, editor file/line
-  links, `tern open` / `tern .`, command/tab/split launch arguments, Finder services and URL opens.
-- [ ] 2. Shell integration: zsh/bash/fish prompt marks, command boundaries, exit status and
-  duration, navigate prompts, select/copy last output and ordinary command completion alerts.
-- [ ] 3. History: one configurable daemon retention limit applied to new and existing sessions,
-  export/open scrollback, stronger find controls and search output across sessions.
-- [ ] 4. Recovery: detach without killing, list/reattach detached sessions, recently closed tab
-  recovery with fresh sessions when needed. Preserve partial layout recovery and backups.
-- [ ] 5. Windows: independent windows, move tabs/panes between windows, per-window geometry and
-  layout recovery, correct menu routing/focus/status/badges. Global hotkey show/hide.
-- [ ] 6. Updates: check GitHub releases, release notes, verified staged installation, explicit
-  install/relaunch and daemon-upgrade deferral. Preserve active sessions until explicitly ended.
-- [ ] 7. Compatibility: verify/fix selection, keyboard/IME, full-screen programs, protocol state
-  across reattach, image behavior, accessibility and Secure Keyboard Entry.
-- [ ] 8. Integration: README, complete checks, private runtime UI/daemon smoke tests, review diff,
-  create and attach the single PR. Record limits honestly.
+- [x] 1. Files and launching: focused-directory tabs and an explicit project-root action,
+  quoted file drops, image MIME requests and PNG-path paste, editor file/line links,
+  `tern open` / `tern .`, tab/window/split command launches, Finder service and URL opens.
+- [x] 2. Shell integration: zsh/bash/fish prompt and command marks, exit status and duration,
+  prompt navigation, last-command output selection/copy, long background command alerts.
+- [x] 3. History: shared daemon/surface byte retention, export/open scrollback, regex/case
+  search and retained-output search across sessions. Search results select the matching line.
+- [x] 4. Recovery: detach, detached-session browser, same-session reattachment and recently
+  closed layout recovery. Deliberately stopped processes reopen as fresh shells.
+- [x] 5. Windows: independent layouts/geometry, tab/pane movement, shared badges and notifications,
+  global session palette/attention navigation, per-window focus and an opt-in system hotkey.
+- [x] 6. Updates: GitHub release discovery, release notes, checksum/archive/signature/Gatekeeper
+  verification, explicit staged installation/relaunch and separate daemon-upgrade deferral.
+- [x] 7. Compatibility implementation and automated coverage: native context menu, accessibility
+  text/selection, Secure Keyboard Entry, Unicode input/selection, existing full-screen and
+  keyboard-protocol snapshot tests. Manual system-level checks remain below.
+- [x] 8. Final integration: README, full checks, debug build, private smoke tests and diff review
+  completed. Final validation/fix commit and PR description are updated on the same branch.
 
-## Acceptance and verification
+## Important implementation decisions
 
-- Regression tests for parsing, protocol changes, shell quoting, shell integration, history,
-  recovery and window ownership. Avoid tests that only mirror trivial implementation.
-- `./scripts/check.sh` and `./scripts/build-app.sh --debug` before final PR.
-- Private runtime under `/tmp` for daemon sessions and UI checks, always same environment in
-  app and CLI. Record test PIDs and commands here. No normal daemon restart.
-- Test layouts written by the previous version and partially invalid layouts. New peers must
-  reject incompatible protocol versions rather than silently misread messages.
-- Manual checks distinguish implemented, tested automatically, tested interactively and still
-  requiring another Mac or an external environment.
+- Protocol is now 2. Rust and Swift agree on read_output and set_scrollback requests; existing
+  hello/status handling and explicit daemon restart confirmation remain.
+- Startup commands stay queued until a daemon session is observed. This prevents an immediate
+  window move from consuming input before the original relay sends its attach request.
+- Each window has one Workspace and its own layout file. windows.json records ownership and
+  geometry. Each window retains its own backups. Duplicate saved ownership is skipped with a
+  backup, and partially invalid catalogs
+  retain usable records. The old layout.json remains the main window's file.
+- Window closure transfers detached/recent recovery metadata to a surviving window. Explicitly
+  detaching the last tab keeps an empty window available for recovery.
+- Closing output documents and using Find routes to that document rather than the live terminal.
+- Command capture is bounded at 4 MiB. Read-output replies are bounded at 8 MiB and report
+  truncation. The app uses a larger bounded line reader for JSON-escaped output replies.
+- File-link clicking handles whitespace-delimited diagnostics. Selected paths can contain spaces.
+  Line navigation depends on the editor URL scheme. Image pixels are absent from VT replay;
+  image clipboard requests and PNG-path paste are independent of that limitation.
+- The updater accepts the symlink-free Apple Silicon bundles this repo produces. No new
+  dependencies were added. An ad-hoc/unsigned app must first install a signed release manually.
+
+## Validation record
+
+- Full `./scripts/check.sh` passed with 59 Rust tests, Python script tests, Clippy with warnings
+  denied, Swift build and 34 Swift tests. Final rerun passed.
+- `./scripts/build-app.sh --debug` passed repeatedly. The final rebuild passed.
+- Real zsh and system bash PTY tests verify user startup, prompt/command marks and exit status.
+- New regression coverage includes launch quoting, external URL restrictions, source locations,
+  window catalog recovery and independent backups, transfers, startup-command acknowledgment, detached metadata transfer,
+  output regex/case matching, Unicode source-line ranges, archive safety and release versions.
+- `python3 scripts/smoke-daily.py /tmp/tern-final` passed on a fresh private runtime. It checks
+  three startup commands through immediate window moves, last-tab detachment, window closure,
+  and reattachment with the same session ID. It uses the private debug PID and macOS signal names.
+- Private UI checks verified pane movement, output document layout, global search results,
+  Unicode text commits/capture and keyboard selection. The app exposed visible text/selection
+  through its accessibility methods. Runtime actor warning in the launch monitor was fixed.
+- Private daemon checks verified exact last-command text, exit code 1, and retained history
+  after the app exited. Snapshot tests cover full-screen state, wide/combining characters,
+  resize reflow, links and keyboard modes.
+- Final daemon command-output conversion retained all 15,000 lines of a completed command
+  without truncation in /tmp/tern-output-final.
+- Saved four-tab private layout restored after app relaunch, with the daemon sessions alive.
+- Synthetic output-document Cmd-F/Cmd-W checks were inconclusive: background key-window and
+  modifier routing differ from live macOS input. The debug driver retains its original routing;
+  verify these shortcuts with real input before release.
+- 100-iteration private relay benchmark: direct p50 10.0 µs, ternd p50 34.5 µs, overhead 24.5 µs.
+  This is a point measurement, not a before/after performance claim.
+- Known existing warnings: deprecated screenshot API in DebugHooks, and Sendable captures in
+  SecurityTests. The normal app's existing notification permission issue also reproduces here.
+
+## Remaining manual release checks
+
+- [ ] Fish interactive behavior, including custom prompts and an existing shell integration.
+  Fish is not installed on this machine.
+- [ ] Real-keyboard Find/Close in native output documents, including multiple output windows.
+- [ ] Actual system IME/dead-key/input-source switching, VoiceOver navigation and automatic
+  password-prompt secure input. Unicode commit and accessibility values were checked privately.
+- [ ] Global hotkey registration alongside the user's other apps. Private instances deliberately
+  do not register the system hotkey.
+- [ ] Signed, notarized update download/install/relaunch on a disposable installation. No real
+  installed application was replaced during this work.
+- [ ] Finder service discovery on a normal signed installation, real editor line handoff,
+  file/image drag and clipboard interoperability with each supported agent.
+- [ ] Another Mac and macOS 14. Neither is available in this environment.
 
 ## Resume instructions
 
-Read this file, `AGENTS.md`, `README.md` and `git status` first. Continue this branch and the
-existing PR if one is recorded below. Do not reset uncommitted work. Update this plan at every
-milestone and before an interruption. Keep exact next steps, open design decisions, check results
-and temporary runtime/process details current.
+Read this file, AGENTS.md, README.md and git status first. Continue the existing branch and PR.
+Do not reset uncommitted work or open another PR. The first checkpoint is e31b2b4; subsequent
+fixes and this log are on the same branch. Keep manual checks distinct from automated checks.
 
-## Current checkpoint
+Use a short private TERN_RUNTIME_DIR for all UI/daemon work. Build without --install. For UI
+smoke tests launch build/Tern.app/Contents/MacOS/Tern with TERN_DEBUG=1 and the same runtime as
+the CLI, then run `python3 scripts/smoke-daily.py <runtime>`. The harness adds test sessions and
+leaves them alive for inspection. Debug screenshots and state.json are in <runtime>/debug/.
 
-- Baseline commit: `bee0f0a` on main. Working tree was clean before the plan.
-- Current step: milestones 5/6 implementation and regression tests, then private UI checks.
-- Existing features confirmed: palette searches sessions, tabs/folders reorder, panes move between
-  tabs, splits inherit cwd, presets and basic SSH exist. Do not rebuild these.
-- Existing limitations: app owns one window; zsh-only command recording; text-only clipboard;
-  new tabs start at project root; daemon history fixed at 10,000 rows; no app update mechanism.
-- Implemented milestone 1 source and regression tests, except `--window` routing awaits milestone 5.
-  File-link clicking currently matches whitespace-delimited diagnostics, selected file paths can
-  contain spaces. Image paste has both requested MIME support and an explicit PNG-path action.
-- Implemented milestone 2/3 foundations: OSC 133 capture, shell scripts, protocol 2 read_output /
-  set_scrollback, output document/search UI, prompt navigation and long command events.
-- Checks: Rust 56 tests passed, Swift 25 tests passed after milestone 1. Later edits not checked yet.
-  SwiftPM requires escalated `swift test --package-path app` because its build sandbox and caches
-  are outside workspace permissions. Default build warning in DebugHooks and pre-existing
-  SecurityTests Sendable warnings were observed. No test processes started. PR not created yet.
-- Window/recovery source added: per-window workspaces and catalog, identity-preserving tab/pane
-  transfer, detached session list, recently closed layout recovery, shared notifier, opt-in global
-  hotkey, manual Secure Keyboard Entry. Catalog and recovery tests added.
-- Real zsh/bash PTY regression test passed with startup and exit-status markers. `/dev/tty` tests
-  need escalated cargo test; sandbox denial is separate from shell behavior. Fish is not installed.
-- Updater source added: manual GitHub release discovery, SHA-256 and ZIP validation, same-team
-  Developer ID and Gatekeeper checks, staged explicit install/relaunch using launchd, no daemon
-  restart. Needs compile/tests and review; no update installed.
-- Full `scripts/check.sh` passed (59 Rust tests, 31 Swift tests, script tests, Clippy, Swift build).
-  Debug app bundle built and signed. New follow-up tests increased Swift count to 32, passing.
-- Private runtime `/tmp/tern-daily`; daemon PID is in its `ternd.pid`. Current private debug app
-  PID 46990 in exec session 97767. A prior non-debug test app PID 46426 and debug PID 46615 were
-  stopped. Installed app PID 35011 was left alone. Do not kill by process name.
-- Private checks passed for CLI open, two-window creation, tab/pane movement, exact last-command
-  text + exit code, and history after app exit. Runtime actor warning in AppOpenMonitor was fixed
-  with explicit @Sendable and rebuilt; no repeat observed.
-- UI smoke exposed startup-command loss on immediate movement and recovery metadata loss when
-  a detached tab's window closes. Both fixed with passing regression tests; Swift count is 33.
-  Explicit detach now keeps an empty window available for reattachment. Output documents route
-  Cmd-W/Find to their own window rather than the terminal behind them. Debug screenshots now
-  include machine-readable private window/surface state.
-- Retained-output export window visually verified. Output search now cancels superseded jobs.
-  Duplicate saved session ownership across windows is skipped with a backup before rewriting.
-- Next: test latest fixes, rebuild/relaunch private app, repeat immediate movement and detach /
-  reattach / layout restoration, inspect output/search UI, then final review and PR. README updated.
-  No PR or commits yet; all work remains on the same branch.
+Compiler/PTY validation needs sandbox escalation here because SwiftPM caches/build sandbox and
+/dev/tty are outside workspace permissions. Do not mistake those denials for product failures.
+
+## Test processes and artifacts
+
+All private app and daemon processes created for this work were stopped after validation.
+Daemon cleanup verified the PID through each private socket's hello reply and checked the process
+name before sending SIGTERM. Runtimes /tmp/tern-daily, /tmp/tern-parity, /tmp/tern-final,
+/tmp/tern-bench and /tmp/tern-output-final retain layouts/screenshots for inspection. The normal
+app PID was 35011 at the start of validation and was left alone. Never kill by process-name pattern.
+
+Logs: /tmp/tern-final-check.log, /tmp/tern-swift-check.log and /tmp/tern-build.log. Screenshots and
+private layouts remain under their runtime directories for inspection. The final checks and cleanup are recorded above.
 
 ## Work log
 
-- 2026-10-28: recorded scope and milestones before implementation.
+- 2026-10-28: recorded scope before implementation; implemented milestones with regression tests.
+- 2026-10-28: checkpoint e31b2b4 pushed and draft PR #6 created with gh after the GitHub connector
+  returned 403. An initial push rejection was resolved by verifying the matching public origin
+  and connected account's admin/push permission.
+- 2026-10-28: private tests found and fixed startup-command transfer, detached recovery transfer,
+  initial catalog persistence and background timer actor isolation. Full checks and fresh-runtime
+  smoke tests passed. Final validation and cleanup completed; PR remains a draft for manual release checks.
+
+- 2026-10-28: final checks passed with 59 Rust and 34 Swift tests; final debug bundle built.
+  Private processes were cleaned up. Independent window backups gained regression coverage.

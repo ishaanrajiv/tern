@@ -96,7 +96,6 @@ impl Terminal {
         self.get::<GhosttyTerminalScreen>(GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN) == GHOSTTY_TERMINAL_SCREEN_ALTERNATE
     }
 
-    #[cfg(test)]
     pub fn scrollback_rows(&self) -> usize {
         self.get(GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS)
     }

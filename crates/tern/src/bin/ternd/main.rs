@@ -145,9 +145,13 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
                 let (text, truncated) = {
                     let st = session.state.lock().unwrap();
                     if last_command {
-                        let mut terminal = vt::Terminal::new(4096, 24, 10_000);
+                        let (cols, rows) = st.screen.size();
+                        let mut terminal = vt::Terminal::new(cols, rows, 10_000);
+                        terminal.set_scrollback_bytes(64 << 20);
                         terminal.write(&st.capture.output);
-                        (terminal.format(vt::Format::Plain), st.capture.truncated)
+                        let lines = st.capture.output.iter().filter(|b| **b == b'\n').count();
+                        let pruned = lines > terminal.scrollback_rows() + usize::from(rows);
+                        (terminal.format(vt::Format::Plain), st.capture.truncated || pruned)
                     } else {
                         (st.screen.format(vt::Format::Plain), false)
                     }

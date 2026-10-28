@@ -8,6 +8,7 @@ struct ClosedTab: Codable, Identifiable {
     var directories: [String: String]
     var remotes: [String: RemoteConnection]
     var detached: Bool
+    var closedAt: Date? = Date()
 }
 
 /// Session identity stays unchanged when moving between windows or detaching.

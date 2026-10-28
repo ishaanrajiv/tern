@@ -15,10 +15,17 @@ enum DebugHooks {
         guard ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" else { return }
         let dir = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("debug")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? String(ProcessInfo.processInfo.processIdentifier).write(to: dir.appendingPathComponent("app.pid"), atomically: true, encoding: .utf8)
         on(SIGUSR1) { snapshot(to: dir) }
         on(SIGUSR2) {
             guard let text = try? String(contentsOf: dir.appendingPathComponent("command"), encoding: .utf8) else { return }
             let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            defer { try? title.write(to: dir.appendingPathComponent("last-command"), atomically: true, encoding: .utf8) }
+            if title.hasPrefix("WindowID "), let window = NSApp.windows.first(where: { $0.identifier?.rawValue == String(title.dropFirst(9)) }) {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+                return
+            }
             // Target auxiliary editors explicitly when checking an isolated app.
             if title.hasPrefix("Window "), let window = NSApp.windows.first(where: { $0.title == String(title.dropFirst(7)) }) {
                 NSApp.activate(ignoringOtherApps: true)

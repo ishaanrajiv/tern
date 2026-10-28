@@ -32,7 +32,7 @@ Mac-native, and sessions survive quitting the app.
   tab return as fresh shells; reopening cannot undo their termination. Closing a window while
   others remain detaches its tabs. Quitting preserves all open windows and sessions.
 - **Agent status.** Claude Code and Codex report whether they're working, waiting for you, or done.
-  ⌘J jumps to the next tab that needs you, and the Dock badge counts the waiting ones.
+  ⌘J jumps across windows to the next tab that needs you, and the Dock badge counts the waiting ones.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
@@ -71,7 +71,7 @@ keeps in the Keychain. tern never refreshes that token.
 
 | Keys | Action |
 |---|---|
-| ⌘K | Command palette |
+| ⌘K | Command palette and session search across windows |
 | ⌘J | Next tab needing attention |
 | ⌘N / ⌘⇧N | Open a folder / new window |
 | ⌘T / ⌘⇧T | New tab / new tab in its own worktree |

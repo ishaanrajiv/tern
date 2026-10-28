@@ -87,6 +87,8 @@ final class DailyTerminalTests: XCTestCase {
     func testOutputSearchUsesLiteralRegexAndCaseChoices() throws {
         let source = OutputSource(id: "p", title: "Build")
         let output = "Error [42]\nerror 17\nOK\n"
+        XCTAssertEqual(OutputMatcher.range(ofLine: 2, in: "👍\n日本"), NSRange(location: 3, length: 2))
+        XCTAssertNil(OutputMatcher.range(ofLine: 6, in: output))
         XCTAssertEqual(try OutputMatcher.matches(output, source: source, query: "[42]", regex: false, caseSensitive: false).map(\.line), [1])
         XCTAssertEqual(try OutputMatcher.matches(output, source: source, query: "^error", regex: true, caseSensitive: false).map(\.line), [1, 2])
         XCTAssertEqual(try OutputMatcher.matches(output, source: source, query: "Error", regex: false, caseSensitive: true).count, 1)
@@ -164,6 +166,21 @@ final class DailyTerminalTests: XCTestCase {
         loaded.load()
         XCTAssertEqual(loaded.detachedPanes, Set(original))
         XCTAssertEqual(loaded.closedTabs.first?.directories[original[0]], "/tmp/child")
+    }
+
+    func testInvalidWindowLayoutsKeepSeparateBackups() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tern-backups-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { Workspace.finishSaving(); try? FileManager.default.removeItem(at: directory) }
+        let data = Data(#"{"version":1,"projects":[{"tabs":"broken"}]}"#.utf8)
+        for name in ["w-a", "w-b"] {
+            let url = directory.appendingPathComponent(name + ".json")
+            try data.write(to: url)
+            Workspace(storageURL: url).load()
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        XCTAssertEqual(names.filter { $0.hasPrefix("layout-w-a-") }.count, 1)
+        XCTAssertEqual(names.filter { $0.hasPrefix("layout-w-b-") }.count, 1)
     }
 
 }

@@ -41,7 +41,7 @@ nonisolated enum WindowCatalog {
     static func load() -> [WindowRecord] {
         guard let data = try? Data(contentsOf: url) else { return [WindowRecord(id: "main")] }
         let records = decode(data)
-        if let objects = try? JSONSerialization.jsonObject(with: data) as? [Any], objects.count == records.count, !records.isEmpty { return records }
+        if let objects = try? JSONSerialization.jsonObject(with: data) as? [Any], objects.count == records.count, !records.isEmpty, !records.contains(where: { $0.frame != nil && $0.rect == nil }) { return records }
         let backup = url.deletingLastPathComponent().appendingPathComponent("windows-recovery-\(Int(Date().timeIntervalSince1970)).json")
         try? data.write(to: backup, options: .atomic)
         return records.isEmpty ? [WindowRecord(id: "main")] : records

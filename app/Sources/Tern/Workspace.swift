@@ -661,6 +661,7 @@ final class Workspace {
         detachedPanes.formUnion(other.detachedPanes)
         let known = Set(closedTabs.map(\.id))
         closedTabs += other.closedTabs.filter { !known.contains($0.id) }
+        closedTabs.sort { ($0.closedAt ?? .distantPast) > ($1.closedAt ?? .distantPast) }
         closedTabs = Array(closedTabs.prefix(20))
         changed()
         save()
@@ -1097,11 +1098,13 @@ final class Workspace {
     private static func keepAside(_ data: Data, url: URL, reason: String) {
         let dir = url.deletingLastPathComponent()
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "")
-        try? data.write(to: dir.appendingPathComponent("layout-\(reason)-\(stamp).json"))
+        let stem = url.deletingPathExtension().lastPathComponent
+        let prefix = stem == "layout" ? "layout-" : "layout-" + stem + "-"
+        try? data.write(to: dir.appendingPathComponent("\(prefix)\(reason)-\(stamp).json"))
         NSLog("tern: kept the saved layout aside (\(reason)) before replacing it")
         let fm = FileManager.default
         let old = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? [])
-            .filter { $0.hasPrefix("layout-") && $0.hasSuffix(".json") }
+            .filter { $0.hasPrefix(prefix) && $0.hasSuffix(".json") }
             .sorted { a, b in
                 let date = { (name: String) in
                     (try? fm.attributesOfItem(atPath: dir.appendingPathComponent(name).path)[.modificationDate] as? Date) ?? .distantPast

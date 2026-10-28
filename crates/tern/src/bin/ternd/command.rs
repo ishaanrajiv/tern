@@ -22,7 +22,7 @@ impl CommandCapture {
         let mut offset = 0;
         while offset < bytes.len() {
             if self.escape.is_empty() {
-                if let next = bytes[offset..].iter().position(|b| *b == 0x1b) {
+                if let Some(next) = bytes[offset..].iter().position(|b| *b == 0x1b) {
                     self.append(&bytes[offset..offset + next]);
                     self.escape.push(0x1b);
                     offset += next + 1;

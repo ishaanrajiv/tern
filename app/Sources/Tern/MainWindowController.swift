@@ -6,7 +6,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     let workspace: Workspace
     private let terminalArea: TerminalArea
     private let splitController = NSSplitViewController()
-    var outputDocument: OutputDocumentController?
+    var outputDocuments: [OutputDocumentController] = []
     private var workflowWindow: NSWindowController?
     private var paletteHost: NSView?
     private var pickerHost: NSView?
@@ -26,6 +26,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     private var saveScheduled = false
     private var savedLayout: ([Project], String?)?
     private(set) var commands: [Command] = []
+    var paletteSessions: (() -> [PaletteItem])?
+    var onNextAttention: (() -> Void)?
     var onNewWindow: (() -> Void)?
     var onMoveTab: ((Bool) -> Void)?
     var onFocusWindow: (() -> Void)?
@@ -52,6 +54,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false)
+        window.identifier = NSUserInterfaceItemIdentifier("tern.window." + windowID)
         window.title = "tern"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -127,8 +130,13 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         toolbar.delegate = self
         toolbar.displayMode = .iconOnly
         window.toolbar = toolbar
-        if let frame = restoredFrame, NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) { window.setFrame(frame, display: false) }
-        else { window.center() }
+        if let frame = restoredFrame, let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) {
+            window.setFrame(window.constrainFrameRect(frame, to: screen), display: false)
+        } else {
+            let available = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? NSSize(width: 1180, height: 760)
+            window.setContentSize(NSSize(width: min(1180, available.width), height: min(760, max(320, available.height - 40))))
+            window.center()
+        }
 
         commands = makeCommands()
         settingsObserver = NotificationCenter.default.addObserver(forName: TerminalPreferences.didChange, object: nil, queue: .main) { [weak self] _ in
@@ -287,6 +295,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     func windowWillClose(_ notification: Notification) {
+        for document in outputDocuments { document.close() }
         workspace.save()
         onWindowClosed?()
     }
@@ -364,6 +373,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             },
             Command("Settings…", menu: "tern", key: ",") { [weak self] in self?.onOpenSettings?() },
             Command("New Window", menu: "File", key: "n", [.command, .shift]) { [weak self] in self?.onNewWindow?() },
+            Command("Close Window", menu: "Window") { [weak self] in self?.window?.performClose(nil) },
             Command("Move Tab to New Window", menu: "Window") { [weak self] in self?.onMoveTab?(true) },
             Command("Move Tab to Next Window", menu: "Window") { [weak self] in self?.onMoveTab?(false) },
             Command("Move Pane to New Window", menu: "Window") { [weak self] in
@@ -452,8 +462,9 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 self?.terminalArea.focusedTerminal()?.performBinding("reset_font_size")
             },
 
-            Command("Next Needing Attention", menu: "Navigate", key: "j") {
-                if !w.jumpToNextUnread() { NSSound.beep() }
+            Command("Next Needing Attention", menu: "Navigate", key: "j") { [weak self] in
+                if let jump = self?.onNextAttention { jump() }
+                else if !w.jumpToNextUnread() { NSSound.beep() }
             },
             Command("Next Tab", menu: "Navigate", key: "]", [.command, .shift]) { w.cycleTab(1) },
             Command("Previous Tab", menu: "Navigate", key: "[", [.command, .shift]) { w.cycleTab(-1) },
@@ -506,7 +517,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             PaletteItem(title: c.title, subtitle: "", shortcut: c.shortcutLabel, symbol: c.symbol, action: c.action)
         }
         let tabs = workspace.allTabs
-        items = tabs.map { tab in
+        let sessions = paletteSessions?() ?? tabs.map { tab in
             let s = workspace.sessions[tab.focusedPane]
             let title = workspace.title(for: tab)
             let folder = workspace.project(containing: tab.id)?.name
@@ -516,7 +527,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 shortcut: "",
                 symbol: Workspace.agents.contains(s?.process ?? "") ? "sparkles" : "terminal",
                 action: { [weak self] in self?.workspace.select(tab.id) })
-        } + items
+        }
+        items = sessions + items
 
         let host = NSHostingView(rootView: CommandPaletteView(items: items, dismiss: { [weak self] in self?.closePalette() }))
         window?.makeFirstResponder(nil)
