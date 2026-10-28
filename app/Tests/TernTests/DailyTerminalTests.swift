@@ -84,6 +84,28 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertEqual(restored.projects, workspace.projects)
     }
 
+    func testWorktreeRemainsInUseAfterMovingAndDetachingPane() {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tern-worktree-" + UUID().uuidString)
+        defer { Workspace.finishSaving(); try? FileManager.default.removeItem(at: directory) }
+        let source = Workspace(storageURL: directory.appendingPathComponent("source.json"))
+        let destination = Workspace(storageURL: directory.appendingPathComponent("destination.json"))
+        let tab = source.newTab(projectPath: "/tmp", cwd: "/tmp/worktree")
+        var transfer = source.takeTab(tab.id)!
+        transfer.tab.worktree = "/tmp/worktree"
+        source.insertTab(transfer)
+        source.split(.horizontal)
+        source.detachPane()
+        destination.insertTab(source.takeTab(source.selectedTabID!)!)
+        source.rememberClosedTab(tab.id)
+        source.removePane(tab.focusedPane)
+        XCTAssertFalse(source.usesWorktree("/tmp/worktree"))
+        XCTAssertTrue([source, destination].contains { $0.usesWorktree("/tmp/worktree") })
+        destination.detachTab(destination.selectedTabID!)
+        XCTAssertTrue(destination.usesWorktree("/tmp/worktree"))
+        destination.forgetDetached(destination.detachedPanes)
+        XCTAssertFalse(destination.usesWorktree("/tmp/worktree"))
+    }
+
     func testOutputSearchUsesLiteralRegexAndCaseChoices() throws {
         let source = OutputSource(id: "p", title: "Build")
         let output = "Error [42]\nerror 17\nOK\n"

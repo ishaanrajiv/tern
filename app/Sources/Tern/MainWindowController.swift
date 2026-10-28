@@ -34,6 +34,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     var onWindowClosed: (() -> Void)?
     var onGeometryChanged: (() -> Void)?
     var ownedPanes: () -> Set<String> = { [] }
+    var worktreeInUse: ((String) -> Bool)?
     var onReattach: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     /// Runs after every model change (the Dock badge follows it).
@@ -655,7 +656,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// A closed tab leaves its worktree behind: offer to remove it, branch kept.
     func offerWorktreeRemoval(_ path: String) {
-        guard !workspace.allTabs.contains(where: { $0.worktree == path }) else { return }
+        guard !(worktreeInUse?(path) ?? workspace.usesWorktree(path)) else { return }
         guard FileManager.default.fileExists(atPath: path) else { return }
         let name = URL(fileURLWithPath: path).lastPathComponent
         let changes = Worktree.changes(in: path)
@@ -676,9 +677,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         }
         let removeButton: NSApplication.ModalResponse = changes.isEmpty ? .alertFirstButtonReturn : .alertSecondButtonReturn
         presentSheet(alert) { [weak self] response in
-            guard response == removeButton else { return }
+            guard response == removeButton, let self,
+                  !(self.worktreeInUse?(path) ?? self.workspace.usesWorktree(path)) else { return }
             if let failure = Worktree.remove(path, force: !changes.isEmpty) {
-                self?.showError("Couldn't remove the worktree", failure.description)
+                self.showError("Couldn't remove the worktree", failure.description)
             }
         }
     }

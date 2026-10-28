@@ -98,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             controller.workspace.save(); other.workspace.save(); self.saveWindows()
         }
         controller.ownedPanes = { [weak self] in self?.ownedPanes ?? [] }
+        controller.worktreeInUse = { [weak self] path in
+            self?.windows.contains { $0.workspace.usesWorktree(path) } ?? true
+        }
         controller.onReattach = { [weak self, weak controller] id in
             guard let self, let controller, !self.ownedPanes.contains(id) else { return }
             // Reattach a detached split layout in its original workspace when possible.

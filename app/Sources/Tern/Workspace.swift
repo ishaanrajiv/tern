@@ -299,6 +299,11 @@ final class Workspace {
 
     var allTabs: [Tab] { orderedProjects.flatMap(\.tabs) }
 
+    func usesWorktree(_ path: String) -> Bool {
+        allTabs.contains { $0.worktree == path }
+            || closedTabs.contains { $0.detached && $0.tab.worktree == path }
+    }
+
     var selectedTab: Tab? { allTabs.first { $0.id == selectedTabID } }
 
     func project(containing tabID: String) -> Project? {

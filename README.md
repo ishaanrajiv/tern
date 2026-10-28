@@ -19,6 +19,7 @@ Mac-native, and sessions survive quitting the app.
 - **Windows.** ⌘⇧N opens another window. Move a tab or pane to a new window from the Window menu,
   or move a tab to the next window. Each window remembers its layout and position. Settings →
   General can enable Control-Option-Space to show or hide tern.
+  Worktree removal waits until no window or detached tab uses it.
 - **Commands and output.** zsh, bash and fish report prompt and command boundaries. ⌘⇧↑ / ⌘⇧↓
   jump between prompts. The Edit menu copies or selects the last command's output in a text window,
   or searches retained output with case and regular-expression controls. ⌘⇧F searches all sessions.

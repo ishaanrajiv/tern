@@ -53,8 +53,13 @@ _tern_running=
 _tern_before() {
     [[ -n "$_tern_running" ]] && return
     _tern_running=1
-    printf '\033]133;C\007' > /dev/tty
-    printf '%s' "${1:-$BASH_COMMAND}" > "$TERN_COMMAND_FILE"
+    printf '\033]133;C\007'
+    local _tern_line=${1:-}
+    if [[ -z "$_tern_line" ]]; then
+        _tern_line=$(LC_ALL=C HISTTIMEFORMAT= builtin history 1)
+        _tern_line=${_tern_line#*[[:digit:]][* ] }
+    fi
+    printf '%s' "${_tern_line:-$BASH_COMMAND}" > "$TERN_COMMAND_FILE"
 }
 _tern_prompt() {
     local _tern_status=$?
@@ -89,10 +94,11 @@ else
     }
     PROMPT_COMMAND=_tern_prompt_chain
     if [[ -z "$(trap -p DEBUG)" ]]; then
-        trap '[[ "$BASH_COMMAND" == _tern_prompt_chain || "$BASH_COMMAND" == _tern_prompt ]] || _tern_before "$BASH_COMMAND"' DEBUG
+        trap '[[ "$BASH_COMMAND" == _tern_prompt_chain || "$BASH_COMMAND" == _tern_prompt ]] || _tern_before' DEBUG
     else
         # Never replace an unrelated DEBUG trap. Existing prompt hooks still work.
-        PS0=$'\e]133;C\a'"$PS0"
+        # PS0 assigns the marker in the parent shell so precmd can finish it.
+        PS0='${_tern_running:=$(_tern_before)}'"$PS0"
     fi
 fi
 "#;
@@ -225,17 +231,25 @@ mod tests {
         std::fs::create_dir_all(root.join("commands")).unwrap();
         std::fs::write(root.join(".zshrc"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
         std::fs::write(root.join(".bash_profile"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
-        for shell in ["/bin/zsh", "/bin/bash"] {
+        let mut shells = vec![("/bin/zsh".to_string(), false), ("/bin/bash".to_string(), false)];
+        // Exercise PS0 with an existing DEBUG trap when modern bash is available.
+        if let Ok(shell) = std::env::var("TERN_TEST_BASH") { shells.push((shell, true)); }
+        for (shell, debug_trap) in shells {
+            if debug_trap {
+                std::fs::write(root.join(".bash_profile"), "printf 'USER-STARTUP\\n'\nPS1='test> '\ntrap ':' DEBUG\n").unwrap();
+            }
             let pty = nix::pty::openpty(None, None).unwrap();
-            let mut command = std::process::Command::new(shell);
+            let mut command = std::process::Command::new(&shell);
             command.env("HOME", &root).env("TERN_COMMAND_FILE", root.join("commands/test")).env_remove("ZDOTDIR");
-            super::configure(&mut command, shell, &[]);
+            super::configure(&mut command, &shell, &[]);
             let slave: OwnedFd = pty.slave;
             let mut child = crate::spawn_on_pty(command, slave).unwrap();
             let mut master = std::fs::File::from(pty.master);
             let mut output = Vec::new();
             let until = Instant::now() + Duration::from_secs(5);
-            let mut sent = false;
+            let mut sent = 0;
+            let mut first_command = None;
+            let line = "cd /tmp && printf 'COMMAND-OUTPUT\\n'; false";
             while Instant::now() < until {
                 let mut fds = [nix::poll::PollFd::new(master.as_fd(), nix::poll::PollFlags::POLLIN)];
                 if nix::poll::poll(&mut fds, 100u16).unwrap() == 0 { continue; }
@@ -243,18 +257,26 @@ mod tests {
                 let Ok(n) = master.read(&mut bytes) else { break };
                 if n == 0 { break; }
                 output.extend_from_slice(&bytes[..n]);
-                if !sent && output.windows(6).any(|w| w == b"133;A\x07") {
-                    master.write_all(b"printf 'COMMAND-OUTPUT\\n'; false\r").unwrap();
-                    sent = true;
+                if sent == 0 && output.windows(6).any(|w| w == b"133;A\x07") {
+                    master.write_all(format!("{line}\r").as_bytes()).unwrap();
+                    sent = 1;
                 }
-                if output.windows(8).any(|w| w == b"133;D;1\x07") { break; }
+                if sent == 1 && output.windows(8).any(|w| w == b"133;D;1\x07") {
+                    first_command = std::fs::read_to_string(root.join("commands/test")).ok();
+                    master.write_all(b"printf 'SECOND-OUTPUT\\n'\r").unwrap();
+                    sent = 2;
+                }
+                if sent == 2 && output.windows(8).any(|w| w == b"133;D;0\x07") { break; }
             }
             let _ = child.kill(); let _ = child.wait();
+            assert_eq!(first_command.as_deref().map(str::trim), Some(line), "{shell}");
             let output = String::from_utf8_lossy(&output);
             assert!(output.contains("USER-STARTUP"), "{shell}: {output:?}");
             assert!(output.contains("COMMAND-OUTPUT"), "{shell}: {output:?}");
             assert!(output.contains("133;C"), "{shell}: {output:?}");
             assert!(output.contains("133;D;1"), "{shell}: {output:?}");
+            assert!(output.contains("SECOND-OUTPUT") && output.contains("133;D;0"), "{shell}: {output:?}");
+            assert_eq!(std::fs::read_to_string(root.join("commands/test")).unwrap().trim(), "printf 'SECOND-OUTPUT\\n'", "{shell}");
         }
         std::env::remove_var("TERN_RUNTIME_DIR");
         let _ = std::fs::remove_dir_all(root);
