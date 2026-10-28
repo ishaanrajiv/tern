@@ -13,7 +13,7 @@ Mac-native, and sessions survive quitting the app.
 
 - **Folders and tabs.** The sidebar groups tabs by folder. ⌘N opens the folder picker (open
   folders, recent ones, [zoxide](https://github.com/ajeetdsouza/zoxide) history, and git repos
-  under `~/dev`). ⌘T opens a tab in the current folder, ⌘⇧T opens one in a new git worktree.
+  under `~/dev`). ⌘T opens a tab in the current folder, ⌥⌘T opens one in a new git worktree.
   Ordinary new tabs inherit the focused pane's directory; **New Tab at Project Root** starts at the folder root.
   Tabs name themselves after what they run. Double-click or ⌘R to rename.
 - **Windows.** ⌘⇧N opens another window. Move a tab or pane to a new window from the Window menu,
@@ -78,7 +78,7 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌘N / ⇧⌘N | Open a folder / new window |
 | ⌘O | Browse for a folder in Finder |
 | ⇧⌘K | Connect over SSH |
-| ⌘T / ⇧⌘T | New tab / new tab in its own worktree |
+| ⌘T / ⌥⌘T | New tab / new tab in its own worktree |
 | ⌘D / ⇧⌘D | Split right / split down |
 | ⌘1–9 / ⌃⌘1–9 | Folder / tab within the folder |
 | ⌘[ / ⌘] | Previous / next pane |
@@ -91,9 +91,14 @@ keeps in the Keychain. tern never refreshes that token.
 | ⌃⌘[ / ⌃⌘] | Swap pane with previous / next |
 | ⌃⇧⌘[ / ⌃⇧⌘] | Move tab earlier / later |
 | ⌘W / ⇧⌘W / ⌥⌘W | Close pane / tab / folder |
+| ⇧⌘T | Reopen closed tab |
 | ⌘F / ⌘G / ⇧⌘G | Find, next / previous match |
 | ⌘E | Find the selection |
-| ⇧⌘F | Search output across sessions |
+| ⌥⌘F / ⇧⌘F | Advanced find / search output across sessions |
+| ⇧⌘C | Copy the last command's output |
+| ⇧⌘S | Export scrollback |
+| ⇧⌘O | Open the selected file in your editor |
+| ⌥⌘V | Paste a clipboard image as a file path |
 | ⇧⌘↑ / ⇧⌘↓ | Previous / next prompt |
 | ⌘R | Rename tab |
 | ⌃⌘S, ⌘\ | Toggle sidebar |

@@ -130,7 +130,8 @@ enum ShortcutRegistry {
 
     /// Modifier grammar: [ and ] go back and forward, through panes with ⌘, tabs with ⇧⌘ and
     /// folders with ⌥⌘; adding ⌃ moves the pane or tab instead. ⌥⌘ arrows move focus, ⌃⌘ arrows
-    /// resize. ⇧ reverses or widens a ⌘ shortcut (⌘G / ⇧⌘G, ⌘W / ⇧⌘W).
+    /// resize. ⇧ reverses or widens a ⌘ shortcut (⌘G / ⇧⌘G, ⌘C / ⇧⌘C), and ⌥ gives a variant
+    /// (⌘V / ⌥⌘V, ⌘F / ⌥⌘F).
     static let specs: [ShortcutSpec] = [
         spec("app.settings", "Settings…", .app, "tern", KeyBinding(",", cmd)),
         spec("settings.quick", "Quick Settings…", .app, "tern", KeyBinding(",", shiftCmd), reserved: true),
@@ -151,11 +152,11 @@ enum ShortcutRegistry {
         spec("remote.ssh", "Connect over SSH…", .folders, "File", KeyBinding("k", shiftCmd)),
         spec("tab.new", "New Tab", .tabs, "File", KeyBinding("t", cmd)),
         spec("tab.newAtRoot", "New Tab at Project Root", .tabs, "File"),
-        spec("tab.newWorktree", "New Tab in Worktree", .tabs, "File", KeyBinding("t", shiftCmd)),
+        spec("tab.newWorktree", "New Tab in Worktree", .tabs, "File", KeyBinding("t", optCmd)),
         spec("tab.detach", "Detach Tab", .tabs, "File"),
         spec("tab.detached", "Detached Sessions…", .tabs, "File"),
-        spec("tab.reopen", "Reopen Closed Tab", .tabs, "File"),
-        spec("output.export", "Export Scrollback…", .terminal, "File"),
+        spec("tab.reopen", "Reopen Closed Tab", .tabs, "File", KeyBinding("t", shiftCmd)),
+        spec("output.export", "Export Scrollback…", .terminal, "File", KeyBinding("s", shiftCmd)),
         spec("folder.browse", "Browse for Folder…", .folders, "File", KeyBinding("o", cmd)),
         spec("pane.splitRight", "Split Right", .panes, "File", KeyBinding("d", cmd)),
         spec("pane.splitDown", "Split Down", .panes, "File", KeyBinding("d", shiftCmd)),
@@ -164,11 +165,11 @@ enum ShortcutRegistry {
         spec("tab.close", "Close Tab", .tabs, "File", KeyBinding("w", shiftCmd)),
         spec("folder.close", "Close Folder", .folders, "File", KeyBinding("w", optCmd)),
 
-        spec("edit.pasteImagePath", "Paste Image as File Path", .terminal, "Edit"),
-        spec("file.openSelected", "Open Selected File in Editor", .terminal, "Edit"),
-        spec("output.copyLast", "Copy Last Command Output", .terminal, "Edit"),
+        spec("edit.pasteImagePath", "Paste Image as File Path", .terminal, "Edit", KeyBinding("v", optCmd)),
+        spec("file.openSelected", "Open Selected File in Editor", .terminal, "Edit", KeyBinding("o", shiftCmd)),
+        spec("output.copyLast", "Copy Last Command Output", .terminal, "Edit", KeyBinding("c", shiftCmd)),
         spec("output.selectLast", "Select Last Command Output…", .terminal, "Edit"),
-        spec("search.advanced", "Advanced Find…", .search, "Edit"),
+        spec("search.advanced", "Advanced Find…", .search, "Edit", KeyBinding("f", optCmd)),
         spec("search.all", "Search All Terminal Output…", .search, "Edit", KeyBinding("f", shiftCmd)),
         spec("search.find", "Find…", .search, "Edit", KeyBinding("f", cmd)),
         spec("search.next", "Find Next", .search, "Edit", KeyBinding("g", cmd)),
@@ -385,9 +386,14 @@ enum ShortcutRegistry {
         ("Swap pane with previous / next", ["pane.swapPrevious", "pane.swapNext"]),
         ("Move tab earlier / later", ["tab.moveEarlier", "tab.moveLater"]),
         ("Close pane / tab / folder", ["pane.close", "tab.close", "folder.close"]),
+        ("Reopen closed tab", ["tab.reopen"]),
         ("Find, next / previous match", ["search.find", "search.next", "search.previous"]),
         ("Find the selection", ["search.useSelection"]),
-        ("Search output across sessions", ["search.all"]),
+        ("Advanced find / search output across sessions", ["search.advanced", "search.all"]),
+        ("Copy the last command's output", ["output.copyLast"]),
+        ("Export scrollback", ["output.export"]),
+        ("Open the selected file in your editor", ["file.openSelected"]),
+        ("Paste a clipboard image as a file path", ["edit.pasteImagePath"]),
         ("Previous / next prompt", ["prompt.previous", "prompt.next"]),
         ("Rename tab", ["tab.rename"]),
         ("Toggle sidebar", ["view.sidebar"]),
