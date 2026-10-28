@@ -11,6 +11,9 @@ behaviour, shortcuts, build instructions and known gaps. Keep it current when be
   persistence. `TernClient.swift` communicates with the daemon.
 - `TerminalView.swift` and `GhosttyApp.swift` connect the UI to libghostty. `Commands.swift`
   supplies both the menu bar and command palette.
+- `Shortcuts.swift` declares every app shortcut: stable id, title, menu, default keys and
+  the rules that keep ⌃/⌥ keys for the terminal. Add or change bindings there, then regenerate
+  the README's Keys table with `TERN_UPDATE_README=1 swift test --package-path app`.
 - `SidebarView.swift`, `ContentHeader.swift` and `AgentLogos.swift` draw session status.
   Keep status meanings consistent across rows, collapsed folders and the content header.
 - `crates/tern/` contains the Rust `tern` CLI and `ternd` daemon. `src/lib.rs` defines the shared

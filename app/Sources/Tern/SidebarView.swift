@@ -10,7 +10,7 @@ struct SidebarActions {
     var update: (AgentUpdates.Version) -> Void
 }
 
-/// Number badges shown while ⌘ (folders) or ⌘⇧ (tabs) is held.
+/// Number badges shown while ⌘ (folders) or ⌃⌘ (tabs) is held.
 @Observable
 final class ShortcutHints {
     enum Kind { case folders, tabs }
@@ -137,7 +137,7 @@ private struct FolderSection: View {
             if !project.collapsed {
                 ForEach(Array(project.tabs.enumerated()), id: \.element.id) { index, tab in
                     TabRow(workspace: workspace, tab: tab, now: now, actions: actions,
-                           hint: tabHints && index < 9 ? "⇧⌘\(index + 1)" : nil)
+                           hint: tabHints && index < 9 ? ShortcutRegistry.label("tab.select.\(index + 1)") : nil)
                         .draggable("tern-tab:" + tab.id)
                         .dropDestination(for: String.self) { items, _ in
                             guard let item = items.first, item.hasPrefix("tern-tab:") else { return false }
@@ -205,7 +205,7 @@ private struct FolderHeader: View {
                     .help("\(waiting) need\(waiting == 1 ? "s" : "") you")
             }
             if let hint {
-                KeyBadge(text: "⌘\(hint)")
+                KeyBadge(text: ShortcutRegistry.label("folder.select.\(hint)"))
             } else if hovering {
                 Button { actions.newTab(project.path) } label: {
                     Image(systemName: "plus")
@@ -214,7 +214,7 @@ private struct FolderHeader: View {
                         .background(Palette.selection, in: RoundedRectangle(cornerRadius: 5))
                 }
                 .buttonStyle(.plain)
-                .help("New tab in \(project.name) (⌘T)")
+                .help("New tab in \(project.name) (\(ShortcutRegistry.label("tab.new")))")
             }
         }
         .padding(.horizontal, 8)
@@ -298,7 +298,7 @@ private struct TabRow: View {
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: 22, alignment: .trailing)
-                .help("Close tab (⇧⌘W)")
+                .help("Close tab (\(ShortcutRegistry.label("tab.close")))")
             } else if indicator == .trailing, busy {
                 Spinner(color: status == .working ? Palette.working : Palette.ring)
                     .frame(width: 12, height: 12)

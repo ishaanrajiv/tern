@@ -162,13 +162,4 @@ final class TerminalFeaturesTests: XCTestCase {
         XCTAssertEqual(dropped, 0)
         XCTAssertEqual(loaded?.paneRemote?["p"], remote)
     }
-
-    func testShortcutParsingRejectsDuplicatesAndMalformedInput() throws {
-        let shortcuts = try TerminalPreferences.parseShortcuts("New Tab = cmd+shift+y\nFind… = ctrl+f")
-        XCTAssertEqual(shortcuts["New Tab"]?.key, "y")
-        XCTAssertEqual(shortcuts["New Tab"]?.modifiers, [.command, .shift])
-        for text in ["New Tab", "New Tab = x", "New Tab = meta+x", "New Tab = cmd+xx", "A = cmd+x\nB = cmd+x", "A = cmd+x\nA = cmd+y"] {
-            XCTAssertThrowsError(try TerminalPreferences.parseShortcuts(text), text)
-        }
-    }
 }

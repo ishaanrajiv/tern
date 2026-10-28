@@ -70,30 +70,44 @@ keeps in the Keychain. tern never refreshes that token.
 
 ## Keys
 
+<!-- keys:start -->
 | Keys | Action |
 |---|---|
-| ⌘K | Command palette and session search across windows |
-| ⌘J | Next tab needing attention |
-| ⌘N / ⌘⇧N | Open a folder / new window |
-| ⌘T / ⌘⇧T | New tab / new tab in its own worktree |
+| ⇧⌘P | Command palette and session search across windows |
+| ⌘J / ⇧⌘J | Next / previous tab needing attention |
+| ⌘N / ⇧⌘N | Open a folder / new window |
 | ⌘O | Browse for a folder in Finder |
-| ⌘D / ⌘⇧D | Split right / split down |
-| ⌘⌥ + arrows, ⌘[ / ⌘] | Move focus between panes |
-| ⌘⌃ + arrows | Resize the focused pane |
-| ⌘↩ | Zoom the focused pane |
-| ⌘1–9 / ⌘⇧1–9 | Folder / tab within the folder |
-| ⌘⇧[ / ⌘⇧], ⌃⇥ | Previous / next tab |
-| ⌘W / ⌘⇧W / ⌘⌥W | Close pane / tab / folder |
-| ⌘F, ⌘G / ⌘⇧G | Find, next / previous match |
-| ⌘⇧F | Search output across sessions |
-| ⌘⇧↑ / ⌘⇧↓ | Previous / next prompt |
+| ⇧⌘K | Connect over SSH |
+| ⌘T / ⇧⌘T | New tab / new tab in its own worktree |
+| ⌘D / ⇧⌘D | Split right / split down |
+| ⌘1–9 / ⌃⌘1–9 | Folder / tab within the folder |
+| ⌘[ / ⌘] | Previous / next pane |
+| ⇧⌘[ / ⇧⌘], ⌃⇧⇥ / ⌃⇥ | Previous / next tab |
+| ⌥⌘[ / ⌥⌘] | Previous / next folder |
+| ⌥⌘ + arrows | Move focus between panes |
+| ⌃⌘ + arrows | Resize the focused pane |
+| ⌃⌘= | Equalize panes |
+| ⇧⌘↩, ⌘↩ | Zoom the focused pane |
+| ⌃⌘[ / ⌃⌘] | Swap pane with previous / next |
+| ⌃⇧⌘[ / ⌃⇧⌘] | Move tab earlier / later |
+| ⌘W / ⇧⌘W / ⌥⌘W | Close pane / tab / folder |
+| ⌘F / ⌘G / ⇧⌘G | Find, next / previous match |
+| ⌘E | Find the selection |
+| ⇧⌘F | Search output across sessions |
+| ⇧⌘↑ / ⇧⌘↓ | Previous / next prompt |
 | ⌘R | Rename tab |
-| ⌘\ | Toggle sidebar |
-| ⌘⇧K | Clear screen |
+| ⌃⌘S, ⌘\ | Toggle sidebar |
+| ⌘K | Clear screen |
 | ⌘= / ⌘- / ⌘0 | Text size |
 | ⌘, | Settings |
+| ⌃⌥Space | Show or hide tern from any app, once enabled in Settings → General |
+<!-- keys:end -->
 
-tern's shortcuts take priority over terminal bindings. You can rebind both in Settings → Terminal.
+tern's shortcuts take priority over terminal bindings. All of them use ⌘ (⌃⇥ aside), so ⌃ and ⌥
+keys always reach the terminal and the agent in it. To rebind one, add a line such as
+`New Tab = cmd+shift+y` (or `= none`) under Settings → Terminal → App shortcuts. tern ignores an
+override that clashes with another command or with a macOS shortcut. Ghostty key bindings go under
+Terminal bindings.
 Multiline pastes without bracketed paste, and clipboard access through escape codes, ask first.
 
 ## Build

@@ -70,7 +70,7 @@ struct GeneralSettings: View {
                     Text("Most recent first").tag(FolderOrder.recent.rawValue)
                 } label: {
                     Labeled("Order", caption: folderOrder == FolderOrder.manual.rawValue
-                            ? "Drag to reorder. ⌘1–9 follow this order." : nil)
+                            ? "Drag to reorder. Folder shortcuts (⌘1–9) follow this order." : nil)
                 }
                 RepoRootsList(text: $repoRoots)
             }
@@ -85,14 +85,14 @@ struct GeneralSettings: View {
             }
 
             Section("Quick access") {
-                Toggle("Show or hide tern with Control-Option-Space", isOn: $globalHotkey)
+                Toggle("Show or hide tern with \(ShortcutRegistry.label("app.globalHotkey"))", isOn: $globalHotkey)
             }
             Section("Notifications") {
                 Toggle("Notify when a background command takes over 10 seconds", isOn: $notifyCommandDone)
             }
             Section("Tabs") {
                 Toggle(isOn: $worktrees) {
-                    Labeled("New tabs use git worktrees", caption: "⌘⇧T always opens a worktree.")
+                    Labeled("New tabs use git worktrees", caption: "\(ShortcutRegistry.label("tab.newWorktree")) always opens a worktree.")
                 }
             }
         }
@@ -293,7 +293,7 @@ private struct RepoRootsList: View {
             Button("Add Folder…", action: add)
         } label: {
             Labeled("Find repositories in", caption: roots.isEmpty
-                    ? "Only recent folders appear in ⌘N."
+                    ? "Only recent folders appear in \(ShortcutRegistry.label("folder.open"))."
                     : "Search up to three levels deep.")
         }
         ForEach(roots, id: \.self) { root in

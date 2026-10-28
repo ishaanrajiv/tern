@@ -288,7 +288,7 @@ struct FolderPickerView: View {
                                 }
                             }
                             if sections.isEmpty {
-                                Text(model.query.isEmpty ? "No folders yet. Type a path, or press ⌘O to browse."
+                                Text(model.query.isEmpty ? "No folders yet. Type a path, or press \(ShortcutRegistry.label("folder.browse")) to browse."
                                                          : "No matching folders")
                                     .font(.system(size: 13))
                                     .foregroundStyle(.secondary)
@@ -306,10 +306,11 @@ struct FolderPickerView: View {
 
                 HStack(spacing: 14) {
                     KeyHint(key: "↩", label: "Open")
-                    KeyHint(key: "⌘↩", label: "Open in a new worktree")
+                    // Any of Zoom Pane's keys does this while the picker is up; the last is ⌘↩ by default.
+                    KeyHint(key: ShortcutRegistry.bindings["pane.zoom"]?.last?.label ?? "", label: "Open in a new worktree")
                     KeyHint(key: "⇥", label: "Complete path")
                     Spacer()
-                    KeyHint(key: "⌘O", label: "Browse…")
+                    KeyHint(key: ShortcutRegistry.label("folder.browse"), label: "Browse…")
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 9)
