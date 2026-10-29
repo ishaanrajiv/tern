@@ -27,6 +27,8 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let finishedMs: UInt64?
     var exitCode: Int? = nil
     var durationMs: UInt64? = nil
+    /// A command is running now, so `exitCode` is the previous one's; nil from an older ternd.
+    var commandRunning: Bool? = nil
 }
 
 /// How the running ternd compares with this app's, from `tern daemon status`.

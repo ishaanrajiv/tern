@@ -254,7 +254,7 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertEqual(w.title(for: tab), "Fix login redirect")
     }
 
-    func testCommandOutcomesSpeakPlainly() {
+    func testCommandOutcomesSpeakPlainly() throws {
         XCTAssertNil(CommandOutcome(exitCode: 0, durationMs: 40))
         XCTAssertNil(CommandOutcome(exitCode: nil, durationMs: 40))
         XCTAssertNil(CommandOutcome(exitCode: 130, durationMs: 60_000), "⌃C says nothing")
@@ -266,6 +266,17 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertEqual(CommandOutcome(exitCode: 127, durationMs: 5)?.text, "Command not found")
         XCTAssertEqual(CommandOutcome.duration(12_400), "12s")
         XCTAssertEqual(CommandOutcome.duration(3_900_000), "1h 5m")
+
+        // `false`, then `read`: the shell stays in front, but the failure is the last command's.
+        func session(running: Bool) throws -> SessionInfo {
+            let json = #"{"id":"p","pid":1,"cols":80,"rows":24,"clients":1,"process":"zsh","title":"","last_output_ms":0,"bells":0,"#
+                + #""exit_code":1,"duration_ms":4,"command_running":\#(running)}"#
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(SessionInfo.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(CommandOutcome.shown(for: try session(running: false))?.text, "Failed")
+        XCTAssertNil(CommandOutcome.shown(for: try session(running: true)))
     }
 
     func testClosingWindowTransfersDetachedRecoveryMetadata() {

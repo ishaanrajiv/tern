@@ -166,6 +166,8 @@ pub struct AgentReport {
     pub at_ms: u64,
     pub session: Option<String>,
     pub message: Option<String>,
+    /// The subagent waiting on the permission request, while the state is `NeedsYou`.
+    pub asked_by: Option<String>,
 }
 
 pub fn now_ms() -> u64 {
@@ -223,6 +225,7 @@ fn session_info(s: &Session) -> SessionInfo {
         finished_ms: if st.capture.finished_ms > 0 { st.capture.finished_ms } else { shell::finished_ms(&s.id) },
         exit_code: st.capture.exit_code,
         duration_ms: st.capture.duration_ms,
+        command_running: st.capture.running(),
     }
 }
 
@@ -234,16 +237,45 @@ pub fn list_sessions(sessions: &Sessions) -> Vec<SessionInfo> {
 }
 
 /// Records what an agent's hooks reported. Returns false if there's no such session.
-pub fn report(sessions: &Sessions, id: &str, agent: String, state: AgentState, agent_session: Option<String>, message: Option<String>) -> bool {
+pub fn report(
+    sessions: &Sessions,
+    id: &str,
+    agent: String,
+    state: AgentState,
+    agent_session: Option<String>,
+    message: Option<String>,
+    subagent: Option<String>,
+) -> bool {
     let Some(s) = sessions.lock().unwrap().get(id).cloned() else { return false };
     let mut st = s.state.lock().unwrap();
-    st.agent = Some(merge_report(st.agent.take(), agent, state, agent_session, message, now_ms()));
+    if counts(st.agent.as_ref(), state, subagent.as_deref()) {
+        st.agent = Some(merge_report(st.agent.take(), agent, state, agent_session, message, subagent, now_ms()));
+    }
     true
+}
+
+/// A subagent speaks for the turn only to ask for permission, or to say the tool it asked
+/// about has run. Anything else it does, like the helper Claude Code runs after Stop, would
+/// make a finished turn look busy.
+fn counts(prev: Option<&AgentReport>, state: AgentState, subagent: Option<&str>) -> bool {
+    match subagent {
+        None => true,
+        Some(_) if state == AgentState::NeedsYou => true,
+        Some(id) => prev.is_some_and(|p| p.state == AgentState::NeedsYou && p.asked_by.as_deref() == Some(id)),
+    }
 }
 
 /// The new report, keeping the agent's session id and message from the previous
 /// one when this one doesn't carry them.
-fn merge_report(prev: Option<AgentReport>, agent: String, state: AgentState, session: Option<String>, message: Option<String>, at_ms: u64) -> AgentReport {
+fn merge_report(
+    prev: Option<AgentReport>,
+    agent: String,
+    state: AgentState,
+    session: Option<String>,
+    message: Option<String>,
+    subagent: Option<String>,
+    at_ms: u64,
+) -> AgentReport {
     let (old_session, old_message) = match prev {
         Some(p) if p.agent == agent => (p.session, p.message),
         _ => (None, None),
@@ -252,7 +284,8 @@ fn merge_report(prev: Option<AgentReport>, agent: String, state: AgentState, ses
         AgentState::Working => None,
         _ => message.or(if state == AgentState::Done { old_message } else { None }),
     };
-    AgentReport { agent, state, at_ms, session: session.or(old_session), message }
+    let asked_by = subagent.filter(|_| state == AgentState::NeedsYou);
+    AgentReport { agent, state, at_ms, session: session.or(old_session), message, asked_by }
 }
 
 pub fn spawn_session(
@@ -507,6 +540,7 @@ fn answer_prompt(session: &Session, input: &[u8]) {
         a.state = AgentState::Working;
         a.at_ms = now_ms();
         a.message = None;
+        a.asked_by = None;
     }
 }
 
@@ -546,10 +580,14 @@ mod tests {
         capture.write(b"\x1b]133;D;0\x07");
         assert!(!capture.running());
         assert!(capture.duration_ms.is_some_and(|d| d < NAMES_TAB_MS));
+        // `false`, then `read`: the shell stays in front while its exit code is the old one.
+        capture.write(b"\x1b]133;C\x07\x1b]133;D;1\x07\x1b]133;C\x07");
+        assert!(capture.running());
+        assert_eq!(capture.exit_code, Some(1));
     }
 
     fn report(agent: &str, state: AgentState, session: Option<&str>, message: Option<&str>) -> AgentReport {
-        AgentReport { agent: agent.into(), state, at_ms: 0, session: session.map(Into::into), message: message.map(Into::into) }
+        AgentReport { agent: agent.into(), state, at_ms: 0, session: session.map(Into::into), message: message.map(Into::into), asked_by: None }
     }
 
     #[test]
@@ -590,7 +628,7 @@ mod tests {
     fn reports_keep_the_session_id_and_last_reply() {
         let prev = report("claude", AgentState::Done, Some("abc"), Some("All done."));
         // A later report without the ids keeps them; "done" keeps the last reply.
-        let next = merge_report(Some(prev), "claude".into(), AgentState::Done, None, None, 1);
+        let next = merge_report(Some(prev), "claude".into(), AgentState::Done, None, None, None, 1);
         assert_eq!(next.session.as_deref(), Some("abc"));
         assert_eq!(next.message.as_deref(), Some("All done."));
     }
@@ -598,7 +636,7 @@ mod tests {
     #[test]
     fn working_clears_the_message() {
         let prev = report("claude", AgentState::NeedsYou, Some("abc"), Some("Allow Bash?"));
-        let next = merge_report(Some(prev), "claude".into(), AgentState::Working, None, Some("ignored".into()), 1);
+        let next = merge_report(Some(prev), "claude".into(), AgentState::Working, None, Some("ignored".into()), None, 1);
         assert_eq!(next.message, None);
         assert_eq!(next.session.as_deref(), Some("abc"));
     }
@@ -606,15 +644,31 @@ mod tests {
     #[test]
     fn a_different_agent_starts_fresh() {
         let prev = report("claude", AgentState::Done, Some("abc"), Some("bye"));
-        let next = merge_report(Some(prev), "codex".into(), AgentState::Idle, None, None, 1);
+        let next = merge_report(Some(prev), "codex".into(), AgentState::Idle, None, None, None, 1);
         assert_eq!(next.session, None);
         assert_eq!(next.message, None);
     }
 
     #[test]
+    fn a_subagent_only_answers_its_own_permission_request() {
+        let done = report("claude", AgentState::Done, Some("abc"), Some("All done."));
+        // The helper Claude Code runs after Stop leaves a finished turn finished.
+        assert!(!counts(Some(&done), AgentState::Working, Some("helper")));
+        assert!(counts(Some(&done), AgentState::Working, None));
+
+        let asked = merge_report(Some(done), "claude".into(), AgentState::NeedsYou, None, Some("Allow Bash?".into()), Some("sub".into()), 1);
+        assert_eq!(asked.asked_by.as_deref(), Some("sub"));
+        // Another subagent's tool doesn't hide the question; the one that asked does, once its tool runs.
+        assert!(!counts(Some(&asked), AgentState::Working, Some("other")));
+        assert!(counts(Some(&asked), AgentState::Working, Some("sub")));
+        let resumed = merge_report(Some(asked), "claude".into(), AgentState::Working, None, None, Some("sub".into()), 2);
+        assert_eq!((resumed.state, resumed.asked_by), (AgentState::Working, None));
+    }
+
+    #[test]
     fn needs_you_does_not_inherit_an_old_reply() {
         let prev = report("codex", AgentState::Done, None, Some("finished"));
-        let next = merge_report(Some(prev), "codex".into(), AgentState::NeedsYou, None, None, 1);
+        let next = merge_report(Some(prev), "codex".into(), AgentState::NeedsYou, None, None, None, 1);
         assert_eq!(next.message, None);
     }
 }

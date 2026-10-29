@@ -31,8 +31,7 @@ struct ContentHeader: View {
                     }
                     // How the last command ended, only when it says something: a failure, or a
                     // long run. Gone once the next command starts.
-                    if let s, s.agent == nil, Workspace.shells.contains(s.process),
-                       let outcome = CommandOutcome(exitCode: s.exitCode, durationMs: s.durationMs) {
+                    if let s, let outcome = CommandOutcome.shown(for: s) {
                         Text(outcome.text)
                             .font(.system(size: 11).monospacedDigit())
                             .foregroundStyle(outcome.failed ? Color.red : Color.secondary)
@@ -133,6 +132,13 @@ nonisolated struct CommandOutcome: Equatable {
     let failed: Bool
     /// "Exit code 1 · 2.3s", for a tooltip.
     let detail: String
+
+    /// What the header says about a session's last command. Nothing while an agent or the next
+    /// command runs, including a builtin like `read`, which leaves the shell in front.
+    @MainActor static func shown(for s: SessionInfo) -> CommandOutcome? {
+        guard s.agent == nil, s.commandRunning != true, Workspace.shells.contains(s.process) else { return nil }
+        return CommandOutcome(exitCode: s.exitCode, durationMs: s.durationMs)
+    }
 
     /// Nil when there's nothing worth saying: a quick success, or a command you stopped with ⌃C.
     init?(exitCode: Int?, durationMs: UInt64?) {
