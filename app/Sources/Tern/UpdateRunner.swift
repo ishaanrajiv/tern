@@ -23,7 +23,15 @@ final class UpdateRunner {
     nonisolated static let prefix = "update-"
     nonisolated static func isRunSession(_ id: String) -> Bool { id.hasPrefix(prefix) }
 
+    /// "codex" for `update-codex-1a2b3c4d`.
+    nonisolated static func agent(ofRun id: String) -> String? {
+        guard isRunSession(id) else { return nil }
+        return id.dropFirst(prefix.count).split(separator: "-").first.map(String.init)
+    }
+
     private(set) var runs: [String: Run] = [:]
+    /// The sessions of updaters still running.
+    var runningIDs: Set<String> { Set(runs.values.filter { $0.phase == .running }.map(\.id)) }
     /// Called when an updater exits: the agent, and whether it succeeded.
     @ObservationIgnored var onFinish: ((String, Bool) -> Void)?
     @ObservationIgnored private let ternBinary: String
@@ -31,6 +39,9 @@ final class UpdateRunner {
     @ObservationIgnored private var lastOutput: [String: UInt64] = [:]
     @ObservationIgnored private var asked: [String: Date] = [:]
     @ObservationIgnored private var timer: Timer?
+    /// Runs closed here, whose sessions may still be listed for a moment.
+    @ObservationIgnored private var closed: Set<String> = []
+    @ObservationIgnored private var swept = false
 
     init(ternBinary: String) { self.ternBinary = ternBinary }
 
@@ -39,6 +50,8 @@ final class UpdateRunner {
     }
 
     nonisolated static func statusFile(_ id: String) -> URL { statusDirectory.appendingPathComponent(id + ".status") }
+    /// The updater's command line, so a relaunched tern can name the run it finds.
+    nonisolated static func commandFile(_ id: String) -> URL { statusDirectory.appendingPathComponent(id + ".command") }
 
     /// The session's command: the updater in the user's login shell, then its exit code in
     /// `status`. A failed run keeps its terminal until Return, so the error stays readable.
@@ -64,14 +77,37 @@ final class UpdateRunner {
         let status = Self.statusFile(id)
         try? FileManager.default.createDirectory(at: Self.statusDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try? FileManager.default.removeItem(at: status)
+        try? command.write(to: Self.commandFile(id), atomically: true, encoding: .utf8)
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let terminal = TerminalView(sessionID: id, ternBinary: ternBinary, cwd: NSHomeDirectory(),
-                                    command: Self.script(command: command, shell: shell, status: status.path))
+        open(Run(id: id, agent: agent, command: command), command: Self.script(command: command, shell: shell, status: status.path))
+    }
+
+    /// Attaches a console to the run's session, creating the session with `command` if needed.
+    private func open(_ run: Run, command: String) {
+        let agent = run.agent, id = run.id
+        let terminal = TerminalView(sessionID: id, ternBinary: ternBinary, cwd: NSHomeDirectory(), command: command)
         terminal.onClose = { [weak self] in self?.attachEnded(agent, id: id) }
         let console = UpdateConsole(title: "Updating \(UpdateSource(rawValue: agent)?.name ?? agent)", terminal: terminal)
         console.onCloseRequest = { [weak self] in self?.closeRequested(agent) }
         consoles[agent] = console
-        runs[agent] = Run(id: id, agent: agent, command: command)
+        runs[agent] = run
+        startTimer()
+    }
+
+    /// An updater tern quit during: ternd kept it, so this launch picks it up again.
+    private func adopt(_ id: String) {
+        guard let agent = Self.agent(ofRun: id), runs[agent] == nil, !closed.contains(id) else { return }
+        let command = (try? String(contentsOf: Self.commandFile(id), encoding: .utf8))
+            ?? (agent == "claude" ? "claude update" : "\(agent) update")
+        // `true` only runs if the session ended since it was listed; attaching then ends the run.
+        open(Run(id: id, agent: agent, command: command), command: "true")
+        if let code = Self.exitCode(id) {
+            // It finished while tern was closed; a failure still waits for Return.
+            finish(agent, code: code)
+        }
+    }
+
+    private func startTimer() {
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.tick() }
@@ -87,7 +123,9 @@ final class UpdateRunner {
         if run.attached { TernClient.kill(run.id) }
         consoles.removeValue(forKey: agent)?.dispose()
         lastOutput[run.id] = nil; asked[run.id] = nil
+        closed.insert(run.id)
         try? FileManager.default.removeItem(at: Self.statusFile(run.id))
+        try? FileManager.default.removeItem(at: Self.commandFile(run.id))
         stopTimerIfIdle()
     }
 
@@ -107,7 +145,19 @@ final class UpdateRunner {
     @ObservationIgnored var stillBehind: ((String) -> Bool)?
 
     func update(sessions: [SessionInfo]) {
-        for s in sessions where Self.isRunSession(s.id) { lastOutput[s.id] = s.lastOutputMs }
+        for s in sessions where Self.isRunSession(s.id) {
+            lastOutput[s.id] = s.lastOutputMs
+            if !runs.values.contains(where: { $0.id == s.id }) { adopt(s.id) }
+        }
+        if !swept { swept = true; sweep(keeping: Set(sessions.map(\.id) + runs.values.map(\.id))) }
+    }
+
+    /// Files left by runs whose sessions ended while tern was closed.
+    private func sweep(keeping live: Set<String>) {
+        let fm = FileManager.default
+        for url in (try? fm.contentsOfDirectory(at: Self.statusDirectory, includingPropertiesForKeys: nil)) ?? [] {
+            if !live.contains(url.deletingPathExtension().lastPathComponent) { try? fm.removeItem(at: url) }
+        }
     }
 
     private func closeRequested(_ agent: String) {

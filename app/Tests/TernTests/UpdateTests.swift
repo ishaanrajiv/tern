@@ -64,9 +64,16 @@ final class UpdateTests: XCTestCase {
             try session("p-3", process: "node", command: "npm run dev"),
             try session("p-4", process: "claude", agent: "claude"),
             try session("p-5", process: "vim"),
+            // A shell running a script, not sitting at its prompt.
+            try session("p-6", process: "bash", command: "bash long-script.sh"),
+            // A shell whose terminal can't be read.
+            try session("p-7", process: "zsh"),
             try session("update-codex-1234", process: "codex"),
+            try session("update-claude-5678", process: "sh"),
         ]
-        XCTAssertEqual(BusySessions.programs(in: sessions), ["npm run dev", "Claude Code", "vim"])
+        let atPrompt: Set = ["p-1", "p-2", "p-5"]
+        XCTAssertEqual(BusySessions.programs(in: sessions, updating: ["update-claude-5678"]) { atPrompt.contains($0.id) },
+                       ["npm run dev", "Claude Code", "vim", "bash long-script.sh", "zsh", "the Claude Code update"])
         XCTAssertEqual(BusySessions.summary(["a", "b", "c", "d"]), "a, b and 2 more")
         XCTAssertEqual(BusySessions.summary(["a", "b"]), "a and b")
     }
@@ -146,6 +153,14 @@ final class UpdateTests: XCTestCase {
     func testRunSessionsAreNotTabs() {
         XCTAssertTrue(UpdateRunner.isRunSession("update-claude-1a2b3c4d"))
         XCTAssertFalse(UpdateRunner.isRunSession("p-123"))
+        XCTAssertEqual(UpdateRunner.agent(ofRun: "update-codex-1a2b3c4d"), "codex")
+        XCTAssertNil(UpdateRunner.agent(ofRun: "p-123"))
+    }
+
+    /// launchd (pid 1) has no terminal, so it never reads as a shell at its prompt.
+    func testAProcessWithoutATerminalIsNotAtAPrompt() throws {
+        let me = try session("p-1", process: "zsh")
+        XCTAssertFalse(BusySessions.shellHoldsTerminal(me))
     }
 
     private func release(_ tag: String, prerelease: Bool = false, draft: Bool = false, assets: Bool = true) -> [String: Any] {
@@ -155,6 +170,42 @@ final class UpdateTests: XCTestCase {
                 "prerelease": prerelease,
                 "assets": assets ? [["name": name, "browser_download_url": url + name, "size": 10],
                                     ["name": name + ".sha256", "browser_download_url": url + name + ".sha256", "size": 64]] : []]
+    }
+
+    /// Checks carry on once a release is staged, and a different pick replaces it.
+    @MainActor
+    func testANewerReleaseReplacesTheStagedOne() throws {
+        let defaults = UserDefaults.standard
+        let saved = [Prefs.includePrereleases, Prefs.downloadAppUpdates].map { ($0, defaults.object(forKey: $0)) }
+        addTeardownBlock { for (key, value) in saved { defaults.set(value, forKey: key) } }
+        defaults.set(false, forKey: Prefs.includePrereleases)
+        defaults.set(false, forKey: Prefs.downloadAppUpdates)
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tern-staged-\(UUID().uuidString)")
+        let bundle = dir.appendingPathComponent("Tern.app")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let decode = { (list: [[String: Any]]) in
+            try JSONDecoder().decode([AppRelease].self, from: JSONSerialization.data(withJSONObject: list))
+        }
+
+        let updates = AppUpdates()
+        updates.staged(bundle, tag: "v9.0.0")
+        updates.received(try decode([release("v9.0.0")]), interactive: false, current: "0.0.3")
+        XCTAssertEqual(updates.phase, .ready)
+        XCTAssertEqual(updates.staged, bundle)
+
+        updates.received(try decode([release("v9.0.1"), release("v9.0.0")]), interactive: false, current: "0.0.3")
+        XCTAssertEqual(updates.release?.tag_name, "v9.0.1")
+        XCTAssertNil(updates.staged)
+        XCTAssertEqual(updates.phase, .idle)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+
+        // Prereleases turned off: a staged alpha is no longer offered.
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        updates.staged(bundle, tag: "v9.1.0-alpha.1")
+        updates.received(try decode([release("v9.1.0-alpha.1", prerelease: true)]), interactive: false, current: "0.0.3")
+        XCTAssertNil(updates.release)
+        XCTAssertNil(updates.staged)
     }
 
     func testNewestReleaseSkipsDraftsIncompleteAndUnwantedPrereleases() throws {

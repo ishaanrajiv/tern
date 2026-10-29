@@ -60,10 +60,12 @@ Mac-native, and sessions survive quitting the app.
     background (checksum, archive paths, signing team, Gatekeeper). Once verified it offers
     Restart to Update, or installs when tern quits. Sessions keep running in ternd either way.
   - *ternd* is never restarted without you. Its row names the programs a restart would end, and
-    When Idle restarts it once nothing is running. An incompatible ternd also asks with a sheet.
+    When Idle restarts it once nothing is running: every shell is back at its prompt and no
+    agent update is in progress. An incompatible ternd also asks with a sheet.
   - *Claude Code and Codex* update with their own updater (Homebrew's for a cask install) in a
     hidden session, never a tab. Show Output opens its terminal; it opens by itself when the
-    updater asks a question or fails, and closes after a success. tern warns when a second copy
+    updater asks a question or fails, and closes after a success. An update still running when
+    tern quits carries on in ternd and reappears at the next launch. tern warns when a second copy
     on PATH would keep running the old version.
 - **Native controls.** The terminal has a context menu and exposes visible text and selection to
   accessibility tools. tern → Secure Keyboard Entry protects keyboard input while tern is active.

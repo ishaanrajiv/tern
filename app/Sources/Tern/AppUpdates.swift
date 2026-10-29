@@ -211,6 +211,8 @@ nonisolated enum UpdateInstaller {
     /// GitHub answers an unchanged list with 304, which doesn't count against its hourly limit.
     @ObservationIgnored private var etag: String?
     @ObservationIgnored private var cached: Data?
+    /// A release list request is in flight; a staged update stays ready meanwhile.
+    private var requesting = false
 
     static var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
     nonisolated static var updatesDirectory: URL { Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("updates") }
@@ -219,7 +221,7 @@ nonisolated enum UpdateInstaller {
     var busy: Bool {
         switch phase {
         case .checking, .downloading, .installing: true
-        default: false
+        default: requesting
         }
     }
 
@@ -249,8 +251,9 @@ nonisolated enum UpdateInstaller {
     }
 
     func check(interactive: Bool) {
-        guard !busy, phase != .ready else { return }
-        phase = .checking
+        guard !busy else { return }
+        requesting = true
+        if phase != .ready { phase = .checking }
         var request = URLRequest(url: URL(string: "https://api.github.com/repos/ishaanrajiv/tern/releases?per_page=20")!)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("tern", forHTTPHeaderField: "User-Agent")
@@ -258,6 +261,7 @@ nonisolated enum UpdateInstaller {
         request.timeoutInterval = 30
         request.cachePolicy = .reloadIgnoringLocalCacheData
         Task {
+            defer { requesting = false }
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)
                 let http = response as? HTTPURLResponse
@@ -267,18 +271,34 @@ nonisolated enum UpdateInstaller {
                 case 304: body = cached ?? data
                 default: throw UpdateError.message("GitHub could not return the releases. Try again later.")
                 }
-                let releases = try JSONDecoder().decode([AppRelease].self, from: body)
-                lastChecked = Date()
-                release = Self.newest(in: releases, current: Self.currentVersion,
-                                      prereleases: UserDefaults.standard.bool(forKey: Prefs.includePrereleases))
-                phase = .idle
-                if let release, interactive || UserDefaults.standard.bool(forKey: Prefs.downloadAppUpdates) {
-                    if stagedTag == release.tag_name, staged != nil { phase = .ready } else { download(interactive: interactive) }
-                }
+                received(try JSONDecoder().decode([AppRelease].self, from: body), interactive: interactive)
             } catch {
-                phase = .failed(error.localizedDescription, interactive: interactive)
+                // A failed check leaves a staged update as it was.
+                if phase != .ready, phase != .installing { phase = .failed(error.localizedDescription, interactive: interactive) }
             }
         }
+    }
+
+    /// Picks the release to offer from GitHub's list and reconciles the staged bundle with it.
+    func received(_ releases: [AppRelease], interactive: Bool, current: String = AppUpdates.currentVersion) {
+        lastChecked = Date()
+        // Restart to Update was chosen while the list loaded.
+        guard phase != .installing else { return }
+        release = Self.newest(in: releases, current: current,
+                              prereleases: UserDefaults.standard.bool(forKey: Prefs.includePrereleases))
+        // A newer release, or prereleases turned off, replaces what was staged.
+        if staged != nil, stagedTag != release?.tag_name { discardStaged() }
+        if staged != nil { phase = .ready; return }
+        phase = .idle
+        if release != nil, interactive || UserDefaults.standard.bool(forKey: Prefs.downloadAppUpdates) {
+            download(interactive: interactive)
+        }
+    }
+
+    /// A verified bundle for `tag`, ready to install.
+    func staged(_ bundle: URL, tag: String) {
+        staged = bundle; stagedTag = tag
+        phase = .ready
     }
 
     /// The newest release newer than `current` that ships an Apple Silicon archive and checksum.
@@ -302,8 +322,7 @@ nonisolated enum UpdateInstaller {
                 let bundle = try await Task.detached(priority: interactive ? .userInitiated : .utility) {
                     try await UpdateInstaller.stage(release, current: current, directory: directory)
                 }.value
-                staged = bundle; stagedTag = release.tag_name
-                phase = .ready
+                staged(bundle, tag: release.tag_name)
             } catch {
                 try? FileManager.default.removeItem(at: directory)
                 phase = .failed(error.localizedDescription, interactive: interactive)
@@ -331,6 +350,11 @@ nonisolated enum UpdateInstaller {
                 DispatchQueue.main.async { self.phase = .failed(text, interactive: true); self.staged = nil; self.stagedTag = nil }
             }
         }
+    }
+
+    private func discardStaged() {
+        if let staged { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+        staged = nil; stagedTag = nil
     }
 
     /// Called as tern quits.

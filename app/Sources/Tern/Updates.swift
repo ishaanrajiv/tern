@@ -100,14 +100,32 @@ nonisolated struct UpdateDismissals {
 nonisolated enum BusySessions {
     static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login"]
 
-    static func programs(in sessions: [SessionInfo]) -> [String] {
+    /// `updating` holds the updater sessions still running. `holdsTerminal` says whether a
+    /// session's own shell is in the foreground; a session counts as idle only when it does
+    /// and the foreground is a shell, so `bash long-script.sh` counts as busy.
+    static func programs(in sessions: [SessionInfo], updating: Set<String> = [],
+                         holdsTerminal: (SessionInfo) -> Bool = shellHoldsTerminal) -> [String] {
         sessions.compactMap { s -> String? in
-            guard !UpdateRunner.isRunSession(s.id) else { return nil }
+            if UpdateRunner.isRunSession(s.id) {
+                guard updating.contains(s.id) else { return nil }
+                return "the \(UpdateRunner.agent(ofRun: s.id).flatMap(UpdateSource.init(rawValue:))?.name ?? "agent") update"
+            }
             if let agent = s.agent { return agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent }
             let process = s.process.hasPrefix("-") ? String(s.process.dropFirst()) : s.process
-            guard !process.isEmpty, !shells.contains(process) else { return nil }
-            return s.command.flatMap { $0.isEmpty ? nil : $0 } ?? process
+            if shells.contains(process), holdsTerminal(s) { return nil }
+            return s.command.flatMap { $0.isEmpty ? nil : $0 } ?? (process.isEmpty ? "a program" : process)
         }
+    }
+
+    /// Whether the session's process group owns its terminal, so nothing it started is in the
+    /// foreground. False when the process can't be read.
+    static func shellHoldsTerminal(_ session: SessionInfo) -> Bool {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, session.pid]
+        guard sysctl(&mib, u_int(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return false }
+        let foreground = info.kp_eproc.e_tpgid
+        return foreground > 0 && foreground == info.kp_eproc.e_pgid
     }
 
     /// "npm run dev, Claude Code and 2 more"
@@ -302,9 +320,10 @@ final class UpdateCenter {
 
     /// The app delegate's session stream: what a restart would end, and the idle restart.
     func update(sessions: [SessionInfo]) {
-        let programs = BusySessions.programs(in: sessions)
-        if programs != busy { busy = programs }
         runner.update(sessions: sessions)
+        // A restart mid-install would leave the agent half updated.
+        let programs = BusySessions.programs(in: sessions, updating: runner.runningIDs)
+        if programs != busy { busy = programs }
         restartIfIdle()
     }
 
