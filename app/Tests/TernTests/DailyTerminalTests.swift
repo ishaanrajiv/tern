@@ -128,6 +128,15 @@ final class DailyTerminalTests: XCTestCase {
         }
     }
 
+    func testUpdateSignatureRequirementIsParsedAsText() throws {
+        // Calculator is Apple-signed, so codesign must parse the requirement and then reject the identifier.
+        let calculator = "/System/Applications/Calculator.app"
+        XCTAssertThrowsError(try UpdateInstaller.run("/usr/bin/codesign", ["--verify", "-R", UpdateInstaller.requirement(team: "TU6PRMN38J"), calculator])) { error in
+            guard case UpdateError.message(let text) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(text.contains("failed to satisfy"), text)
+        }
+    }
+
     func testUpdateArchiveRejectsTraversalSymlinksAndHeaderMismatch() throws {
         // A valid, empty stored file with matching local and central headers.
         func archive(_ name: String, localName: String? = nil, mode: UInt32 = 0o100644) -> Data {

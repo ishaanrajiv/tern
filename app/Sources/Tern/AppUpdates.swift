@@ -118,6 +118,10 @@ nonisolated enum UpdateInstaller {
         guard !team.isEmpty, team != "not set", team.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else { throw UpdateError.message("This copy of tern has no signing team. Install a signed release manually first.") }
         return team
     }
+    /// codesign reads `-R` as a file path unless the requirement text starts with "=".
+    static func requirement(team: String) -> String {
+        "=anchor apple generic and identifier \"dev.tern.Tern\" and certificate leaf[subject.OU] = \"\(team)\""
+    }
     static func stage(_ release: AppRelease, current: URL, directory: URL) async throws -> URL {
         guard let archive = release.archive, let checksum = release.checksum,
               trustedAsset(archive.browser_download_url), trustedAsset(checksum.browser_download_url),
@@ -143,8 +147,7 @@ nonisolated enum UpdateInstaller {
         guard let plist = try PropertyListSerialization.propertyList(from: info, format: nil) as? [String: Any],
               plist["CFBundleIdentifier"] as? String == "dev.tern.Tern",
               let version = plist["CFBundleShortVersionString"] as? String, AppVersion(version) == release.version else { throw UpdateError.message("The downloaded application does not match this release.") }
-        let requirement = "anchor apple generic and identifier \"dev.tern.Tern\" and certificate leaf[subject.OU] = \"\(signingTeam)\""
-        _ = try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", requirement, bundle.path])
+        _ = try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", requirement(team: signingTeam), bundle.path])
         _ = try run("/usr/sbin/spctl", ["--assess", "--type", "execute", bundle.path])
         return bundle
     }
