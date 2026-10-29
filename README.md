@@ -53,10 +53,18 @@ Mac-native, and sessions survive quitting the app.
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
   commands and environment variables, and recreates them later.
-- **Updates.** tern checks npm for newer Claude Code and Codex releases and offers to update.
-  tern → Check for Tern Updates… checks GitHub alpha releases. Download and Verify checks the
-  checksum, archive paths, signing team and Gatekeeper assessment before offering Install and
-  Relaunch. Installation is explicit; the running daemon is left alone until you accept a restart.
+- **Updates.** One card at the foot of the sidebar covers tern, ternd, Claude Code and Codex;
+  two or more fold under "N updates", most urgent first. Each offer has Remind Me Tomorrow and
+  Skip This Version. Settings → Updates lists every version and the options below.
+  - *tern* checks GitHub releases every six hours, then downloads and verifies a new one in the
+    background (checksum, archive paths, signing team, Gatekeeper). Once verified it offers
+    Restart to Update, or installs when tern quits. Sessions keep running in ternd either way.
+  - *ternd* is never restarted without you. Its row names the programs a restart would end, and
+    When Idle restarts it once nothing is running. An incompatible ternd also asks with a sheet.
+  - *Claude Code and Codex* update with their own updater (Homebrew's for a cask install) in a
+    hidden session, never a tab. Show Output opens its terminal; it opens by itself when the
+    updater asks a question or fails, and closes after a success. tern warns when a second copy
+    on PATH would keep running the old version.
 - **Native controls.** The terminal has a context menu and exposes visible text and selection to
   accessibility tools. tern → Secure Keyboard Entry protects keyboard input while tern is active.
 
@@ -250,7 +258,7 @@ testing. It keeps its own layout and spawns its own daemon without launchd.
 ## Privacy
 
 tern has no account and no telemetry. It reaches the network to check npm for agent updates,
-to check/download GitHub releases when you request an app update,
+to check and download GitHub releases (every six hours unless you turn it off in Settings → Updates),
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
 
 Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, launch presets

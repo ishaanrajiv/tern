@@ -115,37 +115,3 @@ struct UsageRings: View {
         .frame(width: diameter - 2.25, height: diameter - 2.25)
     }
 }
-
-/// "Codex 0.164.0 is available", with Update and Not Now.
-struct UpdatePrompt: View {
-    let version: AgentUpdates.Version
-    let update: () -> Void
-    let dismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            AgentGlyph(agent: version.agent, color: Palette.text2)
-                .frame(width: 14, height: 14)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("\(version.name) \(version.latest ?? "") is available")
-                    .font(.system(size: 11, weight: .medium))
-                    .fixedSize(horizontal: false, vertical: true)
-                Text("You have \(version.installed ?? "an older version").")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    Button("Update", action: update)
-                    Button("Not Now", action: dismiss).foregroundStyle(.secondary)
-                }
-                .buttonStyle(.link)
-                .font(.system(size: 11))
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(10)
-        .background(Palette.hover, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .padding(.horizontal, 8)
-        .padding(.bottom, 8)
-        .help("Runs `\(version.updateCommand)` in a new tab.")
-    }
-}

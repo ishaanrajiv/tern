@@ -212,12 +212,22 @@ enum Prefs {
     /// the user turns it on: it reads a credential and sends it to Anthropic.
     static let claudeAccountUsage = "claudeAccountUsage"
     static let workingIndicator = "workingIndicator"
+    /// tern's own updates: check GitHub every few hours, download and verify quietly, install on quit.
+    static let checkAppUpdates = "checkAppUpdates"
+    static let downloadAppUpdates = "downloadAppUpdates"
+    static let installAppUpdatesOnQuit = "installAppUpdatesOnQuit"
+    static let includePrereleases = "includePrereleases"
+    /// Offer Claude Code and Codex updates in the sidebar.
+    static let offerAgentUpdates = "offerAgentUpdates"
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [
             notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
             claudeAccountUsage: false, workingIndicator: WorkingIndicator.trailing.rawValue,
+            // Every release is an alpha prerelease for now.
+            checkAppUpdates: true, downloadAppUpdates: true, installAppUpdatesOnQuit: true, includePrereleases: true,
+            offerAgentUpdates: true,
         ])
     }
 
@@ -1069,7 +1079,7 @@ final class Workspace {
     private func adoptOrphans(_ list: [SessionInfo]) {
         let known = Set(allTabs.flatMap { $0.root.panes })
         let selected = selectedTabID
-        for s in list where !known.contains(s.id) && !s.id.hasPrefix("bench-") {
+        for s in list where !known.contains(s.id) && !s.id.hasPrefix("bench-") && !UpdateRunner.isRunSession(s.id) {
             let cwd = s.cwd ?? NSHomeDirectory()
             newTab(projectPath: s.gitRoot ?? cwd, cwd: cwd, paneID: s.id)
         }

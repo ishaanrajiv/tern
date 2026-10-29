@@ -34,7 +34,8 @@ final class TerminalView: NSView, NSTextInputClient {
     }
 
     /// `initLine` is typed into the session's shell if this creates it (resuming an agent).
-    init(sessionID: String, ternBinary: String, cwd: String, initLine: String? = nil) {
+    /// `command` runs in place of the shell, through `/bin/sh -c`, if this creates the session.
+    init(sessionID: String, ternBinary: String, cwd: String, initLine: String? = nil, command: String? = nil) {
         self.sessionID = sessionID
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
@@ -47,8 +48,9 @@ final class TerminalView: NSView, NSTextInputClient {
         config.userdata = Unmanaged.passUnretained(self).toOpaque()
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
         let initArg = initLine.map { " --init \(shellQuote($0))" } ?? ""
-        let command = "\(shellQuote(ternBinary)) attach --cwd \(shellQuote(cwd))\(initArg) \(shellQuote(sessionID))"
-        surface = command.withCString { cmd in
+        let cmdArg = command.map { " --cmd \(shellQuote($0))" } ?? ""
+        let attach = "\(shellQuote(ternBinary)) attach --cwd \(shellQuote(cwd))\(initArg)\(cmdArg) \(shellQuote(sessionID))"
+        surface = attach.withCString { cmd in
             cwd.withCString { dir in
                 config.command = cmd
                 config.working_directory = dir
