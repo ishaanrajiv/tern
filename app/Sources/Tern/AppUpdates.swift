@@ -35,6 +35,7 @@ nonisolated struct AppRelease: Decodable, Sendable {
     let html_url: URL
     let body: String?
     let draft: Bool
+    let prerelease: Bool?
     let assets: [Asset]
     var version: AppVersion? { AppVersion(tag_name) }
     var archiveName: String { "Tern-\(tag_name.hasPrefix("v") ? String(tag_name.dropFirst()) : tag_name)-macos-arm64.zip" }
@@ -148,7 +149,8 @@ nonisolated enum UpdateInstaller {
         return bundle
     }
 
-    static func install(staged: URL, current: URL, runtime: URL, pid: Int32) throws {
+    /// `relaunch` false installs quietly as tern quits; the next launch is the new build.
+    static func install(staged: URL, current: URL, runtime: URL, pid: Int32, relaunch: Bool) throws {
         guard ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] == nil else { throw UpdateError.message("Installing updates is disabled in a private test instance.") }
         guard FileManager.default.isWritableFile(atPath: current.deletingLastPathComponent().path) else { throw UpdateError.message("Move tern to a writable Applications folder before installing updates.") }
         let script = runtime.appendingPathComponent("install-update-" + UUID().uuidString + ".sh")
@@ -160,6 +162,7 @@ nonisolated enum UpdateInstaller {
         target=$1
         staged=$2
         oldpid=$3
+        relaunch=$4
         temporary="${target%.app}.update-$$.app"
         backup="${target%.app}.previous-$$.app"
         tries=0
@@ -172,92 +175,204 @@ nonisolated enum UpdateInstaller {
         /usr/bin/codesign --verify --deep --strict "$temporary"
         /bin/mv "$target" "$backup"
         if /bin/mv "$temporary" "$target"; then
-            /usr/bin/open "$target"
+            [ "$relaunch" = 1 ] && /usr/bin/open "$target"
             /bin/rm -rf "$backup"
         else
             /bin/mv "$backup" "$target"
-            /usr/bin/open "$target"
+            [ "$relaunch" = 1 ] && /usr/bin/open "$target"
             exit 1
         fi
+        /bin/rm -rf "$staged"
         /bin/rm -f "$0"
         """#
         try source.write(to: script, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: script.path)
-        _ = try run("/bin/launchctl", ["submit", "-l", "dev.tern.update." + UUID().uuidString, "--", "/bin/sh", script.path, current.path, staged.path, String(pid)])
+        _ = try run("/bin/launchctl", ["submit", "-l", "dev.tern.update." + UUID().uuidString, "--", "/bin/sh", script.path, current.path, staged.path, String(pid), relaunch ? "1" : "0"])
     }
 }
 
+/// tern's own releases: checked in the background, downloaded and verified quietly, then
+/// offered as Restart to Update, or installed as tern quits.
 @Observable final class AppUpdates {
-    static let shared = AppUpdates()
-    var release: AppRelease?
-    var staged: URL?
-    var busy = false
-    var message = "Check for signed Apple Silicon releases, including alpha prereleases."
+    enum Phase: Equatable {
+        case idle, checking
+        /// `interactive` downloads show progress; background ones stay out of sight until ready.
+        case downloading(interactive: Bool)
+        case ready, installing
+        case failed(String, interactive: Bool)
+    }
+
+    private(set) var release: AppRelease?
+    private(set) var staged: URL?
+    private(set) var phase = Phase.idle
+    private(set) var lastChecked: Date?
+    @ObservationIgnored private var stagedTag: String?
+    @ObservationIgnored private var timer: Timer?
+    /// GitHub answers an unchanged list with 304, which doesn't count against its hourly limit.
+    @ObservationIgnored private var etag: String?
+    @ObservationIgnored private var cached: Data?
+    /// A release list request is in flight; a staged update stays ready meanwhile.
+    private var requesting = false
+
+    static var currentVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0" }
+    nonisolated static var updatesDirectory: URL { Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("updates") }
+
     var notes: String { release?.body ?? "" }
-    func check() {
+    var busy: Bool {
+        switch phase {
+        case .checking, .downloading, .installing: true
+        default: requesting
+        }
+    }
+
+    /// What Settings › Updates says under tern's version.
+    var status: String {
+        switch phase {
+        case .idle: release.map { "\($0.tag_name) is available." } ?? (lastChecked == nil ? "Not checked yet." : "Up to date.")
+        case .checking: "Checking GitHub releases…"
+        case .downloading: "Downloading and verifying \(release?.tag_name ?? "the update")…"
+        case .ready: "\(release?.tag_name ?? "The update") is verified and ready."
+        case .installing: "Installing…"
+        case .failed(let message, _): message
+        }
+    }
+
+    func start() {
+        Self.removeOldDownloads()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { [weak self] in self?.scheduledCheck() }
+        timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.scheduledCheck() }
+        }
+    }
+
+    private func scheduledCheck() {
+        guard UserDefaults.standard.bool(forKey: Prefs.checkAppUpdates) else { return }
+        check(interactive: false)
+    }
+
+    func check(interactive: Bool) {
         guard !busy else { return }
-        busy = true; staged = nil; message = "Checking GitHub releases…"
+        requesting = true
+        if phase != .ready { phase = .checking }
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/ishaanrajiv/tern/releases?per_page=20")!)
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("tern", forHTTPHeaderField: "User-Agent")
+        if let etag, cached != nil { request.setValue(etag, forHTTPHeaderField: "If-None-Match") }
+        request.timeoutInterval = 30
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         Task {
-            defer { busy = false }
+            defer { requesting = false }
             do {
-                var request = URLRequest(url: URL(string: "https://api.github.com/repos/ishaanrajiv/tern/releases?per_page=20")!)
-                request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-                request.setValue("tern", forHTTPHeaderField: "User-Agent")
-                request.timeoutInterval = 30
                 let (data, response) = try await URLSession.shared.data(for: request)
-                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw UpdateError.message("GitHub could not return the releases. Try again later.") }
-                let releases = try JSONDecoder().decode([AppRelease].self, from: data)
-                let current = AppVersion(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0")!
-                let newest = releases.filter { !$0.draft && $0.version != nil && $0.archive != nil && $0.checksum != nil }.max { $0.version! < $1.version! }
-                if let newest, newest.version! > current { release = newest; message = "\(newest.tag_name) is available." }
-                else { release = nil; message = "You have the newest supported release." }
-            } catch { message = error.localizedDescription }
+                let http = response as? HTTPURLResponse
+                let body: Data
+                switch http?.statusCode {
+                case 200: body = data; cached = data; etag = http?.value(forHTTPHeaderField: "ETag")
+                case 304: body = cached ?? data
+                default: throw UpdateError.message("GitHub could not return the releases. Try again later.")
+                }
+                received(try JSONDecoder().decode([AppRelease].self, from: body), interactive: interactive)
+            } catch {
+                // A failed check leaves a staged update as it was.
+                if phase != .ready, phase != .installing { phase = .failed(error.localizedDescription, interactive: interactive) }
+            }
         }
     }
-    func download() {
-        guard !busy, let release else { return }
-        busy = true; staged = nil; message = "Downloading and verifying the update…"
+
+    /// Picks the release to offer from GitHub's list and reconciles the staged bundle with it.
+    func received(_ releases: [AppRelease], interactive: Bool, current: String = AppUpdates.currentVersion) {
+        lastChecked = Date()
+        // Restart to Update was chosen while the list loaded.
+        guard phase != .installing else { return }
+        release = Self.newest(in: releases, current: current,
+                              prereleases: UserDefaults.standard.bool(forKey: Prefs.includePrereleases))
+        // A newer release, or prereleases turned off, replaces what was staged.
+        if staged != nil, stagedTag != release?.tag_name { discardStaged() }
+        if staged != nil { phase = .ready; return }
+        phase = .idle
+        if release != nil, interactive || UserDefaults.standard.bool(forKey: Prefs.downloadAppUpdates) {
+            download(interactive: interactive)
+        }
+    }
+
+    /// A verified bundle for `tag`, ready to install.
+    func staged(_ bundle: URL, tag: String) {
+        staged = bundle; stagedTag = tag
+        phase = .ready
+    }
+
+    /// The newest release newer than `current` that ships an Apple Silicon archive and checksum.
+    nonisolated static func newest(in releases: [AppRelease], current: String, prereleases: Bool) -> AppRelease? {
+        guard let current = AppVersion(current) else { return nil }
+        return releases
+            .filter { !$0.draft && $0.version != nil && $0.archive != nil && $0.checksum != nil }
+            .filter { prereleases || ($0.prerelease != true && $0.version?.prerelease.isEmpty == true) }
+            .filter { $0.version! > current }
+            .max { $0.version! < $1.version! }
+    }
+
+    func download(interactive: Bool) {
+        guard let release, !(phase == .downloading(interactive: true) || phase == .downloading(interactive: false) || phase == .installing) else { return }
+        phase = .downloading(interactive: interactive)
+        staged = nil; stagedTag = nil
         let current = Bundle.main.bundleURL
-        let directory = Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("updates/" + UUID().uuidString)
+        let directory = Self.updatesDirectory.appendingPathComponent(UUID().uuidString)
         Task {
-            defer { busy = false }
             do {
-                staged = try await Task.detached(priority: .userInitiated) { try await UpdateInstaller.stage(release, current: current, directory: directory) }.value
-                message = "Verified and ready. Installing relaunches tern. Running terminal processes stay in ternd."
-            } catch { message = error.localizedDescription }
+                let bundle = try await Task.detached(priority: interactive ? .userInitiated : .utility) {
+                    try await UpdateInstaller.stage(release, current: current, directory: directory)
+                }.value
+                staged(bundle, tag: release.tag_name)
+            } catch {
+                try? FileManager.default.removeItem(at: directory)
+                phase = .failed(error.localizedDescription, interactive: interactive)
+            }
         }
     }
-    func install() {
-        guard !busy, let staged else { return }
-        let alert = NSAlert()
-        alert.messageText = "Install the verified update and relaunch tern?"
-        alert.informativeText = "Your layout will be saved. The daemon and its running processes stay alive. If a daemon upgrade is required, tern will ask separately."
-        alert.addButton(withTitle: "Install and Relaunch"); alert.addButton(withTitle: "Later")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        busy = true
+
+    /// Restart to Update (`relaunch`), or the quiet install as tern quits.
+    func install(relaunch: Bool) {
+        guard phase == .ready, let staged else { return }
+        phase = .installing
         let current = Bundle.main.bundleURL, runtime = Workspace.layoutURL.deletingLastPathComponent(), pid = ProcessInfo.processInfo.processIdentifier
+        if !relaunch {
+            // tern is quitting: the helper waits for this process to exit.
+            do { try UpdateInstaller.install(staged: staged, current: current, runtime: runtime, pid: pid, relaunch: false) }
+            catch { NSLog("tern: update not installed on quit: %@", error.localizedDescription) }
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                try UpdateInstaller.install(staged: staged, current: current, runtime: runtime, pid: pid)
+                try UpdateInstaller.install(staged: staged, current: current, runtime: runtime, pid: pid, relaunch: true)
                 DispatchQueue.main.async { NSApp.terminate(nil) }
-            } catch { let text = error.localizedDescription; DispatchQueue.main.async { self.message = text; self.busy = false } }
+            } catch {
+                let text = error.localizedDescription
+                DispatchQueue.main.async { self.phase = .failed(text, interactive: true); self.staged = nil; self.stagedTag = nil }
+            }
         }
     }
-}
 
-struct AppUpdatesView: View {
-    @State private var updates = AppUpdates.shared
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(updates.message).textSelection(.enabled)
-            HStack {
-                Button("Check for Updates") { updates.check() }.disabled(updates.busy)
-                if updates.release != nil { Button("Download and Verify") { updates.download() }.disabled(updates.busy) }
-                if updates.staged != nil { Button("Install and Relaunch…") { updates.install() }.disabled(updates.busy) }
-                if updates.busy { ProgressView().controlSize(.small) }
+    private func discardStaged() {
+        if let staged { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+        staged = nil; stagedTag = nil
+    }
+
+    /// Called as tern quits.
+    func installOnQuit() {
+        guard UserDefaults.standard.bool(forKey: Prefs.installAppUpdatesOnQuit),
+              phase == .ready, let tag = release?.tag_name, !UpdateDismissals().isHidden(.app, version: tag) else { return }
+        install(relaunch: false)
+    }
+
+    /// Verified bundles from earlier launches. A day's margin keeps one an installer may still be copying.
+    private static func removeOldDownloads() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let old = Date().addingTimeInterval(-24 * 3600)
+            for url in (try? fm.contentsOfDirectory(at: updatesDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
+                let modified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                if modified < old { try? fm.removeItem(at: url) }
             }
-            if let release = updates.release { Link("View release on GitHub", destination: release.html_url) }
-            ScrollView { Text(updates.notes).font(.body).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }
-        }.padding(20).frame(minWidth: 680, minHeight: 440)
+        }
     }
 }

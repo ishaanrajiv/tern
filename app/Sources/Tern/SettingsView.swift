@@ -143,9 +143,8 @@ struct AppearanceSettings: View {
 /// Hooks, notifications and resuming conversations.
 struct AgentSettings: View {
     let hooks: AgentHooks
-    let updates: AgentUpdates
+    let updates: UpdateCenter
     let usage: AgentUsage
-    let runUpdate: (AgentUpdates.Version) -> Void
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
@@ -154,10 +153,8 @@ struct AgentSettings: View {
     var body: some View {
         Form {
             Section("Integrations") {
-                AgentIntegrationRow(hooks: hooks, agent: "claude", name: "Claude Code",
-                                    version: updates.versions["claude"], checking: updates.checking, update: runUpdate)
-                AgentIntegrationRow(hooks: hooks, agent: "codex", name: "Codex",
-                                    version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
+                AgentIntegrationRow(hooks: hooks, agent: "claude", name: "Claude Code", updates: updates)
+                AgentIntegrationRow(hooks: hooks, agent: "codex", name: "Codex", updates: updates)
                 Toggle(isOn: $claudeAccountUsage) {
                     Text("Read Claude account usage")
                     Text("Reads Claude Code's sign-in from the Keychain, the way Claude Code does, and sends it to Anthropic every five minutes to fetch your usage limits. Tern never refreshes the token. Off, limits still show while Claude Code runs in a tern tab with hooks set up.")
@@ -179,14 +176,6 @@ struct AgentSettings: View {
                     .help("Reopens the Claude Code or Codex conversation when its previous session is gone.")
             }
             Section {
-                HStack {
-                    Text(updates.checking ? "Checking for updates…"
-                         : updates.lastChecked.map { "Checked at \($0.formatted(date: .omitted, time: .shortened))" }
-                         ?? "Updates not checked yet")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check Now") { updates.check() }.disabled(updates.checking)
-                }
                 if let error = hooks.error {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
@@ -205,12 +194,12 @@ private struct AgentIntegrationRow: View {
     let hooks: AgentHooks
     let agent: String
     let name: String
-    let version: AgentUpdates.Version?
-    let checking: Bool
-    let update: (AgentUpdates.Version) -> Void
+    let updates: UpdateCenter
 
     var body: some View {
         let status = hooks.statuses[agent]
+        let version = updates.agents.versions[agent]
+        let checking = updates.agents.checking
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(name)
@@ -218,8 +207,8 @@ private struct AgentIntegrationRow: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
-            if let version, version.behind {
-                Button("Update") { update(version) }
+            if let version, version.behind, updates.runner.runs[agent]?.phase != .running {
+                Button("Update") { updates.runAgent(agent) }
                     .help("Update to \(version.latest ?? "the latest version")")
             }
             Button(status?.installed == true ? "Remove Hooks" : "Set Up Hooks") {
@@ -365,9 +354,11 @@ private struct Labeled: View {
 
 /// Settings use a shared, bounded viewport across all toolbar tabs.
 final class SettingsWindowController: NSWindowController {
-    convenience init(hooks: AgentHooks, updates: AgentUpdates, usage: AgentUsage, runUpdate: @escaping (AgentUpdates.Version) -> Void) {
+    static let updatesPane = 4
+
+    convenience init(hooks: AgentHooks, updates: UpdateCenter, usage: AgentUsage) {
         // Read before adding panes: adding the first one selects it, which saves its index.
-        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 3)
+        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), Self.updatesPane)
         let tabs = SettingsTabs()
         tabs.tabStyle = .toolbar
         tabs.canPropagateSelectedChildViewControllerTitle = true
@@ -383,7 +374,8 @@ final class SettingsWindowController: NSWindowController {
         pane("General", "gearshape", GeneralSettings())
         pane("Appearance", "paintpalette", AppearanceSettings())
         pane("Terminal", "terminal", TerminalSettings())
-        pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, usage: usage, runUpdate: runUpdate))
+        pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, usage: usage))
+        pane("Updates", "arrow.down.circle", UpdatesSettings(center: updates))
         let window = NSWindow(contentViewController: tabs)
         window.identifier = NSUserInterfaceItemIdentifier("tern.settings")
         window.styleMask = [.titled, .closable]
@@ -391,6 +383,10 @@ final class SettingsWindowController: NSWindowController {
         self.init(window: window)
         tabs.selectedTabViewItemIndex = last
         window.center()
+    }
+
+    func select(pane: Int) {
+        (contentViewController as? NSTabViewController)?.selectedTabViewItemIndex = pane
     }
 
     override func showWindow(_ sender: Any?) {

@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkey: TerminalHotkey?
     private lazy var hooks = AgentHooks(ternBinary: ternBinary)
     private lazy var usage = AgentUsage()
-    private lazy var updates = AgentUpdates()
+    private lazy var updates = UpdateCenter(ternBinary: ternBinary)
     private lazy var ternBinary: String = Bundle.main.bundleURL.appendingPathComponent("Contents/Helpers/tern").path
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -51,6 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openMonitor = AppOpenMonitor { [weak self] request in self?.open(request) }
         for request in pendingOpens { open(request) }; pendingOpens = []
         if let controller = mainWindow, controller.workspace.allTabs.isEmpty { controller.showFolderPicker() }
+        updates.confirmRestart = { [weak self] restart in self?.mainWindow?.confirmDaemonRestart(force: true, then: restart) }
+        updates.onError = { [weak self] title, detail in self?.mainWindow?.showError(title, detail) }
+        updates.openSettings = { [weak self] in self?.openSettings(pane: SettingsWindowController.updatesPane) }
+        updates.start()
         mainWindow?.checkDaemon()
         hotkey = TerminalHotkey { [weak self] in self?.toggleTerminal() }
         TernClient.watch { [weak self] list in self?.updateSessions(list) }
@@ -93,6 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             owner.workspace.select(tab.id); owner.showWindow(nil); owner.window?.makeKeyAndOrderFront(nil)
         }
         controller.onOpenSettings = { [weak self] in self?.openSettings() }
+        controller.onOpenUpdates = { [weak self] in self?.openSettings(pane: SettingsWindowController.updatesPane) }
         controller.onNewWindow = { [weak self] in let window = self?.makeWindow(); window?.showFolderPicker() }
         controller.onMoveTab = { [weak self, weak controller] new in
             guard let self, let controller, let tab = controller.workspace.selectedTabID else { return }
@@ -154,11 +159,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateSessions(_ list: [SessionInfo]) {
         latestSessions = list
         for window in windows { window.workspace.update(sessions: list) }
+        updates.update(sessions: list)
         if !adopted, let first = windows.first {
             adopted = true
             let detached = Set(windows.flatMap { $0.workspace.detachedPanes })
             let known = ownedPanes.union(detached)
-            for session in list where !known.contains(session.id) && !session.id.hasPrefix("bench-") {
+            for session in list where !known.contains(session.id) && !session.id.hasPrefix("bench-") && !UpdateRunner.isRunSession(session.id) {
                 first.workspace.newTab(projectPath: session.gitRoot ?? session.cwd ?? NSHomeDirectory(), cwd: session.cwd ?? NSHomeDirectory(), paneID: session.id)
             }
             TernClient.setScrollback(TerminalPreferences.current.scrollback)
@@ -186,8 +192,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if NSApp.isActive, mainWindow?.window?.isVisible == true { NSApp.hide(nil) }
         else { let window = mainWindow ?? makeWindow(); window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     }
-    private func openSettings() {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates, usage: usage) { [weak self] version in self?.mainWindow?.runUpdate(version) } }
+    private func openSettings(pane: Int? = nil) {
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates, usage: usage) }
+        if let pane { settingsWindow?.select(pane: pane) }
         settingsWindow?.showWindow(nil); settingsWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -196,6 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         terminating = true
         for window in windows { window.workspace.save() }
         saveWindows(); Workspace.finishSaving(); WindowCatalog.finishSaving()
+        updates.app.installOnQuit()
     }
 }
 

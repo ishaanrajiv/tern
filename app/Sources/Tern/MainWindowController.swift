@@ -39,13 +39,14 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     var worktreeInUse: ((String) -> Bool)?
     var onReattach: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onOpenUpdates: (() -> Void)?
     /// Runs after every model change (the Dock badge follows it).
     var onSync: (() -> Void)?
 
-    private let updates: AgentUpdates
+    private let updates: UpdateCenter
     private let ternBinary: String
 
-    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: AgentUpdates, windowID: String = "main", restoredFrame: NSRect? = nil) {
+    init(workspace: Workspace, ternBinary: String, hooks: AgentHooks, usage: AgentUsage, updates: UpdateCenter, windowID: String = "main", restoredFrame: NSRect? = nil) {
         self.windowID = windowID
         self.workspace = workspace
         self.updates = updates
@@ -75,8 +76,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             closeFolder: { [weak self] path in self?.closeFolder(path) },
             setUpHooks: { [weak self] in self?.onOpenSettings?() },
             rename: { [weak self] id in self?.rename(tabID: id) },
-            close: { [weak self] id in self?.closeTab(id) },
-            update: { [weak self] version in self?.runUpdate(version) }
+            close: { [weak self] id in self?.closeTab(id) }
         )))
         let split = ThemedSplitView()
         split.isVertical = true
@@ -210,13 +210,6 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 
     func windowDidResignKey(_ notification: Notification) { setHints(nil); workspace.isActive = false }
-
-    /// Runs the agent's own updater in a new tab in Home, where its output stays readable.
-    func runUpdate(_ version: AgentUpdates.Version) {
-        workspace.run(version.updateCommand, in: NSHomeDirectory())
-        updates.recheckSoon()
-        window?.makeKeyAndOrderFront(nil)
-    }
 
     /// The AppKit side of the theme; SwiftUI views read it themselves.
     private func applyTheme() {
@@ -377,8 +370,8 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 }
             },
             Command("app.checkUpdates") { [weak self] in
-                self?.showWorkflow(title: "Tern Updates", view: AppUpdatesView())
-                AppUpdates.shared.check()
+                self?.onOpenUpdates?()
+                self?.updates.checkAll()
             },
             Command("app.settings") { [weak self] in self?.onOpenSettings?() },
             Command("settings.quick") { [weak self] in self?.showQuickSettings() },
@@ -427,7 +420,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             },
 
             Command("app.reloadConfig") { GhosttyApp.shared.applyTheme() },
-            Command("daemon.restart") { [weak self] in self?.restartDaemon() },
+            Command("daemon.restart") { [weak self] in self?.confirmDaemonRestart(force: true) },
 
             Command("prompt.previous") { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:-1") },
             Command("prompt.next") { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:1") },
@@ -505,16 +498,33 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             }
         }
         // Each agent's own updater, whether or not tern has seen a newer version yet.
-        + ["claude", "codex"].map { AgentUpdates.Version(agent: $0) }.map { version in
-            Command(id: "agent.update.\(version.agent)", title: "Update \(version.name)", menu: "tern", inMenu: false) { [weak self] in
-                self?.runUpdate(version)
+        + [("claude", "Claude Code"), ("codex", "Codex")].map { agent, name in
+            Command(id: "agent.update.\(agent)", title: "Update \(name)", menu: "tern", inMenu: false) { [weak self] in
+                self?.updates.runAgent(agent)
             }
         }
+        + [
+            Command(id: "app.installUpdate", title: "Restart to Update tern", menu: "tern", inMenu: false) { [weak self] in
+                guard let self else { return }
+                if self.updates.app.phase == .ready { self.updates.perform(.installApp) }
+                else { self.onOpenUpdates?(); self.updates.checkAll() }
+            },
+        ]
         // For the debug harness, which can't hold a modifier down.
         + (ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" ? [
             Command(id: "debug.hints.folders", title: "Debug Hints Folders", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.folders) },
             Command(id: "debug.hints.tabs", title: "Debug Hints Tabs", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(.tabs) },
             Command(id: "debug.hints.off", title: "Debug Hints Off", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(nil) },
+            // Stand-in updaters, so the update rows can be tried without touching the real agents.
+            Command(id: "debug.update.ok", title: "Debug Update OK", menu: "tern", inMenu: false, inPalette: false) { [weak self] in
+                self?.updates.runner.start(agent: "codex", command: "echo Updating Codex; sleep 8; echo Done")
+            },
+            Command(id: "debug.update.fail", title: "Debug Update Fail", menu: "tern", inMenu: false, inPalette: false) { [weak self] in
+                self?.updates.runner.start(agent: "claude", command: "echo 'Error: permission denied'; exit 2")
+            },
+            Command(id: "debug.update.prompt", title: "Debug Update Prompt", menu: "tern", inMenu: false, inPalette: false) { [weak self] in
+                self?.updates.runner.start(agent: "codex", command: "printf 'Replace the existing install? [y/N] '; read answer; echo \"got $answer\"")
+            },
         ] : [])
     }
 
@@ -647,40 +657,43 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     /// After installing a new build, the old ternd keeps running under launchd until
     /// it's restarted: offer that, since restarting ends what runs in the tabs.
+    /// An incompatible ternd gets a sheet as well as the sidebar row: tabs can misbehave until it restarts.
     func checkDaemon() {
-        let tern = ternBinary
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            guard let status = DaemonStatus.run("status", tern: tern), status.running, !status.current else { return }
-            DispatchQueue.main.async { self?.offerDaemonRestart(status) }
+        updates.checkDaemon { [weak self] status in
+            guard status.running, !status.compatible else { return }
+            self?.offerDaemonRestart()
         }
     }
 
-    private func offerDaemonRestart(_ status: DaemonStatus) {
+    private func offerDaemonRestart() {
         let alert = NSAlert()
-        if status.compatible {
-            alert.messageText = "Restart ternd to finish updating?"
-            alert.informativeText = "tern's background service is still the build from before this one."
-        } else {
-            alert.messageText = "ternd needs a restart"
-            alert.informativeText = "tern's background service is from an older tern and may not understand this one, so tabs can misbehave until it restarts."
-            alert.alertStyle = .warning
-        }
-        alert.informativeText += " Restarting ends the programs running in your tabs. Their screens come back, and Claude Code and Codex conversations resume."
+        alert.messageText = "ternd needs a restart"
+        alert.informativeText = "tern's background service is from an older tern and may not understand this one, so tabs can misbehave until it restarts."
+            + " Restarting ends the programs running in your tabs. Their screens come back, and Claude Code and Codex conversations resume."
+        alert.alertStyle = .warning
         alert.addButton(withTitle: "Restart")
         alert.addButton(withTitle: "Later")
         presentSheet(alert) { [weak self] response in
-            if response == .alertFirstButtonReturn { self?.restartDaemon() }
+            if response == .alertFirstButtonReturn { self?.updates.restartDaemonNow() }
         }
     }
 
-    private func restartDaemon() {
-        let tern = ternBinary
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let status = DaemonStatus.run("restart", tern: tern)
-            DispatchQueue.main.async {
-                // Panes reconnect on their own once the new daemon is up.
-                if status?.running != true { self?.showError("Couldn't restart ternd", "See ~/Library/Application Support/tern/ternd.log.") }
-            }
+    /// Restart ternd from the card or the palette. With programs running, the sheet names them.
+    func confirmDaemonRestart(force: Bool = false, then restart: (() -> Void)? = nil) {
+        let programs = updates.busy
+        let restart = restart ?? { [weak self] in self?.updates.restartDaemonNow() }
+        guard !programs.isEmpty else {
+            if force || updates.daemon?.current == false { restart() }
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Restart ternd?"
+        alert.informativeText = "This ends \(programs.count == 1 ? "1 running program" : "\(programs.count) running programs"): "
+            + programs.formatted(.list(type: .and)) + ". Their screens come back, and Claude Code and Codex conversations resume."
+        alert.addButton(withTitle: "Restart")
+        alert.addButton(withTitle: "Cancel")
+        presentSheet(alert) { response in
+            if response == .alertFirstButtonReturn { restart() }
         }
     }
 
@@ -729,7 +742,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         alert.beginSheetModal(for: window, completionHandler: handler)
     }
 
-    private func showError(_ title: String, _ detail: String) {
+    func showError(_ title: String, _ detail: String) {
         guard let window else { return }
         let alert = NSAlert()
         alert.messageText = title

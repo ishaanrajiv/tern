@@ -7,7 +7,6 @@ struct SidebarActions {
     var setUpHooks: () -> Void
     var rename: (String) -> Void
     var close: (String) -> Void
-    var update: (AgentUpdates.Version) -> Void
 }
 
 /// Number badges shown while ⌘ (folders) or ⌃⌘ (tabs) is held.
@@ -22,7 +21,7 @@ struct SidebarView: View {
     @Bindable var workspace: Workspace
     let hooks: AgentHooks
     let usage: AgentUsage
-    let updates: AgentUpdates
+    let updates: UpdateCenter
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
@@ -63,10 +62,7 @@ struct SidebarView: View {
                     if hooks.anyMissing && !hooksPromptDismissed {
                         HooksPrompt(setUp: actions.setUpHooks, dismiss: { hooksPromptDismissed = true })
                     }
-                    ForEach(updates.offered, id: \.agent) { version in
-                        UpdatePrompt(version: version, update: { actions.update(version) },
-                                     dismiss: { updates.dismiss(version) })
-                    }
+                    UpdateCard(center: updates)
                     UsageFooter(usage: usage, now: context.date)
                 }
                 .themedText()
