@@ -21,6 +21,7 @@ struct ContentHeader: View {
                     }
                     Text(workspace.title(for: tab))
                         .font(.system(size: 12.5, weight: .semibold))
+                        .foregroundStyle(workspace.hasPlaceholderTitle(tab) ? .secondary : .primary)
                         .lineLimit(1)
                         .layoutPriority(1)
                     if let remote = workspace.remote(for: tab.focusedPane) {
@@ -28,10 +29,13 @@ struct ContentHeader: View {
                     } else if let branch = s?.branch {
                         HeaderChip(text: branch, symbol: "arrow.triangle.branch")
                     }
-                    if s?.agent == nil, let code = s?.exitCode {
-                        Text("last exit \(code)" + (s?.durationMs.map { String(format: " · %.1fs", Double($0) / 1000) } ?? ""))
+                    // How the last command ended, only when it says something: a failure, or a
+                    // long run. Gone once the next command starts.
+                    if let s, let outcome = CommandOutcome.shown(for: s) {
+                        Text(outcome.text)
                             .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(code == 0 ? Color.secondary : Color.red)
+                            .foregroundStyle(outcome.failed ? Color.red : Color.secondary)
+                            .help(outcome.detail)
                     }
                     Spacer(minLength: 12)
                     // Only what needs saying: an agent at work or waiting, with how long. An idle
@@ -119,6 +123,48 @@ private struct StatusCapsule: View {
         .frame(height: 24)
         .background(needsYou ? Palette.amber.opacity(0.16) : Palette.chip, in: Capsule())
         .fixedSize()
+    }
+}
+
+/// How a shell command ended, in plain words: "Command not found", "Done in 2m 14s".
+nonisolated struct CommandOutcome: Equatable {
+    let text: String
+    let failed: Bool
+    /// "Exit code 1 · 2.3s", for a tooltip.
+    let detail: String
+
+    /// What the header says about a session's last command. Nothing while an agent or the next
+    /// command runs, including a builtin like `read`, which leaves the shell in front.
+    @MainActor static func shown(for s: SessionInfo) -> CommandOutcome? {
+        guard s.agent == nil, s.commandRunning != true, Workspace.shells.contains(s.process) else { return nil }
+        return CommandOutcome(exitCode: s.exitCode, durationMs: s.durationMs)
+    }
+
+    /// Nil when there's nothing worth saying: a quick success, or a command you stopped with ⌃C.
+    init?(exitCode: Int?, durationMs: UInt64?) {
+        guard let code = exitCode, code != 130 else { return nil }
+        let took = durationMs.map(Self.duration)
+        detail = "Exit code \(code)" + (took.map { " · " + $0 } ?? "")
+        failed = code != 0
+        switch code {
+        case 0:
+            guard let durationMs, durationMs >= 10_000, let took else { return nil }
+            text = "Done in " + took
+        case 126: text = "Not executable"
+        case 127: text = "Command not found"
+        case 137: text = "Killed"
+        case 143: text = "Terminated"
+        default: text = "Failed"
+        }
+    }
+
+    /// "0.4s", "12s", "2m 14s", "1h 5m".
+    static func duration(_ ms: UInt64) -> String {
+        let s = ms / 1000
+        if s < 10 { return String(format: "%.1fs", Double(ms) / 1000) }
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \(s % 3600 / 60)m"
     }
 }
 

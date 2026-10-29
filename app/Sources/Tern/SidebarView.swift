@@ -262,7 +262,7 @@ private struct TabRow: View {
             } else {
                 Text(title)
                     .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
-                    .foregroundStyle(status == .dormant || status == .starting ? .secondary : .primary)
+                    .foregroundStyle(status == .dormant || status == .starting || workspace.hasPlaceholderTitle(tab) ? .secondary : .primary)
                     .lineLimit(1)
                     // Short names never truncate; long ones give way last.
                     .fixedSize(horizontal: title.count <= 14, vertical: false)
@@ -272,7 +272,7 @@ private struct TabRow: View {
                 Chip(text: (worktree as NSString).lastPathComponent)
                     .help("Worktree \(abbreviateHome(worktree))")
             }
-            if let stray = workspace.strayCwd(tab) {
+            if let stray = workspace.strayCwd(tab), stray != title {
                 Text(stray)
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)

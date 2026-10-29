@@ -45,7 +45,14 @@ pub fn state_for(agent: &str, input: &Value) -> Option<(AgentState, Option<Strin
             Some("compact") => return None,
             _ => AgentState::Idle,
         },
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => AgentState::Working,
+        "UserPromptSubmit" => AgentState::Working,
+        // A subagent's tools carry its `agent_id`. Claude Code also runs helper agents after
+        // Stop; their tools would mark a finished turn as working again. The main agent's own
+        // events, and the new prompt that follows a background agent, cover a turn. A
+        // subagent's finished tool still goes to ternd, which lets it answer only the
+        // permission request that subagent made.
+        "PreToolUse" if subagent(input).is_some() => return None,
+        "PreToolUse" | "PostToolUse" => AgentState::Working,
         // Esc during a tool ends the turn without a Stop; other failures go back to the model.
         "PostToolUseFailure" => match input["is_interrupt"].as_bool() {
             Some(true) => AgentState::Idle,
@@ -77,6 +84,11 @@ pub fn state_for(agent: &str, input: &Value) -> Option<(AgentState, Option<Strin
     Some((state, None))
 }
 
+/// The subagent an event came from; none for the main agent.
+fn subagent(input: &Value) -> Option<String> {
+    input["agent_id"].as_str().filter(|id| !id.is_empty()).map(str::to_string)
+}
+
 /// First line-ish of a message, whitespace collapsed, at most 200 characters.
 fn summarize(s: &str) -> String {
     let flat: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -101,6 +113,7 @@ pub fn run_hook(agent: &str) {
         state,
         agent_session: input["session_id"].as_str().map(str::to_string),
         message,
+        subagent: subagent(&input),
     };
     let _ = send(&req);
 }
@@ -572,6 +585,13 @@ mod tests {
         assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "startup" })), Some(AgentState::Idle));
         assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "compact" })), None);
         assert_eq!(state(json!({ "hook_event_name": "UserPromptSubmit" })), Some(AgentState::Working));
+        assert_eq!(state(json!({ "hook_event_name": "PreToolUse", "tool_name": "Read" })), Some(AgentState::Working));
+        // A helper agent still running after Stop doesn't make the turn working again.
+        assert_eq!(state(json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "a5ed58457b2a80777" })), None);
+        // Its finished tool goes to ternd, which decides whether it answers a permission request.
+        assert_eq!(state(json!({ "hook_event_name": "PostToolUse", "agent_id": "a5ed58457b2a80777" })), Some(AgentState::Working));
+        assert_eq!(subagent(&json!({ "agent_id": "a5ed58457b2a80777" })).as_deref(), Some("a5ed58457b2a80777"));
+        assert_eq!(subagent(&json!({ "agent_id": null })), None);
         assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure", "is_interrupt": true })), Some(AgentState::Idle));
         assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure" })), None);
         assert_eq!(state(json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" })), None);

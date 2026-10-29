@@ -15,7 +15,11 @@ Mac-native, and sessions survive quitting the app.
   folders, recent ones, [zoxide](https://github.com/ajeetdsouza/zoxide) history, and git repos
   under `~/dev`). ⌘T opens a tab in the current folder, ⌥⌘T opens one in a new git worktree.
   Ordinary new tabs inherit the focused pane's directory; **New Tab at Project Root** starts at the folder root.
-  Tabs name themselves after what they run. Double-click or ⌘R to rename.
+  Tabs name themselves after what they run: an agent's conversation name (Claude Code's title, or
+  what `/rename` set; Codex's thread name), the command running now, or the last
+  one that ran for a few seconds (`npm run dev` sticks, `git status` doesn't). A tab outside its
+  folder's root goes by its subfolder; one with nothing to go by is a dimmed "Shell". Double-click
+  or ⌘R to rename.
 - **Windows.** ⌘⇧N opens another window. Move a tab or pane to a new window from the Window menu,
   or move a tab to the next window. Each window remembers its layout and position. Settings →
   General can enable Control-Option-Space to show or hide tern.
@@ -23,6 +27,8 @@ Mac-native, and sessions survive quitting the app.
 - **Commands and output.** zsh, bash and fish report prompt and command boundaries. ⌘⇧↑ / ⌘⇧↓
   jump between prompts. The Edit menu copies or selects the last command's output in a text window,
   or searches retained output with case and regular-expression controls. ⌘⇧F searches all sessions.
+  The header says how the last command ended only when it's worth saying: a failure ("Command not
+  found", "Failed") or a run of ten seconds or more ("Done in 2m 14s").
   File → Export Scrollback… opens selectable output with Find, Save and Open in Editor actions.
 - **Files and images.** Drop Finder files, or copy them in Finder and paste, to type their quoted
   full paths. ⌘-click a local `path:line:column` diagnostic, or select a path and choose Edit → Open
@@ -71,7 +77,9 @@ hooks, tern guesses each agent's state from its output.
 
 Codex usage limits come from its session logs. Claude Code limits come from its status line, and
 optionally (Settings → Agents, off by default) from Anthropic's API using the sign-in Claude Code
-keeps in the Keychain. tern never refreshes that token.
+keeps in the Keychain, read with `/usr/bin/security` as Claude Code reads it, so tern updates
+don't bring back a Keychain prompt. If macOS refuses, the setting stays on and Settings offers
+Try Again. tern never refreshes that token.
 
 ## Keys
 

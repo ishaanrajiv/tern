@@ -114,7 +114,8 @@ struct Tab: Codable, Identifiable, Equatable {
     var zoomed = false
     /// The worktree tern made for this tab, offered for removal when the tab closes.
     var worktree: String?
-    /// "Tab 3": the lowest number free in its folder when it opened, kept for life.
+    /// The lowest number free in its folder when it opened, kept for life: "Shell 3" while
+    /// another tab there is unnamed too.
     var number: Int?
 }
 
@@ -190,7 +191,7 @@ func relativeAge(_ date: Date?, now: Date) -> String {
 }
 
 /// An agent conversation: which agent, and its own session id.
-struct AgentRef: Codable, Equatable {
+nonisolated struct AgentRef: Codable, Equatable, Sendable {
     var agent: String
     var session: String
 }
@@ -274,6 +275,16 @@ final class Workspace {
     private(set) var recents: [String: Date] = [:]
     /// When each pane was last resized: the shell redraws its prompt then, which isn't news.
     @ObservationIgnored private var resizedAt: [String: Date] = [:]
+    /// Folder paths with symlinks resolved, as ternd reports a cwd ("/tmp" is "/private/tmp").
+    @ObservationIgnored private var resolvedPaths: [String: String] = [:]
+    /// Conversation names from the agents' own files, by agent session id (see AgentNames).
+    private(set) var agentNames: [String: String] = [:]
+    @ObservationIgnored private var agentNameCache = AgentNames.Cache()
+    @ObservationIgnored private var agentNamesAsked = Date.distantPast
+    @ObservationIgnored private var askingAgentNames = false
+    /// Each pane's terminal title while its shell was in front ("zsh in tern"), which an agent
+    /// started there inherits until it sets its own.
+    @ObservationIgnored private var shellTitles: [String: String] = [:]
     private var adoptedOrphans = false
     var adoptsOrphans = true
     var keepsEmptyWindow = false
@@ -334,9 +345,19 @@ final class Workspace {
     func strayCwd(_ tab: Tab) -> String? {
         guard let cwd = sessions[tab.focusedPane]?.cwd, let project = project(containing: tab.id) else { return nil }
         let base = tab.worktree ?? project.path
-        if cwd == base { return nil }
-        if cwd.hasPrefix(base + "/") { return String(cwd.dropFirst(base.count + 1)) }
+        for root in [base, resolved(base)] {
+            if cwd == root { return nil }
+            if cwd.hasPrefix(root + "/") { return String(cwd.dropFirst(root.count + 1)) }
+        }
         return abbreviateHome(cwd)
+    }
+
+    private func resolved(_ path: String) -> String {
+        if let known = resolvedPaths[path] { return known }
+        // realpath(3), not resolvingSymlinksInPath, which strips "/private" again.
+        let real = realpath(path, nil).map { p in defer { free(p) }; return String(cString: p) } ?? path
+        resolvedPaths[path] = real
+        return real
     }
 
     func cwd(for pane: String) -> String {
@@ -421,27 +442,51 @@ final class Workspace {
             .map { Date(timeIntervalSince1970: Double($0) / 1000) }
     }
 
-    /// The session's name, numbered when another session in its project would show the same one.
-    /// A tab goes by what it runs: an agent's task, the command in the foreground, or the
-    /// last one that ran ("npm run dev"). A shell that has run nothing yet is "Tab 2".
+    /// The session's name. A tab goes by what it runs: an agent's task, the command in the
+    /// foreground, or the last one that ran long enough to say what the tab is for ("npm run
+    /// dev"; ternd ignores a quick `git status`). Failing that, where it is when that isn't the
+    /// folder, and last a placeholder: "Shell".
     func title(for tab: Tab) -> String {
+        derivedTitle(tab) ?? placeholderTitle(tab)
+    }
+
+    /// Nothing names the tab yet; its "Shell" title is drawn dimmed.
+    func hasPlaceholderTitle(_ tab: Tab) -> Bool {
+        derivedTitle(tab) == nil
+    }
+
+    private func derivedTitle(_ tab: Tab) -> String? {
         if let name = tab.name, !name.isEmpty { return name }
+        let ref = paneAgent[tab.focusedPane]
         guard let s = sessions[tab.focusedPane] else {
             // Not running yet (say, after a reboot): name it after what it was.
-            return paneAgent[tab.focusedPane]?.agent ?? fallbackTitle(tab)
+            return ref.flatMap { agentNames[$0.session] } ?? ref?.agent
         }
-        // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
-        if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
+        // The conversation's own name ("Fix login redirect", or what `/rename` set) names it best.
+        if s.agent != nil, let id = s.agentSession ?? ref?.session, let name = agentNames[id] { return name }
+        // Next, the task agents put in the terminal title ("✳ Fix login redirect"), once the
+        // title is the agent's and not still the shell's.
+        if s.agent != nil, s.title != shellTitles[tab.focusedPane], let task = Self.cleanTitle(s.title),
+           !task.isEmpty, !Self.agents.contains(task.lowercased()) {
             return task
         }
         if let agent = s.agent { return agent }
         if let command = s.command, !command.isEmpty { return command }
-        // The folder header says where; a stray directory shows beside the name.
-        return Self.shells.contains(s.process) ? fallbackTitle(tab) : s.process
+        if !Self.shells.contains(s.process) { return s.process }
+        // The folder header says where the folder is; a subfolder or another place says more.
+        if let stray = strayCwd(tab) { return stray }
+        // A worktree branch someone renamed from tern's own "tern/session-2".
+        if let worktree = tab.worktree, let branch = s.branch,
+           branch != "tern/" + (worktree as NSString).lastPathComponent {
+            return branch
+        }
+        return nil
     }
 
-    private func fallbackTitle(_ tab: Tab) -> String {
-        "Tab \(tab.number ?? 1)"
+    /// "Shell", numbered only while another tab in the folder has no name either.
+    private func placeholderTitle(_ tab: Tab) -> String {
+        let alone = project(containing: tab.id)?.tabs.allSatisfy { $0.id == tab.id || derivedTitle($0) != nil } ?? true
+        return alone ? "Shell" : "Shell \(tab.number ?? 1)"
     }
 
     /// Drops the spinner or status glyphs agents put in front of the title.
@@ -956,6 +1001,7 @@ final class Workspace {
                 seen[s.id] = mark
             }
             if let agent = s.agent, let id = s.agentSession { paneAgent[s.id] = AgentRef(agent: agent, session: id) }
+            if s.agent == nil { shellTitles[s.id] = s.title }
             if s.agent == nil, s.agentState == nil, previous[s.id]?.agentState != nil { paneAgent[s.id] = nil }
             if let old = previous[s.id], let finished = s.finishedMs, finished > (old.finishedMs ?? 0),
                s.agent == nil, let tab = allTabs.first(where: { $0.root.panes.contains(s.id) }) {
@@ -967,9 +1013,26 @@ final class Workspace {
             }
         }
         markSeen()
+        refreshAgentNames()
         if !adoptedOrphans && adoptsOrphans {
             adoptedOrphans = true
             adoptOrphans(list.filter { !detachedPanes.contains($0.id) })
+        }
+    }
+
+    /// Every few seconds, off the main thread: agents name a conversation after its first
+    /// prompt and rename it later.
+    private func refreshAgentNames() {
+        let refs = Array(paneAgent.values)
+        guard !refs.isEmpty, !askingAgentNames, -agentNamesAsked.timeIntervalSinceNow >= 5 else { return }
+        (agentNamesAsked, askingAgentNames) = (Date(), true)
+        let cache = agentNameCache
+        DispatchQueue.global(qos: .utility).async {
+            let (names, cache) = AgentNames.lookup(refs, cache: cache)
+            DispatchQueue.main.async {
+                (self.agentNameCache, self.askingAgentNames) = (cache, false)
+                if self.agentNames != names { self.agentNames = names }
+            }
         }
     }
 

@@ -144,6 +144,7 @@ struct AppearanceSettings: View {
 struct AgentSettings: View {
     let hooks: AgentHooks
     let updates: AgentUpdates
+    let usage: AgentUsage
     let runUpdate: (AgentUpdates.Version) -> Void
     @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
     @AppStorage(Prefs.notifyDone) private var notifyDone = true
@@ -159,7 +160,15 @@ struct AgentSettings: View {
                                     version: updates.versions["codex"], checking: updates.checking, update: runUpdate)
                 Toggle(isOn: $claudeAccountUsage) {
                     Text("Read Claude account usage")
-                    Text("Reads Claude Code's sign-in from the Keychain, after macOS asks you, and sends it to Anthropic every five minutes to fetch your usage limits. Tern never refreshes the token. Off, limits still show while Claude Code runs in a tern tab with hooks set up.")
+                    Text("Reads Claude Code's sign-in from the Keychain, the way Claude Code does, and sends it to Anthropic every five minutes to fetch your usage limits. Tern never refreshes the token. Off, limits still show while Claude Code runs in a tern tab with hooks set up.")
+                }
+                if claudeAccountUsage && usage.accountDenied {
+                    HStack {
+                        Text("macOS blocked access to Claude Code's sign-in.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Try Again") { usage.retryAccount() }
+                    }
                 }
             }
             Section("Notifications and resume") {
@@ -356,7 +365,7 @@ private struct Labeled: View {
 
 /// Settings use a shared, bounded viewport across all toolbar tabs.
 final class SettingsWindowController: NSWindowController {
-    convenience init(hooks: AgentHooks, updates: AgentUpdates, runUpdate: @escaping (AgentUpdates.Version) -> Void) {
+    convenience init(hooks: AgentHooks, updates: AgentUpdates, usage: AgentUsage, runUpdate: @escaping (AgentUpdates.Version) -> Void) {
         // Read before adding panes: adding the first one selects it, which saves its index.
         let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), 3)
         let tabs = SettingsTabs()
@@ -374,7 +383,7 @@ final class SettingsWindowController: NSWindowController {
         pane("General", "gearshape", GeneralSettings())
         pane("Appearance", "paintpalette", AppearanceSettings())
         pane("Terminal", "terminal", TerminalSettings())
-        pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, runUpdate: runUpdate))
+        pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, usage: usage, runUpdate: runUpdate))
         let window = NSWindow(contentViewController: tabs)
         window.identifier = NSUserInterfaceItemIdentifier("tern.settings")
         window.styleMask = [.titled, .closable]

@@ -196,8 +196,8 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
             forget_saved(&id);
             writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
         }
-        Request::Report { id, agent, state, agent_session, message } => {
-            let ok = session::report(&sessions, &id, agent, state, agent_session, message);
+        Request::Report { id, agent, state, agent_session, message, subagent } => {
+            let ok = session::report(&sessions, &id, agent, state, agent_session, message, subagent);
             writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
         }
         Request::Attach { id, cols, rows, cwd, cmd, init, env } => {

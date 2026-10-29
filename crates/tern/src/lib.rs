@@ -71,6 +71,9 @@ pub enum Request {
         agent_session: Option<String>,
         /// What the agent said: a permission question or its last reply.
         message: Option<String>,
+        /// The subagent that sent it (Claude Code's `agent_id`); none for the main agent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        subagent: Option<String>,
     },
 }
 
@@ -151,6 +154,10 @@ pub struct SessionInfo {
     pub exit_code: Option<i32>,
     #[serde(default)]
     pub duration_ms: Option<u64>,
+    /// The shell integration says a command is running now, so `exit_code` and
+    /// `duration_ms` belong to the one before it.
+    #[serde(default)]
+    pub command_running: bool,
 }
 
 /// Quotes a string for a POSIX shell. Plain words are left alone; anything

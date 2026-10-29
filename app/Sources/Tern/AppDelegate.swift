@@ -187,7 +187,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { let window = mainWindow ?? makeWindow(); window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     }
     private func openSettings() {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates) { [weak self] version in self?.mainWindow?.runUpdate(version) } }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates, usage: usage) { [weak self] version in self?.mainWindow?.runUpdate(version) } }
         settingsWindow?.showWindow(nil); settingsWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

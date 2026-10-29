@@ -170,6 +170,115 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertNil(target.resumeCommand(for: pane))
     }
 
+    func testTabsGoByWhatTheyRunAndOtherwiseSayShell() throws {
+        let w = Workspace()
+        w.adoptsOrphans = false
+        let first = w.newTab(projectPath: "/tmp/proj", cwd: "/tmp/proj")
+        func session(_ pane: String, process: String = "zsh", cwd: String = "/tmp/proj", command: String? = nil) throws -> SessionInfo {
+            var json: [String: Any] = ["id": pane, "pid": 1, "cols": 80, "rows": 24, "clients": 1, "process": process,
+                                       "title": "", "lastOutputMs": 0, "bells": 0, "cwd": cwd]
+            json["command"] = command
+            return try JSONDecoder().decode(SessionInfo.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        w.update(sessions: [try session(first.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "Shell")
+        XCTAssertTrue(w.hasPlaceholderTitle(first))
+
+        // A second unnamed tab numbers both.
+        let second = w.newTab(projectPath: "/tmp/proj", cwd: "/tmp/proj")
+        w.update(sessions: [try session(first.focusedPane), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "Shell \(first.number!)")
+        XCTAssertEqual(w.title(for: second), "Shell \(second.number!)")
+
+        // A subfolder, then a command, name it; the other goes back to plain "Shell".
+        w.update(sessions: [try session(first.focusedPane, cwd: "/tmp/proj/app"), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "app")
+        XCTAssertFalse(w.hasPlaceholderTitle(first))
+        XCTAssertEqual(w.title(for: second), "Shell")
+        w.update(sessions: [try session(first.focusedPane, cwd: "/tmp/proj/app", command: "npm run dev"), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "npm run dev")
+        w.rename(first.id, to: "API")
+        XCTAssertEqual(w.title(for: w.allTabs.first { $0.id == first.id }!), "API")
+
+        // ternd reports the real path; "/tmp" is "/private/tmp", which is still the folder root.
+        let tmp = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        w.update(sessions: [try session(tmp.focusedPane, cwd: "/private/tmp")])
+        XCTAssertNil(w.strayCwd(tmp))
+        XCTAssertEqual(w.title(for: tmp), "Shell")
+    }
+
+    func testAgentConversationNamesComeFromTheirOwnFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tern-names-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let claude = root.appendingPathComponent("claude"), codex = root.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: claude.appendingPathComponent("-tmp-proj"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        let transcript = claude.appendingPathComponent("-tmp-proj/c1.jsonl")
+        try Data("""
+        {"type":"user","message":"hi"}
+        {"type":"ai-title","aiTitle":"Summarize README","sessionId":"c1"}
+
+        """.utf8).write(to: transcript)
+        try Data("""
+        {"id":"x1","thread_name":"Old name"}
+        {"id":"x1","thread_name":"Explain updater flow"}
+
+        """.utf8).write(to: codex.appendingPathComponent("session_index.jsonl"))
+        let refs = [AgentRef(agent: "claude", session: "c1"), AgentRef(agent: "codex", session: "x1")]
+        var (names, cache) = AgentNames.lookup(refs, cache: .init(), claudeRoot: claude, codexRoot: codex)
+        XCTAssertEqual(names, ["c1": "Summarize README", "x1": "Explain updater flow"])
+
+        // /rename wins over the generated title; a half-written line waits for its newline.
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((#"{"type":"custom-title","customTitle":"README tour"}"# + "\n" + #"{"type":"custom-title","custom"#).utf8))
+        try handle.close()
+        (names, cache) = AgentNames.lookup(refs, cache: cache, claudeRoot: claude, codexRoot: codex)
+        XCTAssertEqual(names["c1"], "README tour")
+    }
+
+    func testAgentTabIgnoresTheShellTitleItInherited() throws {
+        let w = Workspace()
+        w.adoptsOrphans = false
+        let tab = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        func session(_ process: String, agent: String?, title: String) throws -> SessionInfo {
+            var json: [String: Any] = ["id": tab.focusedPane, "pid": 1, "cols": 80, "rows": 24, "clients": 1, "process": process,
+                                       "title": title, "lastOutputMs": 0, "bells": 0, "cwd": "/tmp"]
+            json["agent"] = agent
+            return try JSONDecoder().decode(SessionInfo.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        w.update(sessions: [try session("zsh", agent: nil, title: "zsh in tmp")])
+        w.update(sessions: [try session("claude", agent: "claude", title: "zsh in tmp")])
+        XCTAssertEqual(w.title(for: tab), "claude")
+        w.update(sessions: [try session("claude", agent: "claude", title: "✳ Fix login redirect")])
+        XCTAssertEqual(w.title(for: tab), "Fix login redirect")
+    }
+
+    func testCommandOutcomesSpeakPlainly() throws {
+        XCTAssertNil(CommandOutcome(exitCode: 0, durationMs: 40))
+        XCTAssertNil(CommandOutcome(exitCode: nil, durationMs: 40))
+        XCTAssertNil(CommandOutcome(exitCode: 130, durationMs: 60_000), "⌃C says nothing")
+        XCTAssertEqual(CommandOutcome(exitCode: 0, durationMs: 134_000)?.text, "Done in 2m 14s")
+        let failed = CommandOutcome(exitCode: 1, durationMs: 2300)
+        XCTAssertEqual(failed?.text, "Failed")
+        XCTAssertEqual(failed?.failed, true)
+        XCTAssertEqual(failed?.detail, "Exit code 1 · 2.3s")
+        XCTAssertEqual(CommandOutcome(exitCode: 127, durationMs: 5)?.text, "Command not found")
+        XCTAssertEqual(CommandOutcome.duration(12_400), "12s")
+        XCTAssertEqual(CommandOutcome.duration(3_900_000), "1h 5m")
+
+        // `false`, then `read`: the shell stays in front, but the failure is the last command's.
+        func session(running: Bool) throws -> SessionInfo {
+            let json = #"{"id":"p","pid":1,"cols":80,"rows":24,"clients":1,"process":"zsh","title":"","last_output_ms":0,"bells":0,"#
+                + #""exit_code":1,"duration_ms":4,"command_running":\#(running)}"#
+            let decoder = JSONDecoder()
+            decoder.keyDecodingStrategy = .convertFromSnakeCase
+            return try decoder.decode(SessionInfo.self, from: Data(json.utf8))
+        }
+        XCTAssertEqual(CommandOutcome.shown(for: try session(running: false))?.text, "Failed")
+        XCTAssertNil(CommandOutcome.shown(for: try session(running: true)))
+    }
+
     func testClosingWindowTransfersDetachedRecoveryMetadata() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tern-detach-" + UUID().uuidString)
         defer { Workspace.finishSaving(); try? FileManager.default.removeItem(at: directory) }
