@@ -8,6 +8,7 @@ struct SidebarActions {
     var rename: (String) -> Void
     var close: (String) -> Void
     var update: (AgentUpdates.Version) -> Void
+    var showAppUpdates: () -> Void
 }
 
 /// Number badges shown while ⌘ (folders) or ⌃⌘ (tabs) is held.
@@ -26,6 +27,7 @@ struct SidebarView: View {
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
+    @State private var appUpdates = AppUpdates.shared
     @AppStorage(Prefs.hooksPromptDismissed) private var hooksPromptDismissed = false
     // Read so a change in Settings re-sorts the sidebar.
     @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
@@ -66,6 +68,10 @@ struct SidebarView: View {
                     ForEach(updates.offered, id: \.agent) { version in
                         UpdatePrompt(version: version, update: { actions.update(version) },
                                      dismiss: { updates.dismiss(version) })
+                    }
+                    if let release = appUpdates.offered {
+                        AppUpdatePrompt(version: release.tag_name, installed: appUpdates.currentVersion,
+                                        update: actions.showAppUpdates, dismiss: { appUpdates.dismiss(release) })
                     }
                     UsageFooter(usage: usage, now: context.date)
                 }
@@ -262,7 +268,7 @@ private struct TabRow: View {
             } else {
                 Text(title)
                     .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
-                    .foregroundStyle(status == .dormant || status == .starting ? .secondary : .primary)
+                    .foregroundStyle(status == .dormant || status == .starting || workspace.hasPlaceholderTitle(tab) ? .secondary : .primary)
                     .lineLimit(1)
                     // Short names never truncate; long ones give way last.
                     .fixedSize(horizontal: title.count <= 14, vertical: false)
@@ -272,7 +278,7 @@ private struct TabRow: View {
                 Chip(text: (worktree as NSString).lastPathComponent)
                     .help("Worktree \(abbreviateHome(worktree))")
             }
-            if let stray = workspace.strayCwd(tab) {
+            if let stray = workspace.strayCwd(tab), stray != title {
                 Text(stray)
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)

@@ -170,6 +170,57 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertNil(target.resumeCommand(for: pane))
     }
 
+    func testTabsGoByWhatTheyRunAndOtherwiseSayShell() throws {
+        let w = Workspace()
+        w.adoptsOrphans = false
+        let first = w.newTab(projectPath: "/tmp/proj", cwd: "/tmp/proj")
+        func session(_ pane: String, process: String = "zsh", cwd: String = "/tmp/proj", command: String? = nil) throws -> SessionInfo {
+            var json: [String: Any] = ["id": pane, "pid": 1, "cols": 80, "rows": 24, "clients": 1, "process": process,
+                                       "title": "", "lastOutputMs": 0, "bells": 0, "cwd": cwd]
+            json["command"] = command
+            return try JSONDecoder().decode(SessionInfo.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        w.update(sessions: [try session(first.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "Shell")
+        XCTAssertTrue(w.hasPlaceholderTitle(first))
+
+        // A second unnamed tab numbers both.
+        let second = w.newTab(projectPath: "/tmp/proj", cwd: "/tmp/proj")
+        w.update(sessions: [try session(first.focusedPane), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "Shell \(first.number!)")
+        XCTAssertEqual(w.title(for: second), "Shell \(second.number!)")
+
+        // A subfolder, then a command, name it; the other goes back to plain "Shell".
+        w.update(sessions: [try session(first.focusedPane, cwd: "/tmp/proj/app"), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "app")
+        XCTAssertFalse(w.hasPlaceholderTitle(first))
+        XCTAssertEqual(w.title(for: second), "Shell")
+        w.update(sessions: [try session(first.focusedPane, cwd: "/tmp/proj/app", command: "npm run dev"), try session(second.focusedPane)])
+        XCTAssertEqual(w.title(for: first), "npm run dev")
+        w.rename(first.id, to: "API")
+        XCTAssertEqual(w.title(for: w.allTabs.first { $0.id == first.id }!), "API")
+
+        // ternd reports the real path; "/tmp" is "/private/tmp", which is still the folder root.
+        let tmp = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        w.update(sessions: [try session(tmp.focusedPane, cwd: "/private/tmp")])
+        XCTAssertNil(w.strayCwd(tmp))
+        XCTAssertEqual(w.title(for: tmp), "Shell")
+    }
+
+    func testCommandOutcomesSpeakPlainly() {
+        XCTAssertNil(CommandOutcome(exitCode: 0, durationMs: 40))
+        XCTAssertNil(CommandOutcome(exitCode: nil, durationMs: 40))
+        XCTAssertNil(CommandOutcome(exitCode: 130, durationMs: 60_000), "⌃C says nothing")
+        XCTAssertEqual(CommandOutcome(exitCode: 0, durationMs: 134_000)?.text, "Done in 2m 14s")
+        let failed = CommandOutcome(exitCode: 1, durationMs: 2300)
+        XCTAssertEqual(failed?.text, "Failed")
+        XCTAssertEqual(failed?.failed, true)
+        XCTAssertEqual(failed?.detail, "Exit code 1 · 2.3s")
+        XCTAssertEqual(CommandOutcome(exitCode: 127, durationMs: 5)?.text, "Command not found")
+        XCTAssertEqual(CommandOutcome.duration(12_400), "12s")
+        XCTAssertEqual(CommandOutcome.duration(3_900_000), "1h 5m")
+    }
+
     func testClosingWindowTransfersDetachedRecoveryMetadata() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("tern-detach-" + UUID().uuidString)
         defer { Workspace.finishSaving(); try? FileManager.default.removeItem(at: directory) }

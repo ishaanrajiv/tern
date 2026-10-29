@@ -31,7 +31,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
             guard let self, let workspace, !workspace.isVisible(tab), (info.durationMs ?? 0) >= 10_000,
                   UserDefaults.standard.bool(forKey: Prefs.notifyCommandDone) else { return }
             NSApp.requestUserAttention(.informationalRequest)
-            self.post(tab: tab, title: workspace.title(for: tab) + " finished", body: "Exit \(info.exitCode ?? 0) · " + String(format: "%.1fs", Double(info.durationMs ?? 0) / 1000), sound: false)
+            self.post(tab: tab, title: workspace.title(for: tab) + " finished", body: CommandOutcome(exitCode: info.exitCode, durationMs: info.durationMs)?.text ?? "Stopped", sound: false)
         }
         workspace.onAgentEvent = { [weak self, weak workspace] tab, info in
             guard let workspace else { return }

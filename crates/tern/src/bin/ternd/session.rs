@@ -141,8 +141,22 @@ pub struct SessionState {
     pub agent: Option<AgentReport>,
     /// The foreground command, by its process, for shells without tern's integration.
     command: Option<String>,
-    /// The last telling command line typed, from the zsh integration.
-    typed: Option<String>,
+    /// The last command that ran long enough to name the tab, from the shell integration.
+    named: Option<String>,
+}
+
+/// A command that runs this long says what the tab is for; `git status` doesn't.
+const NAMES_TAB_MS: u64 = 3000;
+
+/// What the tab goes by. With the shell integration (`typed` is `Some`): the command
+/// running now, else the last one that ran long enough. Without it, what the process
+/// watcher last saw in the foreground.
+fn tab_command(typed: Option<Option<String>>, running: bool, named: &Option<String>, seen: &Option<String>) -> Option<String> {
+    match typed {
+        Some(line) if running => line.or_else(|| named.clone()),
+        Some(_) => named.clone(),
+        None => seen.clone(),
+    }
 }
 
 /// The last thing an agent's hooks told us.
@@ -172,10 +186,7 @@ fn session_info(s: &Session) -> SessionInfo {
         if running.is_some() {
             st.command = running;
         }
-        if let Some(Some(line)) = &typed {
-            st.typed = Some(line.clone());
-        }
-        let command = if typed.is_some() { st.typed.clone() } else { st.command.clone() };
+        let command = tab_command(typed, st.capture.running(), &st.named, &st.command);
         // Back at the shell: the agent is gone, whether or not it said goodbye.
         let gone = st.agent.as_ref().is_some_and(|a| {
             a.state == AgentState::Ended || (fg.pid == s.pid && fg.agent.is_none() && now_ms() - a.at_ms > 3000)
@@ -312,7 +323,7 @@ pub fn spawn_session(
             saved_output_ms: 0,
             agent: None,
             command: None,
-            typed: None,
+            named: None,
         }),
     });
     sessions.lock().unwrap().insert(id.to_string(), session.clone());
@@ -349,10 +360,20 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 if command.is_some() {
                     st.command = command;
                 }
+                let finished = st.capture.finished_ms;
                 st.capture.write(bytes);
+                let names_tab = st.capture.finished_ms != finished && st.capture.duration_ms.is_some_and(|d| d >= NAMES_TAB_MS);
                 st.screen.write(bytes);
                 st.last_output_ms = now_ms();
                 st.clients.retain(|c| c.send(bytes));
+                drop(st);
+                // The command file still holds the line that just finished; the next is
+                // written only when another command starts.
+                if names_tab {
+                    if let Some(Some(line)) = shell::last_command(&session.id) {
+                        session.state.lock().unwrap().named = Some(line);
+                    }
+                }
             }
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             // EIO once the last slave fd closes, i.e. the process exited.
@@ -503,6 +524,29 @@ fn resize_locked(session: &Session, st: &mut SessionState, cols: u16, rows: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quick_commands_show_while_running_but_dont_name_the_tab() {
+        let named = Some("npm run dev".to_string());
+        let line = |l: &str| Some(Some(l.to_string()));
+        assert_eq!(tab_command(line("git status"), true, &named, &None).as_deref(), Some("git status"));
+        assert_eq!(tab_command(line("git status"), false, &named, &None).as_deref(), Some("npm run dev"));
+        // A trivial command (`ls`) running leaves the name alone.
+        assert_eq!(tab_command(Some(None), true, &named, &None).as_deref(), Some("npm run dev"));
+        assert_eq!(tab_command(line("git status"), false, &None, &None), None);
+        // Without the integration, the process watcher decides.
+        assert_eq!(tab_command(None, false, &named, &Some("vim".into())).as_deref(), Some("vim"));
+    }
+
+    #[test]
+    fn a_finished_command_reports_how_long_it_ran() {
+        let mut capture = super::super::command::CommandCapture::default();
+        capture.write(b"\x1b]133;C\x07");
+        assert!(capture.running());
+        capture.write(b"\x1b]133;D;0\x07");
+        assert!(!capture.running());
+        assert!(capture.duration_ms.is_some_and(|d| d < NAMES_TAB_MS));
+    }
 
     fn report(agent: &str, state: AgentState, session: Option<&str>, message: Option<&str>) -> AgentReport {
         AgentReport { agent: agent.into(), state, at_ms: 0, session: session.map(Into::into), message: message.map(Into::into) }

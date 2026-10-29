@@ -1,6 +1,7 @@
 //! Shell integration: a preexec hook that writes each command line, as typed, to
 //! a file per session, so a tab can be named after what it runs ("npm run dev").
-//! Watching the foreground process alone misses quick commands like `git status`.
+//! A command keeps the name once it has run a few seconds; `git status` shows only
+//! while it runs. Watching the foreground process alone would miss the command line.
 //! A precmd hook touches a second file each time a command finishes, which is when
 //! a shell tab counts as done.
 //!

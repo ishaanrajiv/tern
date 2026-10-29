@@ -1,6 +1,5 @@
 import AppKit
 import Foundation
-import Security
 import os
 
 /// One usage window: how much of it is used, and when it starts over.
@@ -29,9 +28,13 @@ nonisolated struct UsageLimits: Equatable, Sendable {
 @Observable
 final class AgentUsage {
     private(set) var limits: [String: UsageLimits] = [:]
+    /// The Keychain refused Claude Code's sign-in. The setting stays on; tern stops asking
+    /// until the next launch or `retryAccount()`, since asking every few minutes would be worse.
+    private(set) var accountDenied = false
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var account: UsageLimits?
     @ObservationIgnored private var accountAsked = Date.distantPast
+    @ObservationIgnored private var asking = false
 
     init() {
         refresh()
@@ -44,7 +47,8 @@ final class AgentUsage {
     func refresh() {
         if !UserDefaults.standard.bool(forKey: Prefs.claudeAccountUsage) {
             (account, accountAsked) = (nil, .distantPast)
-        } else if Date().timeIntervalSince(accountAsked) >= 300 {
+            if accountDenied { accountDenied = false }
+        } else if !accountDenied, !asking, Date().timeIntervalSince(accountAsked) >= 300 {
             askAccount()
         }
         let account = self.account
@@ -57,18 +61,26 @@ final class AgentUsage {
         }
     }
 
+    /// Asks the Keychain again after it refused.
+    func retryAccount() {
+        (accountDenied, accountAsked) = (false, .distantPast)
+        refresh()
+    }
+
     private func askAccount() {
-        accountAsked = Date()
+        (accountAsked, asking) = (Date(), true)
         DispatchQueue.global(qos: .utility).async {
             ClaudeAccount.usage { result in
                 DispatchQueue.main.async {
+                    self.asking = false
                     switch result {
                     case .limits(let limits):
                         self.account = limits
                         self.refresh()
                     case .denied:
-                        // Asking again every few minutes would be worse than not showing it.
-                        UserDefaults.standard.set(false, forKey: Prefs.claudeAccountUsage)
+                        // Never turn the setting off: a refusal can come from a dialog dismissed
+                        // during an update, or from a dev build sharing these defaults.
+                        self.accountDenied = true
                     case .unavailable:
                         break
                     }
@@ -149,7 +161,7 @@ final class AgentUsage {
 
 /// Claude Code's limits as its account reports them, the numbers `/usage` shows, wherever
 /// Claude Code runs (the desktop app never runs a status line). It uses the sign-in Claude
-/// Code keeps in the Keychain, which macOS asks before handing over. tern never refreshes
+/// Code keeps in the Keychain, only once the user turns this on. tern never refreshes
 /// that token, which would sign Claude Code out; an expired one waits for Claude Code to renew it.
 nonisolated enum ClaudeAccount {
     enum Result: Sendable { case limits(UsageLimits), denied, unavailable }
@@ -182,21 +194,26 @@ nonisolated enum ClaudeAccount {
         }.resume()
     }
 
+    /// Read through `security`, the tool Claude Code itself stores the item with, so the item
+    /// already trusts it. Reading it directly would make macOS ask again whenever tern's
+    /// signature changes or Claude Code rewrites the item on a token refresh.
     private static func accessToken() -> Token {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: "Claude Code-credentials",
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecReturnData as String: true,
-        ]
-        var item: CFTypeRef?
-        switch SecItemCopyMatching(query as CFDictionary, &item) {
-        case errSecSuccess: break
-        case errSecUserCanceled, errSecAuthFailed: return .denied
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/security")
+        p.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return .none }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        switch p.terminationStatus {
+        case 0: break
+        // The low byte of the OSStatus: errSecUserCanceled (-128), errSecAuthFailed (-25293).
+        case 128, 51: return .denied
         default: return .none
         }
-        guard let data = item as? Data,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let oauth = json["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String else { return .none }
         if let expires = oauth["expiresAt"] as? Double, expires / 1000 < Date().timeIntervalSince1970 { return .none }

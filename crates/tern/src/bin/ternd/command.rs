@@ -18,6 +18,11 @@ pub struct CommandCapture {
 }
 
 impl CommandCapture {
+    /// Between a command's start and end markers.
+    pub fn running(&self) -> bool {
+        self.started.is_some()
+    }
+
     pub fn write(&mut self, bytes: &[u8]) {
         let mut offset = 0;
         while offset < bytes.len() {

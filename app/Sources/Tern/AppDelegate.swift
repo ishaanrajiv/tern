@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for request in pendingOpens { open(request) }; pendingOpens = []
         if let controller = mainWindow, controller.workspace.allTabs.isEmpty { controller.showFolderPicker() }
         mainWindow?.checkDaemon()
+        AppUpdates.shared.startAutomaticChecks()
         hotkey = TerminalHotkey { [weak self] in self?.toggleTerminal() }
         TernClient.watch { [weak self] list in self?.updateSessions(list) }
         if ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] == nil { NSApp.activate(ignoringOtherApps: true) }
@@ -187,7 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         else { let window = mainWindow ?? makeWindow(); window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
     }
     private func openSettings() {
-        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates) { [weak self] version in self?.mainWindow?.runUpdate(version) } }
+        if settingsWindow == nil { settingsWindow = SettingsWindowController(hooks: hooks, updates: updates, usage: usage) { [weak self] version in self?.mainWindow?.runUpdate(version) } }
         settingsWindow?.showWindow(nil); settingsWindow?.window?.makeKeyAndOrderFront(nil)
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

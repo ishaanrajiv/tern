@@ -319,6 +319,9 @@ impl Drop for RawMode {
     }
 }
 
+/// Resets attributes and clears the screen and scrollback before a snapshot.
+const CLEAR: &[u8] = b"\x1b[m\x1b[H\x1b[2J\x1b[3J";
+
 fn attach(args: &[String]) -> Result<i32> {
     let (mut cwd, mut cmd, mut init, mut id) = (None, None, None, None);
     let mut it = args.iter();
@@ -380,6 +383,9 @@ fn attach(args: &[String]) -> Result<i32> {
 
     // Daemon output -> this terminal. Unbuffered: every frame is written immediately.
     let mut stdout = ManuallyDrop::new(unsafe { File::from_raw_fd(1) });
+    // The snapshot expects a blank terminal, but whatever started this client may
+    // have written first: Ghostty runs it through login(1), which prints "Last login".
+    stdout.write_all(CLEAR)?;
     let mut buf = Vec::new();
     loop {
         // A reset connection counts as ternd going away, same as a clean close.
@@ -411,7 +417,7 @@ fn attach(args: &[String]) -> Result<i32> {
                 *sock_w.lock().unwrap() = sock;
                 reader = r;
                 // The snapshot that follows replays the whole screen and history.
-                stdout.write_all(b"\x1b[m\x1b[H\x1b[2J\x1b[3J")?;
+                stdout.write_all(CLEAR)?;
             }
         }
     }
