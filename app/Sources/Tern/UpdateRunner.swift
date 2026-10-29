@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// Runs Claude Code's or Codex's updater in a ternd session that no tab owns. The session's
 /// terminal waits in a hidden panel: Show Output brings it up, a prompt or a failure brings it
@@ -7,17 +8,31 @@ import AppKit
 @Observable
 final class UpdateRunner {
     struct Run: Equatable {
-        enum Phase: Equatable { case running, succeeded, failed(String) }
+        enum Phase: Equatable { case running, succeeded, failed }
         let id: String
         let agent: String
         let command: String
+        var started = Date()
         var phase = Phase.running
+        var ended: Date?
+        /// The updater's exit code; nil while it runs, or when it stopped without one.
+        var code: Int32?
+        /// The last line on its screen: the question it asks, or the error it ended on.
+        var lastLine: String?
         /// Quiet, with a question on screen: probably waiting for the user.
         var waiting = false
         /// The session still holds its terminal (a failed run waits for Return).
         var attached = true
         /// The version check after a successful run has finished.
         var verified = false
+
+        var elapsed: TimeInterval { (ended ?? Date()).timeIntervalSince(started) }
+    }
+
+    /// "14s", "2m 5s".
+    nonisolated static func duration(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        return s < 60 ? "\(s)s" : "\(s / 60)m \(s % 60)s"
     }
 
     nonisolated static let prefix = "update-"
@@ -54,17 +69,22 @@ final class UpdateRunner {
     nonisolated static func commandFile(_ id: String) -> URL { statusDirectory.appendingPathComponent(id + ".command") }
 
     /// The session's command: the updater in the user's login shell, then its exit code in
-    /// `status`. A failed run keeps its terminal until Return, so the error stays readable.
+    /// `status`. A failed run keeps its terminal for an hour, so the error stays readable; the
+    /// console's footer says how it ended.
     nonisolated static func script(command: String, shell: String, status: String) -> String {
         "\(quoteShell(shell)) -lic \(quoteShell(command)); code=$?; printf %s \"$code\" > \(quoteShell(status)); "
-            + "if [ \"$code\" -ne 0 ]; then printf '\\r\\n[tern] %s exited with %s. Press Return to close.\\r\\n' \(quoteShell(command)) \"$code\"; "
-            + "read -r -t 3600 _; fi; exit \"$code\""
+            + "if [ \"$code\" -ne 0 ]; then read -r -t 3600 _; fi; exit \"$code\""
+    }
+
+    /// The last line with text on it.
+    nonisolated static func lastLine(_ text: String) -> String? {
+        text.split(whereSeparator: \.isNewline).last { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { $0.trimmingCharacters(in: .whitespaces) }
     }
 
     /// The end of the screen looks like a question: a password, a yes/no, a choice.
     nonisolated static func looksLikePrompt(_ text: String) -> Bool {
-        guard let last = text.split(whereSeparator: \.isNewline).last(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return false }
-        let line = last.trimmingCharacters(in: .whitespaces).lowercased()
+        guard let line = lastLine(text)?.lowercased() else { return false }
         let marks = ["[y/n]", "(y/n)", "[y/n]:", "yes/no", "password", "passphrase", "press enter", "press return", "continue?", "proceed?"]
         if marks.contains(where: line.contains) { return true }
         return line.hasSuffix("?") || line.hasSuffix(":") || line.hasSuffix("›") || line.hasSuffix(">")
@@ -87,7 +107,7 @@ final class UpdateRunner {
         let agent = run.agent, id = run.id
         let terminal = TerminalView(sessionID: id, ternBinary: ternBinary, cwd: NSHomeDirectory(), command: command)
         terminal.onClose = { [weak self] in self?.attachEnded(agent, id: id) }
-        let console = UpdateConsole(title: "Updating \(UpdateSource(rawValue: agent)?.name ?? agent)", terminal: terminal)
+        let console = UpdateConsole(runner: self, agent: agent, terminal: terminal)
         console.onCloseRequest = { [weak self] in self?.closeRequested(agent) }
         consoles[agent] = console
         runs[agent] = run
@@ -100,7 +120,8 @@ final class UpdateRunner {
         let command = (try? String(contentsOf: Self.commandFile(id), encoding: .utf8))
             ?? (agent == "claude" ? "claude update" : "\(agent) update")
         // `true` only runs if the session ended since it was listed; attaching then ends the run.
-        open(Run(id: id, agent: agent, command: command), command: "true")
+        let created = (try? Self.commandFile(id).resourceValues(forKeys: [.creationDateKey]))?.creationDate
+        open(Run(id: id, agent: agent, command: command, started: created ?? Date()), command: "true")
         if let code = Self.exitCode(id) {
             // It finished while tern was closed; a failure still waits for Return.
             finish(agent, code: code)
@@ -116,6 +137,25 @@ final class UpdateRunner {
     }
 
     func show(_ agent: String) { consoles[agent]?.show() }
+    func hide(_ agent: String) { consoles[agent]?.hide() }
+
+    /// Ends a running updater; the run then reads as stopped.
+    func stop(_ agent: String) {
+        guard let run = runs[agent], run.phase == .running else { return }
+        TernClient.kill(run.id)
+    }
+
+    /// The updater's whole screen and scrollback, to paste into a bug report.
+    func copyOutput(_ agent: String) {
+        guard let id = runs[agent]?.id else { return }
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let text = TernClient.output(id)?.text else { return }
+            DispatchQueue.main.async {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+        }
+    }
 
     /// Dismiss: ends a session still waiting, and forgets the run.
     func close(_ agent: String) {
@@ -183,9 +223,11 @@ final class UpdateRunner {
         asked[run.id] = now
         let id = run.id
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let waiting = TernClient.output(id).flatMap(\.text).map(UpdateRunner.looksLikePrompt) ?? false
+            let text = TernClient.output(id)?.text ?? ""
+            let waiting = UpdateRunner.looksLikePrompt(text), line = UpdateRunner.lastLine(text)
             DispatchQueue.main.async {
                 guard let self, waiting, self.runs[agent]?.id == id, self.runs[agent]?.phase == .running else { return }
+                self.runs[agent]?.lastLine = line
                 self.runs[agent]?.waiting = true
                 self.consoles[agent]?.show()
             }
@@ -201,6 +243,8 @@ final class UpdateRunner {
         guard let run = runs[agent] else { return }
         try? FileManager.default.removeItem(at: Self.statusFile(run.id))
         runs[agent]?.waiting = false
+        runs[agent]?.ended = Date()
+        runs[agent]?.code = code
         if code == 0 {
             runs[agent]?.phase = .succeeded
             runs[agent]?.attached = false
@@ -208,8 +252,17 @@ final class UpdateRunner {
             let console = consoles.removeValue(forKey: agent)
             DispatchQueue.main.asyncAfter(deadline: .now() + (console?.isVisible == true ? 1.2 : 0)) { console?.dispose() }
         } else {
-            runs[agent]?.phase = .failed("`\(run.command)` exited with \(code).")
+            runs[agent]?.phase = .failed
+            runs[agent]?.lastLine = nil
             consoles[agent]?.show()
+            let id = run.id
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                let line = TernClient.output(id)?.text.flatMap(UpdateRunner.lastLine)
+                DispatchQueue.main.async {
+                    guard let self, self.runs[agent]?.id == id else { return }
+                    self.runs[agent]?.lastLine = line
+                }
+            }
         }
         stopTimerIfIdle()
         onFinish?(agent, code == 0)
@@ -222,7 +275,8 @@ final class UpdateRunner {
         switch run.phase {
         case .running:
             if let code = Self.exitCode(id) { return finish(agent, code: code) }
-            runs[agent]?.phase = .failed("The update stopped before it finished.")
+            runs[agent]?.phase = .failed
+            runs[agent]?.ended = Date()
             consoles.removeValue(forKey: agent)?.dispose()
             stopTimerIfIdle()
             onFinish?(agent, false)
@@ -240,33 +294,54 @@ final class UpdateRunner {
     }
 }
 
-/// The panel an update's terminal lives in, hidden until it's worth seeing.
+/// The panel an update's terminal lives in, hidden until it's worth seeing. A header names the
+/// updater and its state; after a failure a footer offers Retry.
 final class UpdateConsole: NSObject, NSWindowDelegate {
     private let panel: NSPanel
     private let terminal: TerminalView
     var onCloseRequest: (() -> Void)?
 
-    init(title: String, terminal: TerminalView) {
+    init(runner: UpdateRunner, agent: String, terminal: TerminalView) {
         self.terminal = terminal
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 300),
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 340),
                         styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
         super.init()
-        panel.title = title
+        panel.title = "Updating \(UpdateSource(rawValue: agent)?.name ?? agent)"
+        panel.titleVisibility = .hidden
         panel.identifier = NSUserInterfaceItemIdentifier("tern.update")
         panel.isReleasedWhenClosed = false
         panel.hidesOnDeactivate = false
         panel.titlebarAppearsTransparent = true
-        panel.minSize = NSSize(width: 420, height: 180)
+        panel.isMovableByWindowBackground = true
+        panel.minSize = NSSize(width: 480, height: 200)
         panel.backgroundColor = ThemeStore.shared.theme.terminal
         panel.delegate = self
+        // The header's Hide and Close stand in for the window buttons; ⌘W still closes.
+        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(button)?.isHidden = true
+        }
+        let header = NSHostingView(rootView: UpdateConsoleHeader(runner: runner, agent: agent))
+        let footer = NSHostingView(rootView: UpdateConsoleFooter(runner: runner, agent: agent))
+        header.sizingOptions = [.intrinsicContentSize]
+        footer.sizingOptions = [.intrinsicContentSize]
+        // The header takes the hidden title bar's place.
+        header.safeAreaRegions = []
         let content = NSView()
-        terminal.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(terminal)
+        for view in [header, terminal, footer] as [NSView] {
+            view.translatesAutoresizingMaskIntoConstraints = false
+            content.addSubview(view)
+        }
         NSLayoutConstraint.activate([
+            header.topAnchor.constraint(equalTo: content.topAnchor),
+            header.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            header.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            terminal.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 8),
             terminal.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 10),
             terminal.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -10),
-            terminal.topAnchor.constraint(equalTo: content.topAnchor, constant: 30),
-            terminal.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -10),
+            terminal.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -8),
+            footer.leadingAnchor.constraint(equalTo: content.leadingAnchor),
+            footer.trailingAnchor.constraint(equalTo: content.trailingAnchor),
+            footer.bottomAnchor.constraint(equalTo: content.bottomAnchor),
         ])
         panel.contentView = content
         panel.layoutIfNeeded()

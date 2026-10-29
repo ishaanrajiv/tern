@@ -53,9 +53,10 @@ Mac-native, and sessions survive quitting the app.
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
   commands and environment variables, and recreates them later.
-- **Updates.** One card at the foot of the sidebar covers tern, ternd, Claude Code and Codex;
-  two or more fold under "N updates", most urgent first. Each offer has Remind Me Tomorrow and
-  Skip This Version. Settings → Updates lists every version and the options below.
+- **Updates.** One card at the foot of the sidebar covers tern, ternd, Claude Code and Codex.
+  The most urgent row shows in full, outlined in amber when it needs you; the others follow as
+  one line each with their main action. Offers have Remind Me Tomorrow and Skip This Version.
+  Settings → Updates lists every version and the options below.
   - *tern* checks GitHub releases every six hours, then downloads and verifies a new one in the
     background (checksum, archive paths, signing team, Gatekeeper). Once verified it offers
     Restart to Update, or installs when tern quits. Sessions keep running in ternd either way.
@@ -63,8 +64,9 @@ Mac-native, and sessions survive quitting the app.
     When Idle restarts it once nothing is running: every shell is back at its prompt and no
     agent update is in progress. An incompatible ternd also asks with a sheet.
   - *Claude Code and Codex* update with their own updater (Homebrew's for a cask install) in a
-    hidden session, never a tab. Show Output opens its terminal; it opens by itself when the
-    updater asks a question or fails, and closes after a success. An update still running when
+    hidden session, never a tab. The row quotes the updater's question or last error, and its
+    console opens by itself when the updater asks something or fails, with Stop while it runs
+    and Retry after a failure. A success closes it. An update still running when
     tern quits carries on in ternd and reappears at the next launch. tern warns when a second copy
     on PATH would keep running the old version.
 - **Native controls.** The terminal has a context menu and exposes visible text and selection to

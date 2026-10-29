@@ -517,7 +517,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command(id: "debug.hints.off", title: "Debug Hints Off", menu: "Navigate", inMenu: false, inPalette: false) { [weak self] in self?.setHints(nil) },
             // Stand-in updaters, so the update rows can be tried without touching the real agents.
             Command(id: "debug.update.ok", title: "Debug Update OK", menu: "tern", inMenu: false, inPalette: false) { [weak self] in
-                self?.updates.runner.start(agent: "codex", command: "echo Updating Codex; sleep 3; echo Done")
+                self?.updates.runner.start(agent: "codex", command: "echo Updating Codex; sleep 8; echo Done")
             },
             Command(id: "debug.update.fail", title: "Debug Update Fail", menu: "tern", inMenu: false, inPalette: false) { [weak self] in
                 self?.updates.runner.start(agent: "claude", command: "echo 'Error: permission denied'; exit 2")

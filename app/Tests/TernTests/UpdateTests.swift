@@ -142,6 +142,27 @@ final class UpdateTests: XCTestCase {
         XCTAssertEqual(failed.1, "3")
     }
 
+    func testRowsQuoteTheLastLineAndTimeTheRun() {
+        XCTAssertEqual(UpdateRunner.lastLine("Downloading…\n  Install the update? [y/N]  \n\n"), "Install the update? [y/N]")
+        XCTAssertNil(UpdateRunner.lastLine("\n  \n"))
+        XCTAssertEqual(UpdateRunner.duration(14.4), "14s")
+        XCTAssertEqual(UpdateRunner.duration(125), "2m 5s")
+        XCTAssertEqual(UpdateRunner.duration(-3), "0s")
+    }
+
+    func testFailuresAndQuestionsOutlineTheCard() {
+        XCTAssertTrue(UpdateEntry(source: .codex, title: "", tone: .waiting).needsYou)
+        XCTAssertTrue(UpdateEntry(source: .claude, title: "", tone: .failure).needsYou)
+        XCTAssertFalse(UpdateEntry(source: .daemon, title: "", tone: .scheduled).needsYou)
+        XCTAssertFalse(UpdateEntry(source: .app, title: "").needsYou)
+        let rows = UpdateEntry.sorted([
+            UpdateEntry(source: .app, title: "offer"),
+            UpdateEntry(source: .daemon, title: "when idle", tone: .scheduled),
+            UpdateEntry(source: .claude, title: "failed", tone: .failure),
+        ])
+        XCTAssertEqual(rows.map(\.source), [.claude, .daemon, .app])
+    }
+
     func testAQuietQuestionLooksLikeAPrompt() {
         XCTAssertTrue(UpdateRunner.looksLikePrompt("Downloading…\nPassword:"))
         XCTAssertTrue(UpdateRunner.looksLikePrompt("Install the update? [y/N] \n\n"))

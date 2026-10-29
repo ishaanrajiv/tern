@@ -18,47 +18,90 @@ nonisolated enum UpdateSource: String, CaseIterable, Sendable {
 
 /// What a button on an update row does.
 nonisolated enum UpdateAction: Equatable, Sendable {
-    case downloadApp, installApp
+    case downloadApp, installApp, whatsNew
     case restartDaemon, restartDaemonWhenIdle, restartDaemonNow, cancelIdleRestart
-    case runAgent(String), showOutput(String), closeRun(String)
+    case runAgent(String), retryAgent(String), answer(String), showOutput(String), closeRun(String)
+    case remindTomorrow, skipVersion
 
     var label: String {
         switch self {
         case .downloadApp: "Download"
-        case .installApp: "Restart to Update"
+        case .installApp: "Restart"
+        case .whatsNew: "What's New"
         case .restartDaemon: "Restart"
         case .restartDaemonWhenIdle: "When Idle"
         case .restartDaemonNow: "Restart Now"
         case .cancelIdleRestart: "Cancel"
         case .runAgent: "Update"
-        case .showOutput: "Show Output"
+        case .retryAgent: "Retry"
+        case .answer: "Answer"
+        case .showOutput: "Output"
         case .closeRun: "Dismiss"
+        case .remindTomorrow: "Tomorrow"
+        case .skipVersion: "Skip This Version"
+        }
+    }
+
+    /// Drawn as plain text after the first button: it puts something off rather than doing it.
+    var quiet: Bool {
+        switch self {
+        case .closeRun, .cancelIdleRestart, .remindTomorrow, .restartDaemonNow: true
+        default: false
         }
     }
 }
 
 /// One row of the sidebar's update card.
 nonisolated struct UpdateEntry: Identifiable, Equatable, Sendable {
-    enum Tone: Equatable, Sendable { case normal, warning, progress, success, failure }
+    enum Tone: Equatable, Sendable {
+        /// An offer.
+        case normal
+        /// An updater asking a question: it needs you.
+        case waiting
+        /// Something that needs you soon, such as an incompatible ternd.
+        case warning
+        case progress
+        /// Waiting for something else to finish first, such as a restart when idle.
+        case scheduled
+        case success, failure
+    }
 
     let source: UpdateSource
     let title: String
     var detail: String? = nil
+    /// The detail is a command, a version or an exit code.
+    var detailIsCode = false
+    /// When the work began; a running row counts up from it.
+    var started: Date? = nil
+    /// A line from the updater's terminal: the question it asks, or its last words.
+    var quote: String? = nil
+    /// The programs a restart would end.
+    var chips: [String] = []
+    /// A caveat under the detail, such as a second copy on PATH.
+    var note: String? = nil
     var tone: Tone = .normal
+    /// The first is the main action.
     var actions: [UpdateAction] = []
+    /// A small icon button at the row's end, for a row with no buttons.
+    var trailing: UpdateAction? = nil
+    /// The row's ⋯ menu.
+    var menu: [UpdateAction] = []
     /// The version a row offers; set for rows that Remind Me Tomorrow and Skip can hide.
     var version: String? = nil
 
     var id: String { source.rawValue }
 
-    /// Urgent rows first, then rows for something already under way, then offers.
+    /// Rows that need you first, then rows for something already under way, then offers.
     var rank: Int {
         switch tone {
-        case .warning: 0
-        case .progress, .failure, .success: 1
+        case .waiting, .warning, .failure: 0
+        case .progress, .scheduled, .success: 1
         case .normal: 2
         }
     }
+
+    /// Whether the card outlines itself in amber for this row.
+    var needsYou: Bool { rank == 0 }
 
     static func sorted(_ entries: [UpdateEntry]) -> [UpdateEntry] {
         let order = Dictionary(uniqueKeysWithValues: UpdateSource.allCases.enumerated().map { ($1, $0) })
@@ -194,23 +237,23 @@ final class UpdateCenter {
 
     private var appEntry: UpdateEntry? {
         let tag = app.release?.tag_name ?? ""
-        let current = AppUpdates.currentVersion
+        let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+        let offer = UpdateEntry(source: .app, title: "tern \(version) is available", detail: "\(AppUpdates.currentVersion) → \(version)",
+                                detailIsCode: true, actions: [.downloadApp, .whatsNew], menu: [.remindTomorrow, .skipVersion], version: tag)
         switch app.phase {
         case .idle, .checking:
-            guard app.release != nil else { return nil }
-            return UpdateEntry(source: .app, title: "tern \(tag) is available", detail: "You have \(current).",
-                               actions: [.downloadApp], version: tag)
+            return app.release == nil ? nil : offer
         case .downloading(let interactive):
             // A background download stays out of sight until it's ready.
             guard interactive else { return nil }
-            return UpdateEntry(source: .app, title: "Downloading tern \(tag)…", tone: .progress)
+            return UpdateEntry(source: .app, title: "Downloading tern \(version)", detail: "Checked before it's offered.", tone: .progress)
         case .ready:
             let installs = UserDefaults.standard.bool(forKey: Prefs.installAppUpdatesOnQuit)
-            return UpdateEntry(source: .app, title: "tern \(tag) is ready",
-                               detail: installs ? "Installs when you quit. Sessions keep running." : "Sessions keep running across the restart.",
-                               actions: [.installApp], version: tag)
+            return UpdateEntry(source: .app, title: "tern \(version) is ready",
+                               detail: installs ? "Installs when you quit. Sessions keep running." : "Sessions keep running in ternd.",
+                               actions: [.installApp, .whatsNew], menu: [.remindTomorrow, .skipVersion], version: tag)
         case .installing:
-            return UpdateEntry(source: .app, title: "Installing tern \(tag)…", tone: .progress)
+            return UpdateEntry(source: .app, title: "Installing tern \(version)", tone: .progress)
         case .failed(let message, let interactive):
             if interactive {
                 return UpdateEntry(source: .app, title: "tern couldn't update", detail: message, tone: .failure,
@@ -218,28 +261,28 @@ final class UpdateCenter {
             }
             // A background failure falls back to an ordinary offer, with the reason.
             guard app.release != nil else { return nil }
-            return UpdateEntry(source: .app, title: "tern \(tag) is available", detail: message,
-                               actions: [.downloadApp], version: tag)
+            var row = offer
+            row.note = message
+            return row
         }
     }
 
     private var daemonEntry: UpdateEntry? {
-        if restartingDaemon { return UpdateEntry(source: .daemon, title: "Restarting ternd…", tone: .progress) }
+        if restartingDaemon { return UpdateEntry(source: .daemon, title: "Restarting ternd", tone: .progress) }
         guard let daemon, daemon.running, !daemon.current else { return nil }
-        let cost = busy.isEmpty ? "Nothing is running, so nothing ends."
-            : "Ends \(busy.count == 1 ? "1 running program" : "\(busy.count) running programs"): \(BusySessions.summary(busy))."
+        let chips = busy.count > 4 ? Array(busy.prefix(3)) + ["\(busy.count - 3) more"] : busy
         if restartWhenIdle {
-            return UpdateEntry(source: .daemon, title: "ternd restarts when idle",
-                               detail: "Waiting for \(BusySessions.summary(busy)).", tone: .progress,
-                               actions: [.restartDaemonNow, .cancelIdleRestart])
+            return UpdateEntry(source: .daemon, title: "ternd restarts when idle", detail: "Waiting for", chips: chips,
+                               tone: .scheduled, actions: [.restartDaemonNow, .cancelIdleRestart])
         }
-        let actions: [UpdateAction] = busy.isEmpty ? [.restartDaemon] : [.restartDaemon, .restartDaemonWhenIdle]
+        let cost = busy.isEmpty ? "Nothing is running, so nothing ends." : "Restarting now ends"
+        let actions: [UpdateAction] = busy.isEmpty ? [.restartDaemon] : [.restartDaemonWhenIdle, .restartDaemonNow]
         if !daemon.compatible {
-            return UpdateEntry(source: .daemon, title: "ternd needs a restart",
-                               detail: "It's from an older tern and may misread this one. " + cost, tone: .warning, actions: actions)
+            return UpdateEntry(source: .daemon, title: "ternd needs a restart", detail: "It's older than this tern. " + cost,
+                               chips: chips, tone: .warning, actions: actions)
         }
-        return UpdateEntry(source: .daemon, title: "Restart ternd to finish updating", detail: cost,
-                           actions: actions, version: daemon.version ?? "")
+        return UpdateEntry(source: .daemon, title: "Restart ternd to finish", detail: cost, chips: chips,
+                           actions: actions, menu: [.remindTomorrow, .skipVersion], version: daemon.version ?? "")
     }
 
     private func agentEntry(_ agent: String) -> UpdateEntry? {
@@ -247,44 +290,51 @@ final class UpdateCenter {
         let name = source.name
         if let run = runner.runs[agent] {
             switch run.phase {
+            case .running where run.waiting:
+                return UpdateEntry(source: source, title: "\(name) is asking", detail: "The updater stopped for an answer.",
+                                   quote: run.lastLine, tone: .waiting, actions: [.answer(agent)])
             case .running:
-                return UpdateEntry(source: source, title: "Updating \(name)…",
-                                   detail: run.waiting ? "It may be waiting for you." : nil,
-                                   tone: run.waiting ? .warning : .progress, actions: [.showOutput(agent)])
-            case .failed(let reason):
-                return UpdateEntry(source: source, title: "\(name) didn't update", detail: reason, tone: .failure,
-                                   actions: run.attached ? [.showOutput(agent), .closeRun(agent)] : [.runAgent(agent), .closeRun(agent)])
+                return UpdateEntry(source: source, title: "Updating \(name)", detail: run.command, detailIsCode: true,
+                                   started: run.started, tone: .progress, trailing: .showOutput(agent))
+            case .failed:
+                let detail = run.code.map { "exit \($0) after \(UpdateRunner.duration(run.elapsed))" }
+                return UpdateEntry(source: source, title: "\(name) didn't update", detail: detail ?? "The update stopped before it finished.",
+                                   detailIsCode: detail != nil, quote: run.lastLine, tone: .failure,
+                                   actions: run.attached ? [.retryAgent(agent), .showOutput(agent), .closeRun(agent)] : [.retryAgent(agent), .closeRun(agent)])
             case .succeeded where !run.verified:
-                return UpdateEntry(source: source, title: "Checking \(name)…", tone: .progress)
+                return UpdateEntry(source: source, title: "Checking \(name)", tone: .progress)
             case .succeeded:
                 // Done when the version check agrees; otherwise another copy may come first on PATH.
                 guard let version = agents.versions[agent], version.behind else {
-                    let installed = agents.versions[agent]?.installed.map { " \($0)" } ?? ""
-                    return UpdateEntry(source: source, title: "\(name) updated to\(installed)", tone: .success)
+                    let installed = agents.versions[agent]?.installed.map { " \($0)" } ?? " up to date"
+                    return UpdateEntry(source: source, title: "\(name) is now\(installed)", tone: .success)
                 }
                 return UpdateEntry(source: source, title: "\(name) is still \(version.installed ?? "out of date")",
                                    detail: version.shadowWarning ?? "The updater finished, but the version didn't change.",
-                                   tone: .failure, actions: [.runAgent(agent), .closeRun(agent)])
+                                   tone: .failure, actions: [.retryAgent(agent), .closeRun(agent)])
             }
         }
         guard UserDefaults.standard.bool(forKey: Prefs.offerAgentUpdates),
               let version = agents.versions[agent], version.behind, let latest = version.latest else { return nil }
-        return UpdateEntry(source: source, title: "\(name) \(latest) is available",
-                           detail: ["You have \(version.installed ?? "an older version").", version.shadowWarning].compactMap { $0 }.joined(separator: " "),
-                           actions: [.runAgent(agent)], version: latest)
+        return UpdateEntry(source: source, title: "\(name) update", detail: "\(version.installed ?? "?") → \(latest)", detailIsCode: true,
+                           note: version.shadowWarning, actions: [.runAgent(agent), .remindTomorrow], menu: [.skipVersion], version: latest)
     }
 
     // MARK: Actions
 
-    func perform(_ action: UpdateAction) {
+    /// `entry` is the row the action came from; Remind Me Tomorrow and Skip need it.
+    func perform(_ action: UpdateAction, entry: UpdateEntry? = nil) {
         switch action {
         case .downloadApp: app.download(interactive: true)
         case .installApp: app.install(relaunch: true)
+        case .whatsNew: openSettings?()
+        case .remindTomorrow: if let entry { remindTomorrow(entry) }
+        case .skipVersion: if let entry { skip(entry) }
         case .restartDaemon, .restartDaemonNow: requestDaemonRestart()
         case .restartDaemonWhenIdle: restartWhenIdle = true; restartIfIdle()
         case .cancelIdleRestart: restartWhenIdle = false
-        case .runAgent(let agent): runAgent(agent)
-        case .showOutput(let agent): runner.show(agent)
+        case .runAgent(let agent), .retryAgent(let agent): runAgent(agent)
+        case .answer(let agent), .showOutput(let agent): runner.show(agent)
         case .closeRun(let agent): runner.close(agent)
         }
     }
