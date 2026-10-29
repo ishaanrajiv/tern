@@ -45,7 +45,12 @@ pub fn state_for(agent: &str, input: &Value) -> Option<(AgentState, Option<Strin
             Some("compact") => return None,
             _ => AgentState::Idle,
         },
-        "UserPromptSubmit" | "PreToolUse" | "PostToolUse" => AgentState::Working,
+        "UserPromptSubmit" => AgentState::Working,
+        // A subagent's tools carry its `agent_id`. Claude Code also runs helper agents after
+        // Stop; their tools would mark a finished turn as working again. The main agent's own
+        // events, and the new prompt that follows a background agent, cover a turn.
+        "PreToolUse" | "PostToolUse" if input.get("agent_id").is_some_and(|v| !v.is_null()) => return None,
+        "PreToolUse" | "PostToolUse" => AgentState::Working,
         // Esc during a tool ends the turn without a Stop; other failures go back to the model.
         "PostToolUseFailure" => match input["is_interrupt"].as_bool() {
             Some(true) => AgentState::Idle,
@@ -572,6 +577,10 @@ mod tests {
         assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "startup" })), Some(AgentState::Idle));
         assert_eq!(state(json!({ "hook_event_name": "SessionStart", "source": "compact" })), None);
         assert_eq!(state(json!({ "hook_event_name": "UserPromptSubmit" })), Some(AgentState::Working));
+        assert_eq!(state(json!({ "hook_event_name": "PreToolUse", "tool_name": "Read" })), Some(AgentState::Working));
+        // A helper agent still running after Stop doesn't make the turn working again.
+        assert_eq!(state(json!({ "hook_event_name": "PreToolUse", "tool_name": "Read", "agent_id": "a5ed58457b2a80777" })), None);
+        assert_eq!(state(json!({ "hook_event_name": "PostToolUse", "agent_id": "a5ed58457b2a80777" })), None);
         assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure", "is_interrupt": true })), Some(AgentState::Idle));
         assert_eq!(state(json!({ "hook_event_name": "PostToolUseFailure" })), None);
         assert_eq!(state(json!({ "hook_event_name": "Notification", "notification_type": "idle_prompt" })), None);
