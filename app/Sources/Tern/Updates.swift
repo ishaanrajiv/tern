@@ -144,8 +144,9 @@ nonisolated enum BusySessions {
     static let shells: Set<String> = ["zsh", "bash", "fish", "sh", "dash", "ksh", "tcsh", "csh", "nu", "login"]
 
     /// `updating` holds the updater sessions still running. `holdsTerminal` says whether a
-    /// session's own shell is in the foreground; a session counts as idle only when it does
-    /// and the foreground is a shell, so `bash long-script.sh` counts as busy.
+    /// session's own shell is in the foreground; a session counts as idle only when it does,
+    /// the foreground is a shell and shell integration doesn't report a command running. So
+    /// `bash long-script.sh` and a `source`d script both count as busy.
     static func programs(in sessions: [SessionInfo], updating: Set<String> = [],
                          holdsTerminal: (SessionInfo) -> Bool = shellHoldsTerminal) -> [String] {
         sessions.compactMap { s -> String? in
@@ -155,7 +156,7 @@ nonisolated enum BusySessions {
             }
             if let agent = s.agent { return agent == "claude" ? "Claude Code" : agent == "codex" ? "Codex" : agent }
             let process = s.process.hasPrefix("-") ? String(s.process.dropFirst()) : s.process
-            if shells.contains(process), holdsTerminal(s) { return nil }
+            if shells.contains(process), s.commandRunning != true, holdsTerminal(s) { return nil }
             return s.command.flatMap { $0.isEmpty ? nil : $0 } ?? (process.isEmpty ? "a program" : process)
         }
     }

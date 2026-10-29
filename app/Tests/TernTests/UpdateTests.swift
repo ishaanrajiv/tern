@@ -47,9 +47,10 @@ final class UpdateTests: XCTestCase {
         XCTAssertEqual(rows.map(\.source), [.daemon, .claude, .app, .codex])
     }
 
-    private func session(_ id: String, process: String, agent: String? = nil, command: String? = nil) throws -> SessionInfo {
+    private func session(_ id: String, process: String, agent: String? = nil, command: String? = nil,
+                         running: Bool = false) throws -> SessionInfo {
         var json: [String: Any] = ["id": id, "pid": 1, "cols": 80, "rows": 24, "clients": 1, "process": process,
-                                   "title": "", "last_output_ms": 0, "bells": 0]
+                                   "title": "", "last_output_ms": 0, "bells": 0, "command_running": running]
         if let agent { json["agent"] = agent }
         if let command { json["command"] = command }
         let decoder = JSONDecoder()
@@ -68,12 +69,14 @@ final class UpdateTests: XCTestCase {
             try session("p-6", process: "bash", command: "bash long-script.sh"),
             // A shell whose terminal can't be read.
             try session("p-7", process: "zsh"),
+            // A script sourced into the shell: the shell holds the terminal but is busy.
+            try session("p-8", process: "zsh", command: "source long.sh", running: true),
             try session("update-codex-1234", process: "codex"),
             try session("update-claude-5678", process: "sh"),
         ]
-        let atPrompt: Set = ["p-1", "p-2", "p-5"]
+        let atPrompt: Set = ["p-1", "p-2", "p-5", "p-8"]
         XCTAssertEqual(BusySessions.programs(in: sessions, updating: ["update-claude-5678"]) { atPrompt.contains($0.id) },
-                       ["npm run dev", "Claude Code", "vim", "bash long-script.sh", "zsh", "the Claude Code update"])
+                       ["npm run dev", "Claude Code", "vim", "bash long-script.sh", "zsh", "source long.sh", "the Claude Code update"])
         XCTAssertEqual(BusySessions.summary(["a", "b", "c", "d"]), "a, b and 2 more")
         XCTAssertEqual(BusySessions.summary(["a", "b"]), "a and b")
     }
