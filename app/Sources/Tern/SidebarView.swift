@@ -8,7 +8,6 @@ struct SidebarActions {
     var rename: (String) -> Void
     var close: (String) -> Void
     var update: (AgentUpdates.Version) -> Void
-    var showAppUpdates: () -> Void
 }
 
 /// Number badges shown while ⌘ (folders) or ⌃⌘ (tabs) is held.
@@ -27,7 +26,6 @@ struct SidebarView: View {
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
-    @State private var appUpdates = AppUpdates.shared
     @AppStorage(Prefs.hooksPromptDismissed) private var hooksPromptDismissed = false
     // Read so a change in Settings re-sorts the sidebar.
     @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
@@ -68,10 +66,6 @@ struct SidebarView: View {
                     ForEach(updates.offered, id: \.agent) { version in
                         UpdatePrompt(version: version, update: { actions.update(version) },
                                      dismiss: { updates.dismiss(version) })
-                    }
-                    if let release = appUpdates.offered {
-                        AppUpdatePrompt(version: release.tag_name, installed: appUpdates.currentVersion,
-                                        update: actions.showAppUpdates, dismiss: { appUpdates.dismiss(release) })
                     }
                     UsageFooter(usage: usage, now: context.date)
                 }

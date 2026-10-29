@@ -52,7 +52,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for request in pendingOpens { open(request) }; pendingOpens = []
         if let controller = mainWindow, controller.workspace.allTabs.isEmpty { controller.showFolderPicker() }
         mainWindow?.checkDaemon()
-        AppUpdates.shared.startAutomaticChecks()
         hotkey = TerminalHotkey { [weak self] in self?.toggleTerminal() }
         TernClient.watch { [weak self] list in self?.updateSessions(list) }
         if ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] == nil { NSApp.activate(ignoringOtherApps: true) }

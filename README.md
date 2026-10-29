@@ -53,10 +53,7 @@ Mac-native, and sessions survive quitting the app.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
   commands and environment variables, and recreates them later.
 - **Updates.** tern checks npm for newer Claude Code and Codex releases and offers to update.
-  It also checks GitHub for Tern releases, including alpha prereleases. Both checks run shortly
-  after launch and every six hours. Available updates appear in the sidebar; Not Now dismisses
-  that version. Tern's Update… opens the release notes and installer. You can also check manually
-  with tern → Check for Tern Updates…, including versions you dismissed. Download and Verify checks the
+  tern → Check for Tern Updates… checks GitHub alpha releases. Download and Verify checks the
   checksum, archive paths, signing team and Gatekeeper assessment before offering Install and
   Relaunch. Installation is explicit; the running daemon is left alone until you accept a restart.
 - **Native controls.** The terminal has a context menu and exposes visible text and selection to
@@ -252,7 +249,7 @@ testing. It keeps its own layout and spawns its own daemon without launchd.
 ## Privacy
 
 tern has no account and no telemetry. It reaches the network to check npm for agent updates,
-to check GitHub for Tern updates automatically and download releases when you request them,
+to check/download GitHub releases when you request an app update,
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
 
 Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, launch presets
