@@ -207,6 +207,53 @@ final class DailyTerminalTests: XCTestCase {
         XCTAssertEqual(w.title(for: tmp), "Shell")
     }
 
+    func testAgentConversationNamesComeFromTheirOwnFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("tern-names-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let claude = root.appendingPathComponent("claude"), codex = root.appendingPathComponent("codex")
+        try FileManager.default.createDirectory(at: claude.appendingPathComponent("-tmp-proj"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: codex, withIntermediateDirectories: true)
+        let transcript = claude.appendingPathComponent("-tmp-proj/c1.jsonl")
+        try Data("""
+        {"type":"user","message":"hi"}
+        {"type":"ai-title","aiTitle":"Summarize README","sessionId":"c1"}
+
+        """.utf8).write(to: transcript)
+        try Data("""
+        {"id":"x1","thread_name":"Old name"}
+        {"id":"x1","thread_name":"Explain updater flow"}
+
+        """.utf8).write(to: codex.appendingPathComponent("session_index.jsonl"))
+        let refs = [AgentRef(agent: "claude", session: "c1"), AgentRef(agent: "codex", session: "x1")]
+        var (names, cache) = AgentNames.lookup(refs, cache: .init(), claudeRoot: claude, codexRoot: codex)
+        XCTAssertEqual(names, ["c1": "Summarize README", "x1": "Explain updater flow"])
+
+        // /rename wins over the generated title; a half-written line waits for its newline.
+        let handle = try FileHandle(forWritingTo: transcript)
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data((#"{"type":"custom-title","customTitle":"README tour"}"# + "\n" + #"{"type":"custom-title","custom"#).utf8))
+        try handle.close()
+        (names, cache) = AgentNames.lookup(refs, cache: cache, claudeRoot: claude, codexRoot: codex)
+        XCTAssertEqual(names["c1"], "README tour")
+    }
+
+    func testAgentTabIgnoresTheShellTitleItInherited() throws {
+        let w = Workspace()
+        w.adoptsOrphans = false
+        let tab = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        func session(_ process: String, agent: String?, title: String) throws -> SessionInfo {
+            var json: [String: Any] = ["id": tab.focusedPane, "pid": 1, "cols": 80, "rows": 24, "clients": 1, "process": process,
+                                       "title": title, "lastOutputMs": 0, "bells": 0, "cwd": "/tmp"]
+            json["agent"] = agent
+            return try JSONDecoder().decode(SessionInfo.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        w.update(sessions: [try session("zsh", agent: nil, title: "zsh in tmp")])
+        w.update(sessions: [try session("claude", agent: "claude", title: "zsh in tmp")])
+        XCTAssertEqual(w.title(for: tab), "claude")
+        w.update(sessions: [try session("claude", agent: "claude", title: "✳ Fix login redirect")])
+        XCTAssertEqual(w.title(for: tab), "Fix login redirect")
+    }
+
     func testCommandOutcomesSpeakPlainly() {
         XCTAssertNil(CommandOutcome(exitCode: 0, durationMs: 40))
         XCTAssertNil(CommandOutcome(exitCode: nil, durationMs: 40))

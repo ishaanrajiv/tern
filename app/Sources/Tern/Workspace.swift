@@ -191,7 +191,7 @@ func relativeAge(_ date: Date?, now: Date) -> String {
 }
 
 /// An agent conversation: which agent, and its own session id.
-struct AgentRef: Codable, Equatable {
+nonisolated struct AgentRef: Codable, Equatable, Sendable {
     var agent: String
     var session: String
 }
@@ -277,6 +277,14 @@ final class Workspace {
     @ObservationIgnored private var resizedAt: [String: Date] = [:]
     /// Folder paths with symlinks resolved, as ternd reports a cwd ("/tmp" is "/private/tmp").
     @ObservationIgnored private var resolvedPaths: [String: String] = [:]
+    /// Conversation names from the agents' own files, by agent session id (see AgentNames).
+    private(set) var agentNames: [String: String] = [:]
+    @ObservationIgnored private var agentNameCache = AgentNames.Cache()
+    @ObservationIgnored private var agentNamesAsked = Date.distantPast
+    @ObservationIgnored private var askingAgentNames = false
+    /// Each pane's terminal title while its shell was in front ("zsh in tern"), which an agent
+    /// started there inherits until it sets its own.
+    @ObservationIgnored private var shellTitles: [String: String] = [:]
     private var adoptedOrphans = false
     var adoptsOrphans = true
     var keepsEmptyWindow = false
@@ -449,12 +457,17 @@ final class Workspace {
 
     private func derivedTitle(_ tab: Tab) -> String? {
         if let name = tab.name, !name.isEmpty { return name }
+        let ref = paneAgent[tab.focusedPane]
         guard let s = sessions[tab.focusedPane] else {
             // Not running yet (say, after a reboot): name it after what it was.
-            return paneAgent[tab.focusedPane]?.agent
+            return ref.flatMap { agentNames[$0.session] } ?? ref?.agent
         }
-        // Agents title the terminal after the task ("✳ Fix login redirect"); that names the session best.
-        if s.agent != nil, let task = Self.cleanTitle(s.title), !task.isEmpty, !Self.agents.contains(task.lowercased()) {
+        // The conversation's own name ("Fix login redirect", or what `/rename` set) names it best.
+        if s.agent != nil, let id = s.agentSession ?? ref?.session, let name = agentNames[id] { return name }
+        // Next, the task agents put in the terminal title ("✳ Fix login redirect"), once the
+        // title is the agent's and not still the shell's.
+        if s.agent != nil, s.title != shellTitles[tab.focusedPane], let task = Self.cleanTitle(s.title),
+           !task.isEmpty, !Self.agents.contains(task.lowercased()) {
             return task
         }
         if let agent = s.agent { return agent }
@@ -988,6 +1001,7 @@ final class Workspace {
                 seen[s.id] = mark
             }
             if let agent = s.agent, let id = s.agentSession { paneAgent[s.id] = AgentRef(agent: agent, session: id) }
+            if s.agent == nil { shellTitles[s.id] = s.title }
             if s.agent == nil, s.agentState == nil, previous[s.id]?.agentState != nil { paneAgent[s.id] = nil }
             if let old = previous[s.id], let finished = s.finishedMs, finished > (old.finishedMs ?? 0),
                s.agent == nil, let tab = allTabs.first(where: { $0.root.panes.contains(s.id) }) {
@@ -999,9 +1013,26 @@ final class Workspace {
             }
         }
         markSeen()
+        refreshAgentNames()
         if !adoptedOrphans && adoptsOrphans {
             adoptedOrphans = true
             adoptOrphans(list.filter { !detachedPanes.contains($0.id) })
+        }
+    }
+
+    /// Every few seconds, off the main thread: agents name a conversation after its first
+    /// prompt and rename it later.
+    private func refreshAgentNames() {
+        let refs = Array(paneAgent.values)
+        guard !refs.isEmpty, !askingAgentNames, -agentNamesAsked.timeIntervalSinceNow >= 5 else { return }
+        (agentNamesAsked, askingAgentNames) = (Date(), true)
+        let cache = agentNameCache
+        DispatchQueue.global(qos: .utility).async {
+            let (names, cache) = AgentNames.lookup(refs, cache: cache)
+            DispatchQueue.main.async {
+                (self.agentNameCache, self.askingAgentNames) = (cache, false)
+                if self.agentNames != names { self.agentNames = names }
+            }
         }
     }
 

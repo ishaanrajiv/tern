@@ -15,7 +15,8 @@ Mac-native, and sessions survive quitting the app.
   folders, recent ones, [zoxide](https://github.com/ajeetdsouza/zoxide) history, and git repos
   under `~/dev`). ⌘T opens a tab in the current folder, ⌥⌘T opens one in a new git worktree.
   Ordinary new tabs inherit the focused pane's directory; **New Tab at Project Root** starts at the folder root.
-  Tabs name themselves after what they run: an agent's task, the command running now, or the last
+  Tabs name themselves after what they run: an agent's conversation name (Claude Code's title, or
+  what `/rename` set; Codex's thread name), the command running now, or the last
   one that ran for a few seconds (`npm run dev` sticks, `git status` doesn't). A tab outside its
   folder's root goes by its subfolder; one with nothing to go by is a dimmed "Shell". Double-click
   or ⌘R to rename.
