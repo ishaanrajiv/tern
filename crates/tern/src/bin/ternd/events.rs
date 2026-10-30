@@ -112,9 +112,13 @@ pub fn monitor(sessions: Sessions, layouts: Arc<Store>, bus: Arc<Bus>) {
             }
             if !found.is_empty() {
                 let config = Config::load();
+                // Asking whether you're away runs a few tools, so only when something needs to know.
+                let needed = config.get("notify-ntfy").is_some() || found.iter().any(|e| !config.all(&format!("on-{}", e.event)).is_empty());
+                let away = needed && crate::away::away(&config);
                 for mut e in found {
                     e.folder = layouts.folder(&e.pane);
-                    run_commands(&config, &e);
+                    run_commands(&config, &e, away);
+                    if away { crate::away::push(&config, &e) }
                     bus.push(e);
                 }
             }
@@ -125,11 +129,13 @@ pub fn monitor(sessions: Sessions, layouts: Arc<Store>, bus: Arc<Bus>) {
 }
 
 /// Runs each `on-<event>` command with the event in its environment, without waiting for it.
-fn run_commands(config: &Config, e: &Event) {
+/// `TERN_AWAY` is 1 when you're away from the Mac, so a command can notify only then.
+fn run_commands(config: &Config, e: &Event, away: bool) {
     for line in config.all(&format!("on-{}", e.event)) {
         let mut command = Command::new("/bin/sh");
         command.arg("-c").arg(line).stdin(Stdio::null()).stdout(Stdio::null())
             .envs(event_env(e))
+            .env("TERN_AWAY", if away { "1" } else { "0" })
             .env_remove("TERN_SESSION_ID");
         if let Some(home) = std::env::var_os("HOME") { command.current_dir(home); }
         match command.spawn() {

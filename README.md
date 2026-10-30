@@ -281,6 +281,22 @@ and `TERN_DURATION_MS` set where they apply, and the whole event as `TERN_EVENT_
 repeat to run several commands; an empty value drops the ones before it. A private instance reads
 `config` in its `TERN_RUNTIME_DIR` instead.
 
+### Notifications while you're away
+
+ternd can push to your phone through [ntfy](https://ntfy.sh) while you're away from the Mac: tern
+isn't the app in front, and the screen is locked or there has been no input for two minutes.
+
+```sh
+# ~/.config/tern/config
+notify-ntfy = https://ntfy.sh/a-topic-only-you-know
+notify-events = needs-you, done, failed     # the default
+away-after = 120                            # seconds without input
+```
+
+Only a title is sent, like "Claude Code needs you · api", never what the agent asked or a
+command line. Install the ntfy app and subscribe to the same topic. `on-<event>` commands also get
+`TERN_AWAY=1` while you're away, for any other service.
+
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
 testing. It keeps its own layout and spawns its own daemon without launchd.
 

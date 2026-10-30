@@ -15,6 +15,7 @@ mod command;
 mod status;
 mod layout;
 mod events;
+mod away;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
