@@ -87,8 +87,10 @@ Mac-native, and sessions survive quitting the app.
 | Faint | Dormant, or waiting to be reopened after a restart |
 
 For accurate states, open Settings (⌘,) and click **Set Up** for Claude Code and Codex. This adds
-a `tern hook` command to `~/.claude/settings.json` and `~/.codex/hooks.json`, and **Remove** takes it
-out again without touching your other settings. In Codex, run `/hooks` once to trust them. Without
+a `tern hook` command to `~/.claude/settings.json` and `~/.codex/hooks.json`, and a `tern` skill
+in each agent's `skills/tern/` that teaches it the [pane commands](#driving-panes-from-an-agent-or-script).
+**Remove** takes them out again without touching your other settings, and a skill of your own by
+that name is left alone. In Codex, run `/hooks` once to trust them. Without
 hooks, tern guesses each agent's state from its output.
 
 Codex usage limits come from its session logs. Claude Code limits come from its status line, and

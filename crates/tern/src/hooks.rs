@@ -172,9 +172,11 @@ fn command(agent: &str) -> Result<String> {
 }
 
 /// Whether a hook or status line command runs our stable binary with `args`. Older
-/// terns double-quoted the path; newer ones single-quote it.
+/// terns double-quoted the path; newer ones single-quote it. A private runtime directory's
+/// binary isn't under `tern/bin`, so the exact command this tern writes counts too.
 fn is_our_command(command: &str, args: &str) -> bool {
     ["\"", "'"].iter().any(|q| command.contains(&format!("/tern/bin/tern{q} {args}")) && command.ends_with(args))
+        || stable_command(args).is_ok_and(|ours| command == ours)
 }
 
 fn is_ours(group: &Value, agent: &str) -> bool {
@@ -314,10 +316,18 @@ pub fn install(agent: &str) -> Result<PathBuf> {
         install_statusline(&mut config)?;
     }
     write_config(&path, &config)?;
+    // The skill that teaches the agent tern's CLI. A SKILL.md of the user's by that name stays.
+    if !crate::skill::install(agent, &skill_binary()?)? {
+        eprintln!("{agent}: left your own {} in place", crate::skill::path(agent)?.display());
+    }
     Ok(path)
 }
 
+/// The CLI path the skill tells agents to run.
+fn skill_binary() -> Result<String> { Ok(stable_binary()?.display().to_string()) }
+
 pub fn uninstall(agent: &str) -> Result<PathBuf> {
+    crate::skill::uninstall(agent)?;
     let path = config_path(agent)?;
     let mut config = read_config(&path)?;
     let statusline = agent == "claude" && uninstall_statusline(&mut config);
@@ -353,10 +363,12 @@ pub fn status(agent: &str) -> Result<Value> {
     let config = read_config(&path).unwrap_or_default();
     let hooked = hooked_events(agent, &config).len();
     let agent_dir = path.parent().is_some_and(Path::exists);
+    let (skill, skill_current) = crate::skill::status(agent, &skill_binary()?)?;
     Ok(json!({
         "agent": agent,
         "installed": hooked > 0,
-        "current": is_current(agent, &config),
+        "current": is_current(agent, &config) && skill_current,
+        "skill": skill,
         "available": agent_dir,
         "config": path,
     }))
@@ -379,7 +391,10 @@ pub fn update_installed() -> Vec<&'static str> {
         .filter(|a| {
             let Ok(path) = config_path(a) else { return false };
             let Ok(config) = read_config(&path) else { return false };
-            !hooked_events(a, &config).is_empty() && !is_current(a, &config) && install(a).is_ok()
+            let skill_current = skill_binary().and_then(|t| crate::skill::status(a, &t)).is_ok_and(|(_, current)| current);
+            let up_to_date = is_current(a, &config) && skill_current;
+            let hooked = !hooked_events(a, &config).is_empty();
+            hooked && !up_to_date && install(a).is_ok()
         })
         .collect()
 }

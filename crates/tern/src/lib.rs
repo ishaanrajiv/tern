@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod open;
 pub mod procinfo;
 pub mod shell;
+pub mod skill;
 pub mod usage;
 
 /// Client -> daemon: raw bytes typed into the terminal.

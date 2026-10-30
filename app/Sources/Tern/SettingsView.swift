@@ -216,8 +216,8 @@ private struct AgentIntegrationRow: View {
             }
             .disabled(status?.available == false)
             .help(agent == "codex"
-                  ? "Reports agent status through ~/.codex/hooks.json. Run /hooks in Codex once to trust new hooks."
-                  : "Reports agent status through ~/.claude/settings.json and records usage through its status line.")
+                  ? "Reports agent status through ~/.codex/hooks.json, and adds a tern skill for driving panes. Run /hooks in Codex once to trust new hooks."
+                  : "Reports agent status through ~/.claude/settings.json, records usage through its status line, and adds a tern skill for driving panes.")
         }
     }
 }
