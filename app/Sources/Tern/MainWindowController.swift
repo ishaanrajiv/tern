@@ -283,11 +283,12 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
 
     private func scheduleSave() {
         // Session updates arrive several times a second; only layout changes need a write.
+        // It goes out at once, to leave the CLI little room to change the layout meanwhile.
         if let saved = savedLayout, saved.0 == workspace.projects, saved.1 == workspace.selectedTabID { return }
         savedLayout = (workspace.projects, workspace.selectedTabID)
         guard !saveScheduled else { return }
         saveScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             self?.saveScheduled = false
             self?.workspace.save()
         }

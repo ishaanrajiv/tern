@@ -30,7 +30,7 @@ pub const FRAME_EXIT: u8 = 0x82;
 
 /// Bumped whenever a request, reply or frame changes in a way an older peer
 /// would misread. A client finding a different number asks for a restart.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -75,6 +75,118 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         subagent: Option<String>,
     },
+    /// A window's saved layout, answered with a `LayoutReply`. ternd keeps every window's
+    /// layout and is the only one to write it, so the CLI can change it with the app quit.
+    LayoutGet { window: String },
+    /// The app replacing a window's layout. Refused, with the current layout, unless
+    /// `base` is the revision the app last saw: the CLI changed it in the meantime.
+    LayoutPut {
+        window: String,
+        base: u64,
+        doc: serde_json::Value,
+        /// Who wrote it, so a watcher can skip its own changes.
+        #[serde(default)]
+        by: String,
+    },
+    /// Streams a `LayoutUpdate` line each time a window's layout changes.
+    LayoutWatch,
+    /// Every open window's layout with each pane's name and who opened it, for `tern ls --json`.
+    LayoutTree,
+    /// Finds the pane a CLI command means. Answered with a `PaneReply`.
+    Resolve { target: Target },
+    /// Splits a pane and starts a session in the new one. Answered with a `PaneReply`.
+    Split {
+        target: Target,
+        /// "right" or "down".
+        direction: String,
+        #[serde(flatten)]
+        open: OpenPane,
+    },
+    /// Opens a tab with a new session, in `folder` or the target's folder. Answered with a `PaneReply`.
+    NewTab {
+        target: Target,
+        folder: Option<String>,
+        #[serde(flatten)]
+        open: OpenPane,
+    },
+    /// Ends a pane's session and takes the pane out of its tab. Answered with a `PaneReply`.
+    Close { target: Target },
+    /// Types into a session as if from the keyboard.
+    Input { id: String, data: String },
+}
+
+/// Which pane a CLI command is for. With neither field, the pane the command runs in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Target {
+    /// A pane id, a name given with `--name`, or `@focused` for the pane in front.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+    /// A tab id or name, meaning that tab's focused pane.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    /// The session the CLI runs in (`TERN_SESSION_ID`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller: Option<String>,
+}
+
+/// What a new pane runs and how it shows.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct OpenPane {
+    /// Where its shell starts; the target pane's directory by default.
+    #[serde(default)]
+    pub cwd: Option<String>,
+    /// A line typed into the new shell, so the pane stays open after it ends.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// A name to address the pane by, unique among open panes.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Bring the new pane to the front. Panes an agent opens stay in the background otherwise.
+    #[serde(default)]
+    pub focus: bool,
+    /// The new session's environment (the CLI's own).
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayoutReply {
+    pub ok: bool,
+    /// 0 for a layout as read from disk; each change after that counts up.
+    pub rev: u64,
+    pub doc: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LayoutUpdate {
+    pub window: String,
+    pub rev: u64,
+    pub doc: serde_json::Value,
+    pub by: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PaneReply {
+    pub ok: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// Why the target couldn't be used: "not_found" or "ambiguous".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+impl PaneReply {
+    pub fn failed(error: impl Into<String>, reason: Option<&str>) -> Self {
+        PaneReply { ok: false, error: Some(error.into()), reason: reason.map(str::to_string), ..Default::default() }
+    }
 }
 
 /// What a coding agent is doing, as reported by its hooks.
@@ -189,6 +301,9 @@ pub struct SessionInfo {
     /// `duration_ms` belong to the one before it.
     #[serde(default)]
     pub command_running: bool,
+    /// Unix time in milliseconds of the last input typed into the session, by a client or `tern send`.
+    #[serde(default)]
+    pub input_ms: u64,
 }
 
 /// Quotes a string for a POSIX shell. Plain words are left alone; anything

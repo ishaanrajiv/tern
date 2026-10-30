@@ -104,6 +104,14 @@ struct PaneHeader: View {
                     .foregroundStyle(focused ? .primary : .secondary)
                     .lineLimit(1)
                     .layoutPriority(1)
+                if let opener = workspace.opener(pane: pane) {
+                    // Opened from the CLI by an agent, which may be in another pane.
+                    Text("by " + agentName(opener))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .help("\(agentName(opener)) opened this pane")
+                }
                 if let place = place(s) {
                     Text(place)
                         .font(.system(size: 11.5))
@@ -134,6 +142,7 @@ struct PaneHeader: View {
 
     /// "Claude Code", "npm run dev", "zsh".
     private func name(_ s: SessionInfo?, agent: String?) -> String {
+        if let given = workspace.name(pane: pane) { return given }
         if let agent { return agentName(agent) }
         guard let s else { return "Starting…" }
         if !Workspace.shells.contains(s.process), let command = s.command, !command.isEmpty { return command }

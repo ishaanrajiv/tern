@@ -236,6 +236,29 @@ tern open . --command 'npm run dev'
 Finder's Services menu also offers **Open in tern**. External `tern://open?path=/absolute/path` URLs
 open folders and cannot execute commands.
 
+### Driving panes from an agent or script
+
+ternd keeps every window's layout, so an agent can open and drive panes with the app open or
+quit. Inside a tern pane, commands act on that pane by default; `--pane ID|NAME|@focused` or
+`--tab ID|NAME` picks another.
+
+```sh
+tern split down --name tests -- cargo test --watch   # prints the new pane's id
+tern tab ~/dev/api --name server -- 'npm run dev'
+tern send --pane server 'curl -s localhost:3000/health'
+tern wait --pane server --text 'listening on' --timeout 30
+tern wait --pane tests --prompt                    # back at a prompt, nothing typed since
+tern capture --pane tests --last-command
+tern run -- cargo clippy                           # prints its output, exits with its code
+tern close --pane server
+tern ls --json                                     # windows, folders, tabs, splits and sessions
+```
+
+New panes start in the background unless given `--focus`, and the pane header names the agent
+that opened one. `wait` also takes `--exit` and `--state idle|working|needs-you|done|failed`.
+Exit codes: 2 for bad arguments, 3 when no pane or tab matches, 4 when a name matches more than
+one, 5 on a timeout. `run` exits with its command's code.
+
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
 testing. It keeps its own layout and spawns its own daemon without launchd.
 
@@ -245,6 +268,8 @@ testing. It keeps its own layout and spawns its own daemon without launchd.
   running is typed at the prompt but not run. Full-screen programs like vim aren't saved while
   they're open.
 - Upgrading ternd ends the processes in your tabs.
+- When the CLI changes a window's layout at the same moment as you do, the CLI's change wins and
+  yours is undone.
 - A turn that ends without a Stop hook (an API error, or Esc while the model is writing) sends no
   "done" event. tern treats an agent that has been silent for five seconds as finished.
 - **Notifications don't work.** macOS refuses tern's permission request without showing a prompt.

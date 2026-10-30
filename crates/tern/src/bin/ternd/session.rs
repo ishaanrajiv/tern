@@ -137,6 +137,8 @@ pub struct SessionState {
     pub capture: super::command::CommandCapture,
     clients: Vec<Client>,
     pub last_output_ms: u64,
+    /// When something was last typed into the session.
+    pub last_input_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
     pub saved_output_ms: u64,
     pub agent: Option<AgentReport>,
@@ -238,6 +240,7 @@ fn session_info(s: &Session) -> SessionInfo {
         exit_code: st.capture.exit_code,
         duration_ms: st.capture.duration_ms,
         command_running: st.capture.running(),
+        input_ms: st.last_input_ms,
     }
 }
 
@@ -376,6 +379,7 @@ pub fn spawn_session(
             capture: super::command::CommandCapture::default(),
             clients: Vec::new(),
             last_output_ms: now_ms(),
+            last_input_ms: 0,
             saved_output_ms: 0,
             agent: None,
             status,
@@ -525,6 +529,7 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
                 if master.write_all(&buf).is_err() {
                     break;
                 }
+                session.state.lock().unwrap().last_input_ms = now_ms();
                 answer_prompt(&session, &buf);
             }
             Ok(Some(FRAME_RESIZE)) => {
@@ -559,8 +564,15 @@ pub fn type_when_ready(session: &Session, line: &str, enter: bool) {
             break;
         }
     }
-    let mut master = &session.master;
-    let _ = master.write_all(format!("{line}{}", if enter { "\r" } else { "" }).as_bytes());
+    let _ = write_input(session, format!("{line}{}", if enter { "\r" } else { "" }).as_bytes());
+}
+
+/// Types `data` as `tern send` does: like a keypress, except it doesn't count as the
+/// user having looked at the pane.
+pub fn write_input(session: &Session, data: &[u8]) -> std::io::Result<()> {
+    (&session.master).write_all(data)?;
+    session.state.lock().unwrap().last_input_ms = now_ms();
+    Ok(())
 }
 
 /// A keypress (not a focus report or mouse event) while the agent waits on the
