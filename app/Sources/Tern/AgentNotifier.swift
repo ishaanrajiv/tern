@@ -49,7 +49,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         guard !workspace.isVisible(tab) else { return }
         let defaults = UserDefaults.standard
         let title = workspace.title(for: tab)
-        let agent = info.agent.map { $0 == "claude" ? "Claude Code" : $0 == "codex" ? "Codex" : $0 } ?? "Agent"
+        let agent = info.agent.map(agentName) ?? info.program ?? "Agent"
         switch info.agentState {
         case "needs_you":
             NSApp.requestUserAttention(.informationalRequest)
@@ -58,6 +58,10 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         case "done":
             guard defaults.bool(forKey: Prefs.notifyDone) else { return }
             post(tab: tab, title: "\(title) is done", body: info.agentMessage ?? "\(agent) finished its turn.", sound: false)
+        case "failed":
+            NSApp.requestUserAttention(.informationalRequest)
+            guard defaults.bool(forKey: Prefs.notifyDone) else { return }
+            post(tab: tab, title: "\(title) failed", body: info.agentMessage ?? "\(agent) stopped with an error.", sound: false)
         default:
             break
         }

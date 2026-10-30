@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .filter { $0.1.id != controller.workspace.selectedTabID }
             let now = Date()
             let next = order.first { $0.0.workspace.status(for: $0.1, now: now) == .needsYou }
+                ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .failed }
                 ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .doneUnread }
                 ?? order.first { $0.0.workspace.isUnread($0.1) }
             guard let (owner, tab) = next else { NSSound.beep(); return }

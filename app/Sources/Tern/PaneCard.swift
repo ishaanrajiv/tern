@@ -98,7 +98,7 @@ struct PaneHeader: View {
             let status = workspace.status(pane: pane, now: context.date)
             let agent = workspace.agent(pane: pane)
             HStack(spacing: 7) {
-                StatusIcon(status: status, agent: agent, turning: indicator == .turning)
+                StatusIcon(status: status, agent: agent, program: workspace.program(pane: pane), turning: indicator == .turning)
                 Text(name(s, agent: agent))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(focused ? .primary : .secondary)

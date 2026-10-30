@@ -119,8 +119,80 @@ pub type GhosttyTerminalScreen = ::std::os::raw::c_int;
 pub type GhosttyTerminalBellFn = ::std::option::Option<
     unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut ::std::os::raw::c_void),
 >;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_IDLE: GhosttyProgramStatusState = 0;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_WORKING: GhosttyProgramStatusState = 1;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_DONE: GhosttyProgramStatusState = 2;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_BLOCKED: GhosttyProgramStatusState = 3;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_ERROR: GhosttyProgramStatusState = 4;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_CLEAR: GhosttyProgramStatusState = 5;
+pub const GHOSTTY_PROGRAM_STATUS_STATE_MAX_VALUE: GhosttyProgramStatusState = 2147483647;
+pub type GhosttyProgramStatusState = ::std::os::raw::c_int;
+pub const GHOSTTY_PROGRAM_STATUS_KIND_NONE: GhosttyProgramStatusKind = 0;
+pub const GHOSTTY_PROGRAM_STATUS_KIND_PERMISSION: GhosttyProgramStatusKind = 1;
+pub const GHOSTTY_PROGRAM_STATUS_KIND_QUESTION: GhosttyProgramStatusKind = 2;
+pub const GHOSTTY_PROGRAM_STATUS_KIND_AUTH: GhosttyProgramStatusKind = 3;
+pub const GHOSTTY_PROGRAM_STATUS_KIND_MAX_VALUE: GhosttyProgramStatusKind = 2147483647;
+pub type GhosttyProgramStatusKind = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalProgramStatus {
+    pub size: usize,
+    pub state: GhosttyProgramStatusState,
+    pub kind: GhosttyProgramStatusKind,
+    pub progress: i8,
+    pub id: GhosttyString,
+    pub app: GhosttyString,
+    pub title: GhosttyString,
+    pub message: GhosttyString,
+}
+pub type GhosttyTerminalProgramStatusFn = ::std::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::std::os::raw::c_void,
+        report: *const GhosttyTerminalProgramStatus,
+    ),
+>;
+pub const GHOSTTY_SEMANTIC_PROMPT_INVALID: GhosttySemanticPromptKind = 0;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_START: GhosttySemanticPromptKind = 1;
+pub const GHOSTTY_SEMANTIC_PROMPT_INPUT_START: GhosttySemanticPromptKind = 2;
+pub const GHOSTTY_SEMANTIC_PROMPT_OUTPUT_START: GhosttySemanticPromptKind = 3;
+pub const GHOSTTY_SEMANTIC_PROMPT_COMMAND_END: GhosttySemanticPromptKind = 4;
+pub const GHOSTTY_SEMANTIC_PROMPT_MAX_VALUE: GhosttySemanticPromptKind = 2147483647;
+pub type GhosttySemanticPromptKind = ::std::os::raw::c_int;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_PRIMARY: GhosttySemanticPromptPromptKind = 0;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_RIGHT: GhosttySemanticPromptPromptKind = 1;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_CONTINUATION: GhosttySemanticPromptPromptKind = 2;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_SECONDARY: GhosttySemanticPromptPromptKind = 3;
+pub const GHOSTTY_SEMANTIC_PROMPT_PROMPT_MAX_VALUE: GhosttySemanticPromptPromptKind = 2147483647;
+pub type GhosttySemanticPromptPromptKind = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct GhosttyTerminalSemanticPrompt {
+    pub size: usize,
+    pub kind: GhosttySemanticPromptKind,
+    pub prompt_kind: GhosttySemanticPromptPromptKind,
+    pub has_exit_code: bool,
+    pub exit_code: i32,
+    pub command: GhosttyString,
+    pub error: GhosttyString,
+}
+pub type GhosttyTerminalSemanticPromptFn = ::std::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::std::os::raw::c_void,
+        event: *const GhosttyTerminalSemanticPrompt,
+    ),
+>;
 pub type GhosttyTerminalTitleChangedFn = ::std::option::Option<
     unsafe extern "C" fn(terminal: GhosttyTerminal, userdata: *mut ::std::os::raw::c_void),
+>;
+pub type GhosttyTerminalWritePtyFn = ::std::option::Option<
+    unsafe extern "C" fn(
+        terminal: GhosttyTerminal,
+        userdata: *mut ::std::os::raw::c_void,
+        data: *const u8,
+        len: usize,
+    ),
 >;
 pub const GHOSTTY_TERMINAL_OPT_USERDATA: GhosttyTerminalOption = 0;
 pub const GHOSTTY_TERMINAL_OPT_WRITE_PTY: GhosttyTerminalOption = 1;

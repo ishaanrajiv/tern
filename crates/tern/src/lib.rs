@@ -90,6 +90,20 @@ pub enum AgentState {
     Done,
     /// The agent exited.
     Ended,
+    /// Failed and stopped. Only a program's own OSC 7501 report says this.
+    Failed,
+}
+
+/// What a blocked program needs, from its OSC 7501 report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlockKind {
+    /// Approval to do something.
+    Permission,
+    /// An answer typed in.
+    Question,
+    /// A login, token or other credential.
+    Auth,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +156,23 @@ pub struct SessionInfo {
     pub agent_session: Option<String>,
     #[serde(default)]
     pub agent_message: Option<String>,
+    /// What a program blocked on the user needs, when it said (OSC 7501 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_kind: Option<BlockKind>,
+    /// Percent done, when the program said (OSC 7501 only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_progress: Option<u8>,
+    /// The state came from the program's own OSC 7501 report rather than agent hooks.
+    /// Such a report is never repeated, so silence doesn't mean the program stopped.
+    #[serde(default)]
+    pub agent_osc: bool,
+    /// The OSC 7501 `app` of the program that reported, like "cargo" or "claude-code".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// How many OSC 7501 records the session holds; more than one means the state
+    /// shown is the most urgent of several tasks.
+    #[serde(default)]
+    pub status_records: usize,
     /// The command in the foreground ("npm run dev"), or the last one to run
     /// there once the shell is back at its prompt.
     #[serde(default)]

@@ -12,6 +12,7 @@ mod screen;
 mod vt;
 mod session;
 mod command;
+mod status;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};

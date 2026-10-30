@@ -164,13 +164,14 @@ enum FocusDirection { case left, right, up, down }
 
 /// Ordered by urgency: a tab shows its most urgent pane.
 enum SessionStatus: Int, Comparable {
-    case needsYou, working, doneUnread, starting, idle, dormant
+    case needsYou, failed, working, doneUnread, starting, idle, dormant
 
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 
     var label: String {
         switch self {
         case .needsYou: "Needs you"
+        case .failed: "Failed"
         case .working: "Working"
         case .doneUnread: "Done"
         case .starting: "Starting"
@@ -395,6 +396,23 @@ final class Workspace {
         return status(pane: pane, visible: tab.map(isVisible) ?? false, now: now)
     }
 
+    /// The program in a tab that reported its own status (OSC 7501), when no agent runs there.
+    func program(for tab: Tab) -> String? {
+        guard agent(for: tab) == nil else { return nil }
+        let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
+        return panes.lazy.compactMap { self.sessions[$0]?.program }.first
+    }
+
+    func program(pane: String) -> String? {
+        agent(pane: pane) == nil ? sessions[pane]?.program : nil
+    }
+
+    /// The session of the tab's most urgent pane, which says what the tab shows.
+    func urgentSession(_ tab: Tab, now: Date = Date()) -> SessionInfo? {
+        let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
+        return panes.min { status(pane: $0, now: now) < status(pane: $1, now: now) }.flatMap { sessions[$0] }
+    }
+
     /// The agent in one pane, or the one it ran before a restart.
     func agent(pane: String) -> String? {
         sessions[pane]?.agent ?? (sessions[pane] == nil ? paneAgent[pane]?.agent : nil)
@@ -407,18 +425,21 @@ final class Workspace {
         let nowMs = UInt64(max(0, now.timeIntervalSince1970 * 1000))
         let quiet = Double(nowMs &- min(nowMs, s.lastOutputMs)) / 1000
 
-        // Agents with hooks say what they're doing.
+        // Agents with hooks, and programs speaking OSC 7501, say what they're doing.
         if let state = s.agentState, let at = s.agentStateMs {
             let unseen = !visible && (seen.map { at > $0.agent } ?? false)
             switch state {
             case "needs_you":
                 return .needsYou
             case "working":
-                // A turn that ends without a Stop hook (an error, an interrupt) goes quiet: trust the silence.
-                if quiet < 5 || Double(nowMs &- min(nowMs, at)) / 1000 < 5 { return .working }
+                // A program's own report isn't repeated while it works. A hook turn that ends
+                // without a Stop hook (an error, an interrupt) goes quiet: trust the silence.
+                if s.agentOsc == true || quiet < 5 || Double(nowMs &- min(nowMs, at)) / 1000 < 5 { return .working }
                 return unseen ? .doneUnread : .idle
             case "done":
                 return unseen ? .doneUnread : .idle
+            case "failed":
+                return unseen ? .failed : .idle
             default:
                 return .idle
             }
@@ -443,7 +464,8 @@ final class Workspace {
     /// What the agent in this tab last said, if it's waiting on you or just finished.
     func agentMessage(_ tab: Tab) -> String? {
         let infos = tab.root.panes.compactMap { sessions[$0] }
-        return (infos.first { $0.agentState == "needs_you" } ?? infos.first { $0.id == tab.focusedPane })?.agentMessage
+        return (infos.first { $0.agentState == "needs_you" } ?? infos.first { $0.agentState == "failed" }
+            ?? infos.first { $0.id == tab.focusedPane })?.agentMessage
     }
 
     /// Time of the latest output in any of the tab's panes.
@@ -931,6 +953,7 @@ final class Workspace {
             .filter { $0.id != selectedTabID }
         let now = Date()
         let pick = order.first { status(for: $0, now: now) == .needsYou }
+            ?? order.first { status(for: $0, now: now) == .failed }
             ?? order.first { status(for: $0, now: now) == .doneUnread }
             ?? order.first { isUnread($0) }
         guard let pick else { return false }

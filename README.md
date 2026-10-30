@@ -39,7 +39,10 @@ Mac-native, and sessions survive quitting the app.
   tab return as fresh shells; reopening cannot undo their termination. Closing a window while
   others remain detaches its tabs. Quitting preserves all open windows and sessions.
 - **Agent status.** Claude Code and Codex report whether they're working, waiting for you, or done.
-  ⌘J jumps across windows to the next tab that needs you, and the Dock badge counts the waiting ones.
+  So can any program that speaks the [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)
+  program status protocol, such as a build or deploy script: it gets a rounded-square glyph, its
+  progress as a ring, and its message in the header. ⌘J jumps across windows to the next tab that
+  needs you, and the Dock badge counts the waiting ones.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
@@ -78,6 +81,7 @@ Mac-native, and sessions survive quitting the app.
 |---|---|
 | Amber, bold name, tinted row | Needs you: a permission prompt or a question |
 | Blue | Working |
+| Red, bold name | Failed, and you haven't looked yet (reported over OSC 7501) |
 | Text-coloured, bold name | Done, and you haven't looked yet |
 | Grey | Idle |
 | Faint | Dormant, or waiting to be reopened after a restart |

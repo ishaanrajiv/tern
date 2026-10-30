@@ -16,11 +16,21 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let bells: UInt64
     /// "claude" or "codex" when one is running.
     let agent: String?
-    /// "idle", "working", "needs_you", "done"; nil without hooks.
+    /// "idle", "working", "needs_you", "done", "failed"; nil without hooks or an OSC 7501 report.
     let agentState: String?
     let agentStateMs: UInt64?
     let agentSession: String?
     let agentMessage: String?
+    /// What a blocked program needs: "permission", "question" or "auth" (OSC 7501 only).
+    var agentKind: String? = nil
+    /// Percent done, when the program said (OSC 7501 only).
+    var agentProgress: Int? = nil
+    /// The state is the program's own OSC 7501 report, which isn't repeated while it works.
+    var agentOsc: Bool? = nil
+    /// The OSC 7501 `app` of the program that reported ("cargo").
+    var program: String? = nil
+    /// How many OSC 7501 records the session holds: several tasks when more than one.
+    var statusRecords: Int? = nil
     /// What runs in the foreground, or last ran there ("npm run dev"); nil from an older ternd.
     let command: String?
     /// When the shell last finished a command (Unix ms); nil from an older ternd.

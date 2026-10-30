@@ -21,6 +21,8 @@ struct Theme: Equatable {
     /// Text on an amber pill.
     let onAmber: NSColor
     let working: NSColor
+    /// A program that failed and stopped.
+    let failed: NSColor
     let claude: Mark
     let codex: Mark
     /// nil: the terminal keeps the colours from the user's Ghostty config.
@@ -48,7 +50,7 @@ struct Theme: Equatable {
         sidebar: "#1A1A1C", terminal: "#121214", border: "#26262A",
         text: "#ECECEE", text2: "#A3A3AB", text3: "#8E8E96",
         selection: "#2A2A30", hover: "#202024", chip: "#26262B", ring: "#6E6E76",
-        amber: "#F5B83D", onAmber: "#1A1A1C", working: "#7DB7FF",
+        amber: "#F5B83D", onAmber: "#1A1A1C", working: "#7DB7FF", failed: "#FF7A7A",
         claude: ("#F0A47E", "#3A2A22"), codex: ("#8CC4FF", "#1F2B38"),
         terminalColors: TerminalColors(
             foreground: "#ECECEE", cursor: "#ECECEE", selection: "#34343C",
@@ -60,7 +62,7 @@ struct Theme: Equatable {
         sidebar: "#0F121A", terminal: "#0A0C12", border: "#1C2130",
         text: "#E3E7F1", text2: "#9DA6BB", text3: "#8C95AB",
         selection: "#1D2335", hover: "#151927", chip: "#1C2232", ring: "#5F6880",
-        amber: "#F2B84B", onAmber: "#0F121A", working: "#8B9CFF",
+        amber: "#F2B84B", onAmber: "#0F121A", working: "#8B9CFF", failed: "#FF7B8A",
         claude: ("#F0A47E", "#33251F"), codex: ("#8CC4FF", "#1A2740"),
         terminalColors: TerminalColors(
             foreground: "#E3E7F1", cursor: "#C3CAD9", selection: "#233050",
@@ -72,7 +74,7 @@ struct Theme: Equatable {
         sidebar: "#1E1A17", terminal: "#161311", border: "#2E2723",
         text: "#F0E8DF", text2: "#B6AA9D", text3: "#A09485",
         selection: "#312A25", hover: "#26211D", chip: "#2E2823", ring: "#7A6F64",
-        amber: "#F2C14E", onAmber: "#1E1A17", working: "#79C2B8",
+        amber: "#F2C14E", onAmber: "#1E1A17", working: "#79C2B8", failed: "#E8806B",
         claude: ("#F2A77F", "#3D2A20"), codex: ("#8FD1C6", "#20302E"),
         terminalColors: TerminalColors(
             foreground: "#F0E8DF", cursor: "#F2C14E", selection: "#3D342D",
@@ -84,7 +86,7 @@ struct Theme: Equatable {
         sidebar: "#F1F0ED", terminal: "#FBFBF9", border: "#E0DED9",
         text: "#1E1E1C", text2: "#5B5954", text3: "#66645E",
         selection: "#E2E0DA", hover: "#E9E8E4", chip: "#E5E3DE", ring: "#9A978F",
-        amber: "#B0700F", onAmber: "#FFFFFF", working: "#2F6FEB",
+        amber: "#B0700F", onAmber: "#FFFFFF", working: "#2F6FEB", failed: "#C3332E",
         claude: ("#9C431B", "#F6E1D5"), codex: ("#1D5AA6", "#DCE7F7"),
         terminalColors: TerminalColors(
             foreground: "#1E1E1C", cursor: "#1E1E1C", selection: "#DCE3F2",
@@ -103,32 +105,32 @@ struct Theme: Equatable {
             text: fg, text2: mix(0.36), text3: mix(0.44),
             selection: mix(0.12), hover: mix(0.07), chip: mix(0.1), ring: mix(0.55),
             amber: dark ? graphite.amber : paper.amber, onAmber: dark ? bg : .white,
-            working: dark ? graphite.working : paper.working,
+            working: dark ? graphite.working : paper.working, failed: dark ? graphite.failed : paper.failed,
             claude: dark ? graphite.claude : paper.claude, codex: dark ? graphite.codex : paper.codex,
             terminalColors: nil)
     }
 
     private init(id: String, name: String, isDark: Bool, sidebar: NSColor, terminal: NSColor, border: NSColor,
                  text: NSColor, text2: NSColor, text3: NSColor, selection: NSColor, hover: NSColor, chip: NSColor,
-                 ring: NSColor, amber: NSColor, onAmber: NSColor, working: NSColor, claude: Mark, codex: Mark,
+                 ring: NSColor, amber: NSColor, onAmber: NSColor, working: NSColor, failed: NSColor, claude: Mark, codex: Mark,
                  terminalColors: TerminalColors?) {
         self.id = id; self.name = name; self.isDark = isDark
         self.sidebar = sidebar; self.terminal = terminal; self.border = border
         self.text = text; self.text2 = text2; self.text3 = text3
         self.selection = selection; self.hover = hover; self.chip = chip; self.ring = ring
-        self.amber = amber; self.onAmber = onAmber; self.working = working
+        self.amber = amber; self.onAmber = onAmber; self.working = working; self.failed = failed
         self.claude = claude; self.codex = codex; self.terminalColors = terminalColors
     }
 
     private init(id: String, name: String, isDark: Bool, sidebar: String, terminal: String, border: String,
                  text: String, text2: String, text3: String, selection: String, hover: String, chip: String,
-                 ring: String, amber: String, onAmber: String, working: String,
+                 ring: String, amber: String, onAmber: String, working: String, failed: String,
                  claude: (String, String), codex: (String, String), terminalColors: TerminalColors) {
         self.init(id: id, name: name, isDark: isDark, sidebar: NSColor(hex: sidebar), terminal: NSColor(hex: terminal),
                   border: NSColor(hex: border), text: NSColor(hex: text), text2: NSColor(hex: text2),
                   text3: NSColor(hex: text3), selection: NSColor(hex: selection), hover: NSColor(hex: hover),
                   chip: NSColor(hex: chip), ring: NSColor(hex: ring), amber: NSColor(hex: amber),
-                  onAmber: NSColor(hex: onAmber), working: NSColor(hex: working),
+                  onAmber: NSColor(hex: onAmber), working: NSColor(hex: working), failed: NSColor(hex: failed),
                   claude: Mark(fg: NSColor(hex: claude.0), bg: NSColor(hex: claude.1)),
                   codex: Mark(fg: NSColor(hex: codex.0), bg: NSColor(hex: codex.1)),
                   terminalColors: terminalColors)
@@ -188,6 +190,7 @@ enum Palette {
     static var amber: Color { Color(nsColor: t.amber) }
     static var onAmber: Color { Color(nsColor: t.onAmber) }
     static var working: Color { Color(nsColor: t.working) }
+    static var failed: Color { Color(nsColor: t.failed) }
     static var sidebar: Color { Color(nsColor: t.sidebar) }
     static var terminal: Color { Color(nsColor: t.terminal) }
     static var border: Color { Color(nsColor: t.border) }
