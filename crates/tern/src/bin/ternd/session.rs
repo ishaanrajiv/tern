@@ -183,6 +183,7 @@ fn session_info(s: &Session) -> SessionInfo {
     // Read terminal state under the lock, but query the OS for process details outside it.
     let fg = procinfo::foreground(s.master.as_raw_fd(), s.pid);
     let typed = shell::last_command(&s.id);
+    let last_command = typed.is_some().then(|| shell::last_line(&s.id)).flatten();
     let running = if typed.is_some() || fg.pid == s.pid || fg.agent.is_some() {
         None
     } else {
@@ -241,6 +242,7 @@ fn session_info(s: &Session) -> SessionInfo {
         duration_ms: st.capture.duration_ms,
         command_running: st.capture.running(),
         input_ms: st.last_input_ms,
+        last_command,
     }
 }
 

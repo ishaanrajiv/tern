@@ -1,5 +1,5 @@
 //! Commands for agents and scripts to drive tern's panes: split, tab, send, capture,
-//! wait, close and run. Each takes a target, the pane the command runs in by default:
+//! wait, close and run, and `watch` for what happens in them. Each takes a target, the pane the command runs in by default:
 //!
 //!   --pane ID|NAME|@focused    a pane by id, by the name it was given with --name, or the one in front
 //!   --tab ID|NAME              that tab's focused pane
@@ -7,7 +7,7 @@
 //! Exit codes: 0 done, 1 failed, 2 bad arguments, 3 no such pane or tab, 4 the name
 //! matches more than one, 5 timed out. `run` exits with its command's code instead.
 
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -24,6 +24,7 @@ tern split [right|down] [target] [--name N] [--cwd DIR] [--focus] [-- CMD...]
        tern wait [target] --prompt|--exit|--text REGEX|--state STATE [--timeout SECS]
        tern close [target]
        tern run [--tab] [--keep] [--cwd DIR] [--timeout SECS] -- CMD...
+       tern watch [--json] [--pane ID|NAME] [--event EVENT]...
        target: --pane ID|NAME|@focused or --tab ID|NAME (default: this pane)";
 
 const NOT_FOUND: i32 = 3;
@@ -310,6 +311,43 @@ pub fn run(args: &[String]) -> Result<i32> {
     Ok(code.unwrap_or(waited))
 }
 
+/// Prints events as they happen, one JSON object a line with `--json`, until interrupted.
+pub fn watch(args: &[String]) -> Result<i32> {
+    let a = Args::parse(args, &["--event"])?;
+    a.only(&["--json"])?;
+    let kinds: Vec<&str> = a.values.iter().filter(|(k, _)| k == "--event").map(|(_, v)| v.as_str()).collect();
+    if let Some(bad) = kinds.iter().find(|k| !EVENTS.contains(k)) {
+        return usage(format!("no event {bad}; events are {}", EVENTS.join(", ")));
+    }
+    let pane = match &a.target.pane {
+        Some(_) => match resolve(&a.target)? { Ok(id) => Some(id), Err(code) => return Ok(code) },
+        None => None,
+    };
+    let (_sock, mut reader) = request(&Request::Events)?;
+    let json = a.flag("--json");
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 { bail!("ternd stopped") }
+        let Ok(event) = serde_json::from_str::<Event>(&line) else { continue };
+        if !kinds.is_empty() && !kinds.contains(&event.event.as_str()) { continue }
+        if pane.as_ref().is_some_and(|p| *p != event.pane) { continue }
+        if json { print!("{line}") } else { println!("{}", describe(&event)) }
+        std::io::stdout().flush()?;
+    }
+}
+
+/// "needs-you  p-1a2b3c4d  claude  Run rm -rf build?"
+fn describe(e: &Event) -> String {
+    let who = e.agent.as_deref().or(e.program.as_deref()).or(e.command.as_deref()).unwrap_or("");
+    let detail = match (&e.message, e.exit_code) {
+        (Some(m), _) => m.lines().next().unwrap_or("").to_string(),
+        (None, Some(code)) if e.event == "command-failed" => format!("exit {code}"),
+        _ => String::new(),
+    };
+    [e.event.as_str(), e.pane.as_str(), who, detail.as_str()].iter().filter(|s| !s.is_empty()).cloned().collect::<Vec<_>>().join("  ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,6 +376,14 @@ mod tests {
         assert!(is_usage(&Args::parse(&args(&["--"]), &[]).unwrap_err()));
         let a = Args::parse(&args(&["--bogus"]), &[]).unwrap();
         assert!(is_usage(&a.only(&[]).unwrap_err()));
+    }
+
+    #[test]
+    fn events_read_as_one_line() {
+        let e = Event { event: "command-failed".into(), pane: "p-1".into(), command: Some("cargo test".into()), exit_code: Some(101), ..Default::default() };
+        assert_eq!(describe(&e), "command-failed  p-1  cargo test  exit 101");
+        let e = Event { event: "needs-you".into(), pane: "p-2".into(), agent: Some("claude".into()), message: Some("Run rm?\nmore".into()), ..Default::default() };
+        assert_eq!(describe(&e), "needs-you  p-2  claude  Run rm?");
     }
 
     #[test]

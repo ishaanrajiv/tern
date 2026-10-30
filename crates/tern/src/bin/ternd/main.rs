@@ -14,6 +14,7 @@ mod session;
 mod command;
 mod status;
 mod layout;
+mod events;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -83,13 +84,19 @@ fn main() -> Result<()> {
     }
     let hello = Arc::new(hello);
     let layouts = Arc::new(Store::default());
+    let bus = Arc::new(events::Bus::default());
+    {
+        let (sessions, layouts, bus) = (sessions.clone(), layouts.clone(), bus.clone());
+        thread::spawn(move || events::monitor(sessions, layouts, bus));
+    }
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let sessions = sessions.clone();
         let hello = hello.clone();
         let layouts = layouts.clone();
+        let bus = bus.clone();
         thread::spawn(move || {
-            if let Err(e) = handle_conn(conn, sessions, &layouts, &hello) {
+            if let Err(e) = handle_conn(conn, sessions, &layouts, &bus, &hello) {
                 eprintln!("connection error: {e:#}");
             }
         });
@@ -109,7 +116,7 @@ fn verify_peer(conn: &UnixStream, me: nix::unistd::Uid) -> Result<()> {
     Ok(())
 }
 
-fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, hello: &HelloReply) -> Result<()> {
+fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, bus: &events::Bus, hello: &HelloReply) -> Result<()> {
     verify_peer(&conn, nix::unistd::geteuid())?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
@@ -218,6 +225,9 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, hello: &He
         }
         Request::LayoutWatch => {
             layouts.watch(|update| serde_json::to_string(update).is_ok_and(|line| writeln!(out, "{line}").is_ok()));
+        }
+        Request::Events => {
+            bus.watch(|event| serde_json::to_string(event).is_ok_and(|line| writeln!(out, "{line}").is_ok()));
         }
         Request::LayoutTree => {
             writeln!(out, "{}", layouts.tree())?;
@@ -354,7 +364,7 @@ mod tests {
         ] {
             let (server, mut client) = UnixStream::pair().unwrap();
             writeln!(client, "{request}").unwrap();
-            handle_conn(server, Sessions::default(), &Store::default(), &hello()).unwrap();
+            handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).unwrap();
             let mut reply = String::new();
             BufReader::new(client).read_line(&mut reply).unwrap();
             let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -387,7 +397,7 @@ mod tests {
         for req in requests {
             let (server, mut client) = UnixStream::pair().unwrap();
             writeln!(client, "{req}").unwrap();
-            handle_conn(server, Sessions::default(), &Store::default(), &hello()).unwrap();
+            handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).unwrap();
             let mut reply = String::new();
             BufReader::new(client).read_line(&mut reply).unwrap();
             let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -407,7 +417,7 @@ mod tests {
             // Stops once ternd hangs up.
             while client.write_all(&chunk).is_ok() {}
         });
-        assert!(handle_conn(server, Sessions::default(), &Store::default(), &hello()).is_err());
+        assert!(handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).is_err());
         writer.join().unwrap();
     }
 }

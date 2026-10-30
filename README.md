@@ -259,6 +259,28 @@ that opened one. `wait` also takes `--exit` and `--state idle|working|needs-you|
 Exit codes: 2 for bad arguments, 3 when no pane or tab matches, 4 when a name matches more than
 one, 5 on a timeout. `run` exits with its command's code.
 
+### Events
+
+`tern watch` prints what happens in your panes as it happens; `--json` gives one object a line,
+and `--event` and `--pane` narrow it. The events are `needs-you`, `working`, `done` and `failed`
+(an agent's hooks or a program's OSC 7501 report), `command-done` and `command-failed` (a shell
+command, not counting ⌃C), `bell`, `start` and `exit`.
+
+To run a command on an event, add `on-<event>` lines to `~/.config/tern/config`. ternd runs
+them, so they work with the app quit:
+
+```sh
+# ~/.config/tern/config
+on-needs-you = say "$TERN_AGENT needs you"
+on-command-failed = osascript -e "display notification \"$TERN_COMMAND exited $TERN_EXIT_CODE\""
+```
+
+Each command runs through `/bin/sh` in your home folder with `TERN_EVENT`, `TERN_PANE`,
+`TERN_FOLDER`, `TERN_AGENT`, `TERN_PROGRAM`, `TERN_MESSAGE`, `TERN_COMMAND`, `TERN_EXIT_CODE`
+and `TERN_DURATION_MS` set where they apply, and the whole event as `TERN_EVENT_JSON`. A key can
+repeat to run several commands; an empty value drops the ones before it. A private instance reads
+`config` in its `TERN_RUNTIME_DIR` instead.
+
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
 testing. It keeps its own layout and spawns its own daemon without launchd.
 

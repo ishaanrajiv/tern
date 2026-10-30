@@ -476,6 +476,12 @@ impl Store {
         ok
     }
 
+    /// The sidebar folder a pane is in, if a window shows it.
+    pub fn folder(&self, pane: &str) -> Option<String> {
+        let docs = Self::docs(&mut self.inner.lock().unwrap());
+        docs.iter().find_map(|(_, _, doc)| doc.find_pane(pane).map(|(p, _)| doc.projects[p].path.clone()))
+    }
+
     /// Every open window's tabs and panes, for `tern ls --json`.
     pub fn tree(&self) -> Value {
         let docs = Self::docs(&mut self.inner.lock().unwrap());

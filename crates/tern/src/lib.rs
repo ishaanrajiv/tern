@@ -13,6 +13,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+pub mod config;
 pub mod hooks;
 pub mod open;
 pub mod procinfo;
@@ -113,7 +114,38 @@ pub enum Request {
     Close { target: Target },
     /// Types into a session as if from the keyboard.
     Input { id: String, data: String },
+    /// Streams an `Event` line for everything that happens from now on.
+    Events,
 }
+
+/// Something that happened in a pane, as `tern watch` prints it and `on-<event>` commands get it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct Event {
+    /// One of `EVENTS`.
+    pub event: String,
+    pub pane: String,
+    pub at_ms: u64,
+    /// The sidebar folder the pane is in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// What an agent or program said: the question it asks, or its last reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// The shell command a `command-*` event is about.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// Every event, each also the name of its config key (`on-needs-you = ...`).
+pub const EVENTS: &[&str] = &["needs-you", "working", "done", "failed", "command-done", "command-failed", "bell", "start", "exit"];
 
 /// Which pane a CLI command is for. With neither field, the pane the command runs in.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -304,6 +336,9 @@ pub struct SessionInfo {
     /// Unix time in milliseconds of the last input typed into the session, by a client or `tern send`.
     #[serde(default)]
     pub input_ms: u64,
+    /// The last command line the shell ran, as typed, however quick; nil without the integration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_command: Option<String>,
 }
 
 /// Quotes a string for a POSIX shell. Plain words are left alone; anything

@@ -5,6 +5,7 @@
 //!                                              --init types LINE into a new session's shell)
 //!   tern ls [--json]                           list sessions (with --json, every window's tabs and panes too)
 //!   tern split|tab|send|capture|wait|close|run drive panes from a script or agent (see agent.rs)
+//!   tern watch [--json]                        print events as they happen
 //!   tern kill <id>                             hang up a session
 //!   tern daemon [status|restart]              whether the running ternd matches this tern (JSON);
 //!                                              restart it, saving screens first
@@ -50,6 +51,7 @@ fn main() {
         Some("wait") => agent::wait(&args[1..]),
         Some("close") => agent::close(&args[1..]),
         Some("run") => agent::run(&args[1..]),
+        Some("watch") => agent::watch(&args[1..]),
         Some("daemon") => daemon(args.get(1).map_or("status", String::as_str)),
         Some("bench") => bench(&args[1..]),
         Some("hook") => {
