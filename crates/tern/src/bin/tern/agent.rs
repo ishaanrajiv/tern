@@ -217,8 +217,7 @@ pub fn wait(args: &[String]) -> Result<i32> {
     if a.flag("--prompt") { until.push(Until::Prompt) }
     if a.flag("--exit") { until.push(Until::Exit) }
     if let Some(pattern) = a.value("--text") {
-        // Lines, as they show: ^ and $ match at each line.
-        until.push(Until::Text(regex_lite::Regex::new(&format!("(?m){pattern}")).or_else(|e| usage(format!("--text: {e}")))?));
+        until.push(Until::Text(line_pattern(pattern)?));
     }
     if let Some(state) = a.value("--state") {
         let state = state.replace('-', "_");
@@ -243,6 +242,11 @@ pub fn wait(args: &[String]) -> Result<i32> {
         Some(done) => Ok(done.then_some(0)),
         None => { eprintln!("tern: pane {id} ended"); Ok(Some(1)) }
     })
+}
+
+/// A `--text` pattern, where ^ and $ match at each line, as the screen shows them.
+fn line_pattern(pattern: &str) -> Result<regex_lite::Regex> {
+    regex_lite::Regex::new(&format!("(?m){pattern}")).or_else(|e| usage(format!("--text: {e}")))
 }
 
 fn timeout(a: &Args) -> Result<Option<Duration>> {
@@ -334,6 +338,13 @@ mod tests {
         assert!(is_usage(&Args::parse(&args(&["--"]), &[]).unwrap_err()));
         let a = Args::parse(&args(&["--bogus"]), &[]).unwrap();
         assert!(is_usage(&a.only(&[]).unwrap_err()));
+    }
+
+    #[test]
+    fn text_patterns_anchor_at_lines() {
+        assert!(line_pattern("^ready$").unwrap().is_match("$ echo ready\nready\n$ "));
+        assert!(!line_pattern("^ready$").unwrap().is_match("$ echo ready\n"));
+        assert!(is_usage(&line_pattern("(").unwrap_err()));
     }
 
     #[test]
