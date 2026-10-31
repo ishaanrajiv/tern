@@ -146,6 +146,24 @@ final class ConfigTests: XCTestCase {
         XCTAssertTrue(TerminalPreferences.given.isEmpty)
     }
 
+    func testAPresetSavedInTheSheetCanBeDeletedThere() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("tern-presets-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let draft = LaunchPreset(name: "Web", project: "/tmp", tabs: [LaunchTab(root: .pane("shell"), panes: ["shell": LaunchPane(directory: "/tmp")])])
+        // As the sheet does: Save on a fresh file, then Delete.
+        var file = try LaunchPresetFile.load(from: dir)
+        var next = file
+        next.presets.append(draft)
+        try next.save(to: dir)
+        file = next
+        XCTAssertEqual(try LaunchPresetFile.load(from: dir).presets.map(\.id), [draft.id])
+        next = file
+        next.presets.removeAll { $0.id == draft.id }
+        try next.save(to: dir)
+        XCTAssertTrue(try LaunchPresetFile.load(from: dir).presets.isEmpty, "the file is gone, so it doesn't come back")
+        XCTAssertTrue(next.files.isEmpty)
+    }
+
     func testTheReadmeExampleHasNoProblems() throws {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -174,13 +192,15 @@ final class ConfigTests: XCTestCase {
             LaunchPreset(name: name, project: "/tmp", tabs: [LaunchTab(root: .pane("shell"), panes: ["shell": LaunchPane(directory: "/tmp")])])
         }
         let a = preset("API"), b = preset("API"), c = preset("../web: dev")
-        try LaunchPresetFile(presets: [a, b, c]).save(to: dir)
+        var first = LaunchPresetFile(presets: [a, b, c])
+        try first.save(to: dir)
         var loaded = try LaunchPresetFile.load(from: dir)
         XCTAssertEqual(Set(loaded.files.values.map(\.lastPathComponent)), ["API.json", "API 2.json", "-web- dev.json"])
         XCTAssertEqual(Set(loaded.presets.map(\.id)), [a.id, b.id, c.id])
 
         // A preset added to the folder after loading survives a save that doesn't know it.
-        try LaunchPresetFile(presets: [preset("Later")]).save(to: dir)
+        var later = LaunchPresetFile(presets: [preset("Later")])
+        try later.save(to: dir)
         try Data("not json".utf8).write(to: dir.appendingPathComponent("broken.json"))
         loaded.presets.removeAll { $0.id == b.id }
         try loaded.save(to: dir)

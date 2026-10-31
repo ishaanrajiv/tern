@@ -251,6 +251,8 @@ impl Doc {
 struct Window {
     /// Absent until a layout is written for it.
     doc: Option<Value>,
+    /// The file is there but isn't JSON.
+    unparsed: bool,
     rev: u64,
 }
 
@@ -318,8 +320,29 @@ pub struct Found {
 impl Store {
     fn load(inner: &mut Inner, id: &str) {
         if inner.windows.contains_key(id) { return }
-        let doc = std::fs::read(window_path(id)).ok().and_then(|data| serde_json::from_slice(&data).ok());
-        inner.windows.insert(id.into(), Window { doc, rev: 0 });
+        let data = std::fs::read(window_path(id)).ok();
+        let doc = data.as_ref().and_then(|data| serde_json::from_slice(data).ok());
+        inner.windows.insert(id.into(), Window { unparsed: data.is_some() && doc.is_none(), doc, rev: 0 });
+    }
+
+    /// A window's layout as ternd can change it, or None when the saved one is there but isn't
+    /// JSON, isn't the shape ternd expects, or is another version. The CLI leaves such a window
+    /// alone, so the app can keep a copy aside and recover what it can, as it always has.
+    fn usable(window: &Window) -> Option<Doc> {
+        if window.unparsed { return None }
+        let Some(value) = &window.doc else { return Some(Doc::default()) };
+        let doc = serde_json::from_value::<Doc>(value.clone()).ok()?;
+        let version = doc.rest.get("version").map(Value::as_u64);
+        matches!(version, None | Some(Some(LAYOUT_VERSION))).then_some(doc)
+    }
+
+    /// The open windows whose saved layout ternd can't change.
+    fn unusable(inner: &mut Inner) -> Vec<String> {
+        open_windows().into_iter().filter_map(|(id, _)| {
+            Self::load(inner, &id);
+            let unusable = Self::usable(&inner.windows[&id]).is_none();
+            unusable.then_some(id)
+        }).collect()
     }
 
     pub fn get(&self, id: &str) -> LayoutReply {
@@ -355,6 +378,7 @@ impl Store {
         let window = inner.windows.get_mut(id).unwrap();
         window.rev += 1;
         window.doc = Some(doc.clone());
+        window.unparsed = false;
         let update = LayoutUpdate { window: id.into(), rev: window.rev, doc, by: by.into() };
         inner.seq += 1;
         let seq = inner.seq;
@@ -394,7 +418,7 @@ impl Store {
     fn docs(inner: &mut Inner) -> Vec<(String, bool, Doc)> {
         open_windows().into_iter().filter_map(|(id, active)| {
             Self::load(inner, &id);
-            let doc = inner.windows[&id].doc.clone().map(serde_json::from_value::<Doc>).unwrap_or(Ok(Doc::default())).ok()?;
+            let doc = Self::usable(&inner.windows[&id])?;
             Some((id, active, doc))
         }).collect()
     }
@@ -427,6 +451,15 @@ impl Store {
             }
             Place::Tab { folder, near: None } => {
                 let showing = docs.iter().find(|(_, _, doc)| doc.projects.iter().any(|p| p.path == *folder));
+                // The folder may be in a window ternd can't read, which may also be the one in
+                // front, or the only one: writing a fresh layout there would lose it.
+                if showing.is_none() {
+                    if let Some(id) = Self::unusable(&mut inner).first() {
+                        return PaneReply::failed(format!(
+                            "the saved layout in {} can't be read, so tern won't change it; open tern, which keeps a copy aside and recovers what it can",
+                            window_path(id).display()), Some("unreadable"));
+                    }
+                }
                 let front = docs.iter().find(|(_, active, _)| *active).or(docs.first());
                 match showing.or(front) {
                     Some((id, _, doc)) => (id.clone(), doc.clone()),
@@ -708,6 +741,32 @@ mod tests {
         let mut twice = docs();
         twice[1].2.pane_name.insert("p-7".into(), "tests".into());
         assert_eq!(reason(resolve(&twice, &target(Some("tests"), None, None), none)), "ambiguous");
+    }
+
+    #[test]
+    fn a_layout_ternd_cant_read_is_left_for_the_app() {
+        crate::saved::tests::with_runtime_dir(|dir| {
+            let tab = |focus: &str| Change {
+                place: Place::Tab { folder: focus.into(), near: None },
+                cwd: "/elsewhere".into(), name: None, opener: None, focus: false,
+            };
+            let file = dir.join("layout.json");
+            let malformed = SAVED.replace(r#""focusedPane" : "p-1""#, r#""focusedPane" : 5"#);
+            for broken in [malformed.as_str(), "{ not json", &SAVED.replace(r#""version" : 1"#, r#""version" : 2"#)] {
+                std::fs::write(&file, broken).unwrap();
+                let reply = Store::default().open(tab("/elsewhere"), |_| Ok(()));
+                assert!(!reply.ok);
+                assert_eq!(reply.reason.as_deref(), Some("unreadable"));
+                assert_eq!(std::fs::read_to_string(&file).unwrap(), broken, "the file is left as it was");
+            }
+            // A missing layout is a fresh one, and a readable one gains the tab.
+            std::fs::remove_file(&file).unwrap();
+            assert!(Store::default().open(tab("/elsewhere"), |_| Ok(())).ok);
+            std::fs::write(&file, SAVED).unwrap();
+            assert!(Store::default().open(tab("/elsewhere"), |_| Ok(())).ok);
+            let doc: Doc = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            assert_eq!(doc.projects.iter().map(|p| p.path.as_str()).collect::<Vec<_>>(), ["/repo", "/elsewhere"]);
+        });
     }
 
     #[test]

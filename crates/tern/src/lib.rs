@@ -334,7 +334,8 @@ pub struct SessionInfo {
     /// `duration_ms` belong to the one before it.
     #[serde(default)]
     pub command_running: bool,
-    /// Unix time in milliseconds of the last input typed into the session, by a client or `tern send`.
+    /// Unix time in milliseconds of the last input that could start a command (it had an Enter),
+    /// typed by a client or `tern send`. Terminal reports such as focus changes don't count.
     #[serde(default)]
     pub input_ms: u64,
     /// The last command line the shell ran, as typed, however quick; nil without the integration.

@@ -193,14 +193,14 @@ fn is_shell(name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     /// Tests that point TERN_RUNTIME_DIR somewhere take turns.
     static ENV: Mutex<()> = Mutex::new(());
 
-    fn with_runtime_dir(f: impl FnOnce(&std::path::Path)) {
+    pub(crate) fn with_runtime_dir(f: impl FnOnce(&std::path::Path)) {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("ternd-test-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();

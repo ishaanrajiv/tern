@@ -129,9 +129,10 @@ struct LaunchPresetFile {
         return file
     }
 
-    /// Writes each preset to its file, and removes the files of presets loaded here and then
-    /// taken out. Presets added to the folder since loading stay.
-    func save(to dir: URL = directory) throws {
+    /// Writes each preset to its file, and removes the files of presets loaded or saved here and
+    /// then taken out. Presets added to the folder since loading stay. `files` follows along, so
+    /// a preset saved here can be deleted here.
+    mutating func save(to dir: URL = directory) throws {
         let onDisk = try Self.load(from: dir)
         var taken = Set(try Self.names(in: dir))
         let encoder = JSONEncoder()
@@ -139,9 +140,11 @@ struct LaunchPresetFile {
         for preset in presets {
             let url = files[preset.id] ?? onDisk.files[preset.id] ?? Self.newFile(for: preset.name, in: dir, taken: &taken)
             try ConfigStore.writePrivate(encoder.encode(preset), to: url)
+            files[preset.id] = url
         }
-        for (id, url) in files where !presets.contains(where: { $0.id == id }) && onDisk.files[id] == url {
-            try FileManager.default.removeItem(at: url)
+        for (id, url) in files where !presets.contains(where: { $0.id == id }) {
+            if onDisk.files[id] == url { try FileManager.default.removeItem(at: url) }
+            files[id] = nil
         }
     }
 
@@ -165,6 +168,7 @@ struct LaunchPresetFile {
     static func migrate(from url: URL, to dir: URL) throws {
         guard try names(in: dir).isEmpty, let data = try? Data(contentsOf: url),
               let legacy = try? JSONDecoder().decode(Legacy.self, from: data), legacy.version == 1, !legacy.presets.isEmpty else { return }
-        try Self(presets: legacy.presets).save(to: dir)
+        var file = Self(presets: legacy.presets)
+        try file.save(to: dir)
     }
 }

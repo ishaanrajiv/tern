@@ -137,7 +137,7 @@ pub struct SessionState {
     pub capture: super::command::CommandCapture,
     clients: Vec<Client>,
     pub last_output_ms: u64,
-    /// When something was last typed into the session.
+    /// When something that could start a command was last typed into the session (see `runs_line`).
     pub last_input_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
     pub saved_output_ms: u64,
@@ -531,7 +531,7 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
                 if master.write_all(&buf).is_err() {
                     break;
                 }
-                session.state.lock().unwrap().last_input_ms = now_ms();
+                if runs_line(&buf) { session.state.lock().unwrap().last_input_ms = now_ms(); }
                 answer_prompt(&session, &buf);
             }
             Ok(Some(FRAME_RESIZE)) => {
@@ -573,8 +573,15 @@ pub fn type_when_ready(session: &Session, line: &str, enter: bool) {
 /// user having looked at the pane.
 pub fn write_input(session: &Session, data: &[u8]) -> std::io::Result<()> {
     (&session.master).write_all(data)?;
-    session.state.lock().unwrap().last_input_ms = now_ms();
+    if runs_line(data) { session.state.lock().unwrap().last_input_ms = now_ms(); }
     Ok(())
+}
+
+/// Whether input could start a command: it has an Enter, or a pasted line break. The terminal's
+/// own reports (focus in and out, mouse, replies to queries) never do, so one arriving after a
+/// command finishes doesn't make `tern wait --prompt` wait for another.
+fn runs_line(input: &[u8]) -> bool {
+    input.contains(&b'\r') || input.contains(&b'\n')
 }
 
 /// A keypress (not a focus report or mouse event) while the agent waits on the
@@ -609,6 +616,16 @@ fn resize_locked(session: &Session, st: &mut SessionState, cols: u16, rows: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_input_that_could_run_a_line_counts() {
+        for report in [&b"\x1b[I"[..], b"\x1b[O", b"\x1b[?62;22c", b"\x1b[12;40R", b"\x1b]11;rgb:0000/0000/0000\x1b\\", b"\x1b[<0;10;5M", b"l"] {
+            assert!(!runs_line(report), "{report:?}");
+        }
+        for typed in [&b"ls\r"[..], b"\r", b"\x1b[200~a\nb\x1b[201~"] {
+            assert!(runs_line(typed), "{typed:?}");
+        }
+    }
 
     #[test]
     fn quick_commands_show_while_running_but_dont_name_the_tab() {
