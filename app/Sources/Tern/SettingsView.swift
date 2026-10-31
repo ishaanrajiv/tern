@@ -176,6 +176,7 @@ struct AgentSettings: View {
     @AppStorage(Prefs.notifyDone, store: Prefs.defaults) private var notifyDone = true
     @AppStorage(Prefs.resumeAgents, store: Prefs.defaults) private var resumeAgents = true
     @AppStorage(Prefs.claudeAccountUsage, store: Prefs.defaults) private var claudeAccountUsage = false
+    private let permission = NotificationPermission.shared
 
     var body: some View {
         Form {
@@ -206,9 +207,13 @@ struct AgentSettings: View {
                 if let error = hooks.error {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
-                if AgentNotifier.unavailable {
-                    Text("macOS notification permission is unavailable.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if permission.denied {
+                    HStack {
+                        Text("Notifications are off for tern in System Settings. macOS also turns them off when its request goes unanswered, and doesn't ask again.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open Notification Settings") { permission.openSystemSettings() }
+                    }
                 }
             }
         }

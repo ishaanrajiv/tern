@@ -1,28 +1,63 @@
 import AppKit
 import UserNotifications
 
+/// Whether macOS lets tern post notifications. It asks only while macOS hasn't decided: a prompt
+/// that goes unanswered is recorded as denied, and macOS never asks again, so Settings offers the
+/// way to System Settings instead.
+@Observable
+final class NotificationPermission {
+    static let shared = NotificationPermission()
+    private(set) var authorized = false
+    private(set) var denied = false
+    @ObservationIgnored private var asked = false
+    @ObservationIgnored private var observer: Any?
+
+    private init() {
+        // Back from System Settings, perhaps with notifications turned on.
+        observer = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+    }
+
+    func refresh() {
+        // Answered on a background queue.
+        UNUserNotificationCenter.current().getNotificationSettings { @Sendable [weak self] settings in
+            let status = settings.authorizationStatus
+            DispatchQueue.main.async { self?.update(status) }
+        }
+    }
+
+    private func update(_ status: UNAuthorizationStatus) {
+        authorized = status == .authorized || status == .provisional
+        denied = status == .denied
+        guard status == .notDetermined, !asked else { return }
+        asked = true
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { @Sendable [weak self] granted, error in
+            if let error { NSLog("tern: notification authorization failed: %@", String(describing: error)) }
+            NSLog("tern: notifications authorized: %@", granted ? "yes" : "no")
+            DispatchQueue.main.async { self?.refresh() }
+        }
+    }
+
+    /// System Settings → Notifications, at tern's entry.
+    func openSystemSettings() {
+        let id = Bundle.main.bundleIdentifier ?? "dev.tern.Tern"
+        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+}
+
 /// Tells you when an agent needs you or finishes while you're looking elsewhere:
 /// a notification, a Dock badge with how many are waiting, and a Dock bounce.
 final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     private var workspaces: [Workspace] = []
     var activate: ((String) -> Void)?
-    private var authorized = false
-    /// macOS refused permission (see README: open issue).
-    static var unavailable = false
 
     override init() {
         super.init()
-        let center = UNUserNotificationCenter.current()
-        center.delegate = self
-        // Answered on a background queue.
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { @Sendable [weak self] granted, error in
-            if let error { NSLog("tern: notification authorization failed: %@", String(describing: error)) }
-            NSLog("tern: notifications authorized: %@", granted ? "yes" : "no")
-            DispatchQueue.main.async {
-                self?.authorized = granted
-                AgentNotifier.unavailable = !granted
-            }
-        }
+        UNUserNotificationCenter.current().delegate = self
+        NotificationPermission.shared.refresh()
     }
 
     func register(_ workspace: Workspace) {
@@ -74,7 +109,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     }
 
     private func post(tab: Tab, title: String, body: String, sound: Bool) {
-        guard authorized else { return }
+        guard NotificationPermission.shared.authorized else { return }
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

@@ -42,7 +42,10 @@ Mac-native, and sessions survive quitting the app.
   So can any program that speaks the [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)
   program status protocol, such as a build or deploy script: it gets a rounded-square glyph, its
   progress as a ring, and its message in the header. ⌘J jumps across windows to the next tab that
-  needs you, and the Dock badge counts the waiting ones.
+  needs you, and the Dock badge counts the waiting ones. Notifications need macOS's permission,
+  which it asks for once: a request that goes unanswered counts as a no, and macOS doesn't ask
+  again. Settings → Agents then offers to open System Settings → Notifications, where you can turn
+  them on for tern.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
@@ -367,9 +370,6 @@ testing. It keeps its own layout and settings and spawns its own daemon without 
   yours is undone.
 - A turn that ends without a Stop hook (an API error, or Esc while the model is writing) sends no
   "done" event. tern treats an agent that has been silent for five seconds as finished.
-- **Notifications don't work.** macOS refuses tern's permission request without showing a prompt.
-  A minimal test app gets the same refusal, so the cause seems to be how macOS treats locally built
-  apps. The Dock badge, Dock bounce and ⌘J still work.
 - **⌘C and ⌘V don't work inside Codex.** They work in a plain shell, and the keys do reach tern.
   The cause is unknown.
 - File-link clicking recognises whitespace-delimited paths. Select paths containing spaces and
