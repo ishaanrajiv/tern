@@ -169,7 +169,7 @@ final class ThemeStore {
         }
     }
 
-    static var selectedID: String { UserDefaults.standard.string(forKey: Prefs.theme) ?? Theme.defaultID }
+    static var selectedID: String { Prefs.defaults.string(forKey: Prefs.theme) ?? Theme.defaultID }
 
     /// Picks up a change of setting: recolours the terminals, then the chrome.
     func reload() {

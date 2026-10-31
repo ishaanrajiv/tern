@@ -25,9 +25,9 @@ struct SidebarView: View {
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
-    @AppStorage(Prefs.hooksPromptDismissed) private var hooksPromptDismissed = false
+    @AppStorage(Prefs.hooksPromptDismissed, store: Prefs.defaults) private var hooksPromptDismissed = false
     // Read so a change in Settings re-sorts the sidebar.
-    @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
+    @AppStorage(Prefs.folderOrder, store: Prefs.defaults) private var folderOrder = FolderOrder.manual.rawValue
 
     var body: some View {
         // Status depends on how long a session has been quiet, so re-evaluate every second.
@@ -161,7 +161,7 @@ private struct FolderHeader: View {
     let now: Date
     let actions: SidebarActions
     let hint: Int?
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
@@ -242,7 +242,7 @@ private struct TabRow: View {
     let now: Date
     let actions: SidebarActions
     let hint: String?
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {

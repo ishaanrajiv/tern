@@ -420,7 +420,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
                 if let path = w.currentProject?.path { self?.closeFolder(path) }
             },
 
-            Command("app.reloadConfig") { GhosttyApp.shared.applyTheme() },
+            Command("app.reloadConfig") { ConfigStore.shared.reload(force: true); GhosttyApp.shared.applyTheme() },
             Command("daemon.restart") { [weak self] in self?.confirmDaemonRestart(force: true) },
 
             Command("prompt.previous") { [weak self] in self?.terminalArea.focusedTerminal()?.performBinding("jump_to_prompt:-1") },
@@ -495,7 +495,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         // Palette-only: "theme" finds them all.
         + (Theme.builtIn.map { ($0.id, $0.name) } + [("ghostty", "Ghostty Colours")]).map { id, name in
             Command(id: "theme.\(id)", title: "Theme: \(name)", menu: "View", inMenu: false) {
-                UserDefaults.standard.set(id, forKey: Prefs.theme)
+                Prefs.defaults.set(id, forKey: Prefs.theme)
             }
         }
         // Each agent's own updater, whether or not tern has seen a newer version yet.

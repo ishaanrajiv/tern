@@ -6,7 +6,7 @@ import SwiftUI
 struct ContentHeader: View {
     let workspace: Workspace
     let layout: HeaderLayout
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {

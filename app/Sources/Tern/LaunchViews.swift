@@ -8,6 +8,7 @@ struct LaunchPresetsView: View {
     @State private var error = ""
     @State private var readable = true
     let launch: () -> Void
+    private var presetsPath: String { (LaunchPresetFile.directory.path as NSString).abbreviatingWithTildeInPath }
 
     init(workspace: Workspace, launch: @escaping () -> Void) {
         self.workspace = workspace; self.launch = launch
@@ -44,7 +45,7 @@ struct LaunchPresetsView: View {
                     }
                 }
             }
-            Text("Launch creates new sessions and runs the commands below. Presets are stored locally and may contain environment secrets.").font(.caption).foregroundStyle(.secondary)
+            Text("Launch creates new sessions and runs the commands below. Presets are saved in \(presetsPath) and may contain environment secrets.").font(.caption).foregroundStyle(.secondary)
             if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Button("Delete Preset") {
@@ -63,7 +64,12 @@ struct LaunchPresetsView: View {
                 }.keyboardShortcut(.defaultAction)
             }
         }.padding(20).frame(width: 640, height: 640)
-        .onAppear { do { file = try LaunchPresetFile.load() } catch { readable = false; self.error = error.localizedDescription } }
+        .onAppear {
+            do {
+                file = try LaunchPresetFile.load()
+                if !file.unreadable.isEmpty { error = "Couldn't read \(file.unreadable.joined(separator: ", ")) in \(presetsPath)." }
+            } catch { readable = false; self.error = error.localizedDescription }
+        }
     }
 }
 

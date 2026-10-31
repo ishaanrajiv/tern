@@ -45,7 +45,7 @@ final class AgentUsage {
     }
 
     func refresh() {
-        if !UserDefaults.standard.bool(forKey: Prefs.claudeAccountUsage) {
+        if !Prefs.defaults.bool(forKey: Prefs.claudeAccountUsage) {
             (account, accountAsked) = (nil, .distantPast)
             if accountDenied { accountDenied = false }
         } else if !accountDenied, !asking, Date().timeIntervalSince(accountAsked) >= 300 {

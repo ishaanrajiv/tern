@@ -92,18 +92,79 @@ struct LaunchPreset: Codable, Identifiable, Equatable {
     }
 }
 
-struct LaunchPresetFile: Codable {
-    var version = 1
+/// Launch presets, one JSON file each in the presets folder beside the config file
+/// (`~/.config/tern/presets/`), named after the preset when it's first saved. A file that
+/// doesn't read as a preset is left alone and reported.
+struct LaunchPresetFile {
     var presets: [LaunchPreset] = []
-    static var url: URL { Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("launch-presets.json") }
-    static func load() throws -> Self {
-        guard FileManager.default.fileExists(atPath: url.path) else { return Self() }
-        let value = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
-        guard value.version == 1 else { throw LaunchError.invalid("This preset file was written by a newer Tern. It has been left unchanged.") }
-        return value
+    /// The file each preset came from, by id, so a renamed preset keeps its file.
+    var files: [String: URL] = [:]
+    var unreadable: [String] = []
+
+    static var directory: URL { ConfigStore.shared.presetsURL }
+    /// Where older terns kept every preset; read once, to migrate them.
+    static var legacyURL: URL { Workspace.layoutURL.deletingLastPathComponent().appendingPathComponent("launch-presets.json") }
+
+    private struct Legacy: Codable {
+        var version = 1
+        var presets: [LaunchPreset] = []
     }
-    func save() throws {
-        let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self).write(to: Self.url, options: .atomic)
+
+    private static func names(in dir: URL) throws -> [String] {
+        guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
+        return try FileManager.default.contentsOfDirectory(atPath: dir.path).filter { $0.hasSuffix(".json") && !$0.hasPrefix(".") }.sorted()
+    }
+
+    static func load(from dir: URL = directory) throws -> Self {
+        var file = Self()
+        for name in try names(in: dir) {
+            let url = dir.appendingPathComponent(name)
+            if let preset = try? JSONDecoder().decode(LaunchPreset.self, from: Data(contentsOf: url)), file.files[preset.id] == nil {
+                file.presets.append(preset)
+                file.files[preset.id] = url
+            } else {
+                file.unreadable.append(name)
+            }
+        }
+        return file
+    }
+
+    /// Writes each preset to its file, and removes the files of presets loaded here and then
+    /// taken out. Presets added to the folder since loading stay.
+    func save(to dir: URL = directory) throws {
+        let onDisk = try Self.load(from: dir)
+        var taken = Set(try Self.names(in: dir))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        for preset in presets {
+            let url = files[preset.id] ?? onDisk.files[preset.id] ?? Self.newFile(for: preset.name, in: dir, taken: &taken)
+            try ConfigStore.writePrivate(encoder.encode(preset), to: url)
+        }
+        for (id, url) in files where !presets.contains(where: { $0.id == id }) && onDisk.files[id] == url {
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+
+    static func newFile(for name: String, in dir: URL, taken: inout Set<String>) -> URL {
+        var base = String(name.map { "/:\\".contains($0) || $0.isNewline ? "-" : $0 }.prefix(64))
+            .trimmingCharacters(in: .whitespaces)
+        while base.hasPrefix(".") { base.removeFirst() }
+        if base.isEmpty { base = "preset" }
+        var candidate = base + ".json"
+        var n = 2
+        while taken.contains(candidate) {
+            candidate = "\(base) \(n).json"
+            n += 1
+        }
+        taken.insert(candidate)
+        return dir.appendingPathComponent(candidate)
+    }
+
+    /// Splits an older tern's preset file into the folder, unless the folder has presets already.
+    /// The old file stays, for an older tern.
+    static func migrate(from url: URL, to dir: URL) throws {
+        guard try names(in: dir).isEmpty, let data = try? Data(contentsOf: url),
+              let legacy = try? JSONDecoder().decode(Legacy.self, from: data), legacy.version == 1, !legacy.presets.isEmpty else { return }
+        try Self(presets: legacy.presets).save(to: dir)
     }
 }

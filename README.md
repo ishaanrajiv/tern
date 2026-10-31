@@ -55,7 +55,8 @@ Mac-native, and sessions survive quitting the app.
 - **SSH.** File → Connect over SSH… uses your own SSH config and can reattach to a named tmux
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
-  commands and environment variables, and recreates them later.
+  commands and environment variables, and recreates them later. Each preset is a file in
+  `~/.config/tern/presets/`.
 - **Updates.** One card at the foot of the sidebar covers tern, ternd, Claude Code and Codex.
   The most urgent row shows in full, outlined in amber when it needs you; the others follow as
   one line each with their main action. Offers have Remind Me Tomorrow and Skip This Version.
@@ -261,6 +262,58 @@ that opened one. `wait` also takes `--exit` and `--state idle|working|needs-you|
 Exit codes: 2 for bad arguments, 3 when no pane or tab matches, 4 when a name matches more than
 one, 5 on a timeout. `run` exits with its command's code.
 
+### Config file
+
+Settings live in `~/.config/tern/config` (or `$XDG_CONFIG_HOME/tern/config`), one `key = value`
+a line in Ghostty's style; a `#` starts a comment only at the beginning of a line. Settings writes
+to the file, changing only the lines it needs to, and your own edits apply as soon as you save it.
+A line tern can't use keeps the last good value and is listed in Settings → General, which also
+opens the file. On first launch tern moves the settings you had changed, your terminal settings and
+your launch presets there; the old files stay, for an older tern.
+
+```sh
+# graphite, midnight, ember, paper, or ghostty for your Ghostty config's colours
+theme = midnight
+# trailing or turning
+working-indicator = turning
+# manual or recent
+folder-order = recent
+# Repeat for more folders; `repo-root =` alone for none.
+repo-root = ~/dev
+# system, vscode, cursor or zed
+file-editor = zed
+global-hotkey = true
+tab-worktrees = false
+notify-needs-you = true
+notify-done = true
+notify-command-done = true
+resume-agents = true
+claude-account-usage = false
+check-app-updates = true
+download-app-updates = true
+install-updates-on-quit = true
+include-prereleases = true
+offer-agent-updates = true
+
+# The terminal, under Ghostty's own names. Only the keys given here override your Ghostty config.
+font-family = JetBrains Mono
+font-size = 14
+# block, bar, underline or block_hollow
+cursor-style = bar
+# false, true, left or right
+macos-option-as-alt = left
+# bytes, from 100000 to 1000000000
+scrollback-limit = 10000000
+keybind = ctrl+shift+c=copy_to_clipboard
+# An app command's title or id, then its keys or none.
+shortcut = New Tab = cmd+shift+y
+```
+
+Launch presets are JSON files in `~/.config/tern/presets/`, one a preset. ternd reads the
+`on-<event>`, `notify-ntfy`, `notify-events` and `away-after` keys described below from the same
+file. A private instance (`TERN_RUNTIME_DIR`) reads `config` and `presets/` in that folder and
+keeps its settings apart from the installed app's.
+
 ### Events
 
 `tern watch` prints what happens in your panes as it happens; `--json` gives one object a line,
@@ -291,8 +344,10 @@ isn't the app in front, and the screen is locked or there has been no input for 
 ```sh
 # ~/.config/tern/config
 notify-ntfy = https://ntfy.sh/a-topic-only-you-know
-notify-events = needs-you, done, failed     # the default
-away-after = 120                            # seconds without input
+# The default:
+notify-events = needs-you, done, failed
+# Seconds without input:
+away-after = 120
 ```
 
 Only a title is sent, like "Claude Code needs you · api", never what the agent asked or a
@@ -300,7 +355,7 @@ command line. Install the ntfy app and subscribe to the same topic. `on-<event>`
 `TERN_AWAY=1` while you're away, for any other service.
 
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
-testing. It keeps its own layout and spawns its own daemon without launchd.
+testing. It keeps its own layout and settings and spawns its own daemon without launchd.
 
 ## Known gaps
 
@@ -334,8 +389,8 @@ tern has no account and no telemetry. It reaches the network to check npm for ag
 to check and download GitHub releases (every six hours unless you turn it off in Settings → Updates),
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
 
-Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, launch presets
-(environment values in plain text), saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.
+Your settings and launch presets (environment values in plain text) are in `~/.config/tern`,
+readable only by you. Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.
 Saved image and output files remain until you remove them from that folder.
 ternd keeps that folder readable only by you, and its socket refuses other users. Setting up hooks
 leaves a `.tern-backup` copy of each agent config it edits. See [SECURITY.md](SECURITY.md).

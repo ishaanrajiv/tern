@@ -88,7 +88,7 @@ struct PaneHeader: View {
     let pane: String
     let split: (SplitAxis) -> Void
     let close: () -> Void
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {

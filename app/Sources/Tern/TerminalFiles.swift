@@ -36,7 +36,7 @@ nonisolated struct FileReference: Equatable {
 
 enum FileEditor {
     static func open(_ ref: FileReference) {
-        let editor = UserDefaults.standard.string(forKey: "fileEditor") ?? "system"
+        let editor = Prefs.defaults.string(forKey: Prefs.fileEditor) ?? "system"
         if let url = ref.editorURL(editor) {
             NSWorkspace.shared.open(url)
         } else {

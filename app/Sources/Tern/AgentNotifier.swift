@@ -29,7 +29,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
         workspaces.append(workspace)
         workspace.onCommandEvent = { [weak self, weak workspace] tab, info in
             guard let self, let workspace, !workspace.isVisible(tab), (info.durationMs ?? 0) >= 10_000,
-                  UserDefaults.standard.bool(forKey: Prefs.notifyCommandDone) else { return }
+                  Prefs.defaults.bool(forKey: Prefs.notifyCommandDone) else { return }
             NSApp.requestUserAttention(.informationalRequest)
             self.post(tab: tab, title: workspace.title(for: tab) + " finished", body: CommandOutcome(exitCode: info.exitCode, durationMs: info.durationMs)?.text ?? "Stopped", sound: false)
         }
@@ -47,7 +47,7 @@ final class AgentNotifier: NSObject, UNUserNotificationCenterDelegate {
     private func agentChanged(tab: Tab, info: SessionInfo, workspace: Workspace) {
         updateBadge()
         guard !workspace.isVisible(tab) else { return }
-        let defaults = UserDefaults.standard
+        let defaults = Prefs.defaults
         let title = workspace.title(for: tab)
         let agent = info.agent.map(agentName) ?? info.program ?? "Agent"
         switch info.agentState {

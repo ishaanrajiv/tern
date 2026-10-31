@@ -279,7 +279,7 @@ struct CommandPaletteView: View {
     /// Esc: out of the theme list (putting the theme back), else close.
     private func back() {
         if case .themes(let original) = mode {
-            UserDefaults.standard.set(original, forKey: Prefs.theme)
+            Prefs.defaults.set(original, forKey: Prefs.theme)
             leaveThemes()
         } else {
             dismiss()
@@ -301,7 +301,7 @@ struct CommandPaletteView: View {
     private func previewTheme() {
         guard case .themes = mode, themeResults.indices.contains(selection) else { return }
         let id = themeResults[selection].id
-        if ThemeStore.selectedID != id { UserDefaults.standard.set(id, forKey: Prefs.theme) }
+        if ThemeStore.selectedID != id { Prefs.defaults.set(id, forKey: Prefs.theme) }
     }
 }
 

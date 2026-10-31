@@ -114,7 +114,7 @@ nonisolated struct UpdateDismissals {
     static let snoozeLength: TimeInterval = 24 * 3600
     let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+    init(defaults: UserDefaults = Prefs.defaults) { self.defaults = defaults }
 
     func skip(_ source: UpdateSource, version: String) {
         defaults.set(version, forKey: "updateSkipped." + source.rawValue)
@@ -249,7 +249,7 @@ final class UpdateCenter {
             guard interactive else { return nil }
             return UpdateEntry(source: .app, title: "Downloading tern \(version)", detail: "Checked before it's offered.", tone: .progress)
         case .ready:
-            let installs = UserDefaults.standard.bool(forKey: Prefs.installAppUpdatesOnQuit)
+            let installs = Prefs.defaults.bool(forKey: Prefs.installAppUpdatesOnQuit)
             return UpdateEntry(source: .app, title: "tern \(version) is ready",
                                detail: installs ? "Installs when you quit. Sessions keep running." : "Sessions keep running in ternd.",
                                actions: [.installApp, .whatsNew], menu: [.remindTomorrow, .skipVersion], version: tag)
@@ -315,7 +315,7 @@ final class UpdateCenter {
                                    tone: .failure, actions: [.retryAgent(agent), .closeRun(agent)])
             }
         }
-        guard UserDefaults.standard.bool(forKey: Prefs.offerAgentUpdates),
+        guard Prefs.defaults.bool(forKey: Prefs.offerAgentUpdates),
               let version = agents.versions[agent], version.behind, let latest = version.latest else { return nil }
         return UpdateEntry(source: source, title: "\(name) update", detail: "\(version.installed ?? "?") → \(latest)", detailIsCode: true,
                            note: version.shadowWarning, actions: [.runAgent(agent), .remindTomorrow], menu: [.skipVersion], version: latest)

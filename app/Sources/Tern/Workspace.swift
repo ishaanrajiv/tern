@@ -199,6 +199,24 @@ nonisolated struct AgentRef: Codable, Equatable, Sendable {
 
 /// UserDefaults keys for the settings window.
 enum Prefs {
+    /// Where settings live while tern runs. The config file is their source (see ConfigStore), copied
+    /// here so the app reads them as it always has. A private instance (`TERN_RUNTIME_DIR`) keeps
+    /// its own, emptied at launch, so its config never changes the installed app's settings.
+    /// UserDefaults is thread-safe, though not marked Sendable.
+    nonisolated(unsafe) static let defaults: UserDefaults = {
+        guard ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] != nil,
+              let suite = UserDefaults(suiteName: privateSuite) else { return .standard }
+        suite.removePersistentDomain(forName: privateSuite)
+        return suite
+    }()
+    nonisolated static let privateSuite = "dev.tern.Tern.private"
+    /// The persistent domain `defaults` writes to, which settings are migrated from.
+    nonisolated static var domain: String {
+        defaults == .standard ? Bundle.main.bundleIdentifier ?? "dev.tern.Tern" : privateSuite
+    }
+
+    static let globalHotkey = "globalHotkey"
+    static let fileEditor = "fileEditor"
     static let notifyNeedsYou = "notifyNeedsYou"
     static let notifyCommandDone = "notifyCommandDone"
     static let notifyDone = "notifyDone"
@@ -222,8 +240,8 @@ enum Prefs {
     static let offerAgentUpdates = "offerAgentUpdates"
 
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
-            notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
+        defaults.register(defaults: [
+            globalHotkey: false, fileEditor: "system", notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
             claudeAccountUsage: false, workingIndicator: WorkingIndicator.trailing.rawValue,
             // Every release is an alpha prerelease for now.
@@ -234,8 +252,8 @@ enum Prefs {
 
     /// The repository folders, one per line (older builds separated them with commas).
     static var repoRootList: [String] {
-        get { parseRoots(UserDefaults.standard.string(forKey: repoRoots) ?? "") }
-        set { UserDefaults.standard.set(joinRoots(newValue), forKey: repoRoots) }
+        get { parseRoots(Prefs.defaults.string(forKey: repoRoots) ?? "") }
+        set { Prefs.defaults.set(joinRoots(newValue), forKey: repoRoots) }
     }
 
     static func parseRoots(_ text: String) -> [String] {
@@ -249,7 +267,7 @@ enum Prefs {
     }
 
     static var order: FolderOrder {
-        FolderOrder(rawValue: UserDefaults.standard.string(forKey: folderOrder) ?? "") ?? .manual
+        FolderOrder(rawValue: Prefs.defaults.string(forKey: folderOrder) ?? "") ?? .manual
     }
 }
 
@@ -614,7 +632,7 @@ final class Workspace {
 
     @discardableResult
     func newSession(projectPath: String, cwd: String, worktree: Bool? = nil) -> Worktree.Failure? {
-        let wanted = worktree ?? UserDefaults.standard.bool(forKey: Prefs.worktrees)
+        let wanted = worktree ?? Prefs.defaults.bool(forKey: Prefs.worktrees)
         // The setting applies only where it can: inside a git repository.
         guard wanted, worktree == true || Worktree.mainRoot(of: cwd) != nil else {
             newTab(projectPath: projectPath, cwd: cwd)
@@ -1095,7 +1113,7 @@ final class Workspace {
         // pane can destroy its first relay before that relay has sent the attach.
         if sessions[pane] == nil, let line = pendingLines[pane] { return line }
         if sessions[pane] == nil, let remote = paneRemote[pane] { return remote.command() }
-        guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
+        guard sessions[pane] == nil, let ref = paneAgent[pane], Prefs.defaults.bool(forKey: Prefs.resumeAgents) else { return nil }
         return Self.resumeCommand(agent: ref.agent, session: ref.session)
     }
 

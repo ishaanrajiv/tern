@@ -84,10 +84,10 @@ final class GhosttyApp {
             try? text.write(to: url, atomically: true, encoding: .utf8)
             url.path.withCString { ghostty_config_load_file(config, $0) }
         }
-        let preferences = TerminalPreferences.current
-        if FileManager.default.fileExists(atPath: TerminalPreferences.url.path) {
+        // Only what tern's config file sets overrides your Ghostty config.
+        if !TerminalPreferences.given.isEmpty {
             let overrides = Self.defaultsFile.deletingLastPathComponent().appendingPathComponent("terminal-overrides")
-            try? preferences.config.write(to: overrides, atomically: true, encoding: .utf8)
+            try? TerminalPreferences.current.ghostty(TerminalPreferences.given).write(to: overrides, atomically: true, encoding: .utf8)
             overrides.path.withCString { ghostty_config_load_file(config, $0) }
         }
         ghostty_config_finalize(config)

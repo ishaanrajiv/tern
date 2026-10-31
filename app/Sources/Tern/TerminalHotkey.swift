@@ -26,7 +26,7 @@ final class TerminalHotkey {
         }
     }
     private func update() {
-        let enabled = UserDefaults.standard.bool(forKey: "globalHotkey")
+        let enabled = Prefs.defaults.bool(forKey: Prefs.globalHotkey)
         let wanted = enabled ? ShortcutRegistry.primary("app.globalHotkey") : nil
         guard wanted != registered else { return }
         if let reference { UnregisterEventHotKey(reference); self.reference = nil }

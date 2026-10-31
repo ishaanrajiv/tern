@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        // Before anything reads a setting: the config file is where they live.
+        ConfigStore.shared.start()
         // Overrides that break a rule or clash are logged and left out.
         ShortcutRegistry.reload()
         assert(ShortcutRegistry.clashes(ShortcutRegistry.defaults).isEmpty, "Default shortcuts clash")

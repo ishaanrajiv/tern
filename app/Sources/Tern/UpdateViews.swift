@@ -442,11 +442,11 @@ private struct UpdateStatusChip: View {
 /// Settings › Updates: every version in one place, and how tern keeps itself current.
 struct UpdatesSettings: View {
     let center: UpdateCenter
-    @AppStorage(Prefs.checkAppUpdates) private var checkAppUpdates = true
-    @AppStorage(Prefs.downloadAppUpdates) private var downloadAppUpdates = true
-    @AppStorage(Prefs.installAppUpdatesOnQuit) private var installOnQuit = true
-    @AppStorage(Prefs.includePrereleases) private var includePrereleases = true
-    @AppStorage(Prefs.offerAgentUpdates) private var offerAgentUpdates = true
+    @AppStorage(Prefs.checkAppUpdates, store: Prefs.defaults) private var checkAppUpdates = true
+    @AppStorage(Prefs.downloadAppUpdates, store: Prefs.defaults) private var downloadAppUpdates = true
+    @AppStorage(Prefs.installAppUpdatesOnQuit, store: Prefs.defaults) private var installOnQuit = true
+    @AppStorage(Prefs.includePrereleases, store: Prefs.defaults) private var includePrereleases = true
+    @AppStorage(Prefs.offerAgentUpdates, store: Prefs.defaults) private var offerAgentUpdates = true
 
     var body: some View {
         let app = center.app
