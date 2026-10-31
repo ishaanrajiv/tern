@@ -12,6 +12,7 @@ use anyhow::Result;
 use tern::*;
 
 use crate::screen::saved_screen;
+use crate::status::Record;
 use crate::session::{now_ms, Session, Sessions};
 
 /// Set once ternd is told to quit, so sessions dying with it keep their saved screens.
@@ -35,6 +36,9 @@ pub struct SavedMeta {
     /// agent), typed at the prompt after a restore for the user to run again.
     #[serde(default)]
     pub command: Option<String>,
+    /// Finished and failed OSC 7501 records the user hasn't seen yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub status: Vec<(String, Record)>,
 }
 
 fn saved_dir() -> PathBuf {
@@ -110,7 +114,7 @@ fn save_session(s: &Session, force: bool) {
         return;
     }
     let fg = procinfo::foreground(s.master.as_raw_fd(), s.pid);
-    let (screen, agent) = {
+    let (screen, agent, status) = {
         let mut st = s.state.lock().unwrap();
         // Full-screen programs own the screen; the main screen behind them isn't
         // reachable, so the last save from before they started stands.
@@ -120,7 +124,7 @@ fn save_session(s: &Session, force: bool) {
         st.saved_output_ms = st.last_output_ms;
         let out = saved_screen(&st.screen);
         let agent = st.agent.as_ref().and_then(|a| Some((a.agent.clone(), a.session.clone()?)));
-        (out, agent)
+        (out, agent, st.status.lasting())
     };
     let command = if fg.agent.is_some() {
         // An agent's conversation picks up where it was, given its session id.
@@ -132,7 +136,7 @@ fn save_session(s: &Session, force: bool) {
     } else {
         None
     };
-    let meta = SavedMeta { saved_ms: now_ms(), command };
+    let meta = SavedMeta { saved_ms: now_ms(), command, status };
     if let Err(e) = write_saved(&s.id, &screen, &meta) {
         eprintln!("session {}: saving screen: {e:#}", s.id);
     }
@@ -189,14 +193,14 @@ fn is_shell(name: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
     /// Tests that point TERN_RUNTIME_DIR somewhere take turns.
     static ENV: Mutex<()> = Mutex::new(());
 
-    fn with_runtime_dir(f: impl FnOnce(&std::path::Path)) {
+    pub(crate) fn with_runtime_dir(f: impl FnOnce(&std::path::Path)) {
         let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("ternd-test-{}-{}", std::process::id(), now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -209,7 +213,7 @@ mod tests {
     #[test]
     fn saved_screen_round_trips() {
         with_runtime_dir(|_| {
-            let meta = SavedMeta { saved_ms: 1234, command: Some("npm run dev".into()) };
+            let meta = SavedMeta { saved_ms: 1234, command: Some("npm run dev".into()), status: Vec::new() };
             write_saved("p-1", b"\x1b[31mhello\x1b[m\r\n", &meta).unwrap();
             let (back, screen) = load_saved("p-1").unwrap();
             assert_eq!(back.saved_ms, 1234);
@@ -223,7 +227,7 @@ mod tests {
     #[test]
     fn screens_carry_their_format_version() {
         with_runtime_dir(|dir| {
-            write_saved("p-3", b"hi\r\n", &SavedMeta { saved_ms: 1, command: None }).unwrap();
+            write_saved("p-3", b"hi\r\n", &SavedMeta { saved_ms: 1, command: None, status: Vec::new() }).unwrap();
             let file = std::fs::read(dir.join("saved/p-3.screen")).unwrap();
             assert!(file.starts_with(b"\x1b_tern-screen 1\x1b\\"), "{file:?}");
             assert_eq!(screen_body(file), Some((1, b"hi\r\n".to_vec())));

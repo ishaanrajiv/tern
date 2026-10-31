@@ -88,7 +88,7 @@ struct PaneHeader: View {
     let pane: String
     let split: (SplitAxis) -> Void
     let close: () -> Void
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
@@ -98,12 +98,20 @@ struct PaneHeader: View {
             let status = workspace.status(pane: pane, now: context.date)
             let agent = workspace.agent(pane: pane)
             HStack(spacing: 7) {
-                StatusIcon(status: status, agent: agent, turning: indicator == .turning)
+                StatusIcon(status: status, agent: agent, program: workspace.program(pane: pane), turning: indicator == .turning)
                 Text(name(s, agent: agent))
                     .font(.system(size: 11.5, weight: .medium))
                     .foregroundStyle(focused ? .primary : .secondary)
                     .lineLimit(1)
                     .layoutPriority(1)
+                if let opener = workspace.opener(pane: pane) {
+                    // Opened from the CLI by an agent, which may be in another pane.
+                    Text("by " + agentName(opener))
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .help("\(agentName(opener)) opened this pane")
+                }
                 if let place = place(s) {
                     Text(place)
                         .font(.system(size: 11.5))
@@ -134,6 +142,7 @@ struct PaneHeader: View {
 
     /// "Claude Code", "npm run dev", "zsh".
     private func name(_ s: SessionInfo?, agent: String?) -> String {
+        if let given = workspace.name(pane: pane) { return given }
         if let agent { return agentName(agent) }
         guard let s else { return "Starting…" }
         if !Workspace.shells.contains(s.process), let command = s.command, !command.isEmpty { return command }

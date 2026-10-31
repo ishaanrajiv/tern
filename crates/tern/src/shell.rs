@@ -191,6 +191,13 @@ pub fn last_command(id: &str) -> Option<Option<String>> {
     std::fs::read_to_string(command_file(id)).ok().map(|text| telling(&text))
 }
 
+/// The last command line the session's shell ran, as typed (its first line, at most 200 characters).
+pub fn last_line(id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(command_file(id)).ok()?;
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(line.chars().take(200).collect())
+}
+
 /// What a command line says about a tab: its last part that isn't trivial,
 /// so `cd api && npm run dev` gives "npm run dev" and `ls` gives nothing.
 pub fn telling(line: &str) -> Option<String> {

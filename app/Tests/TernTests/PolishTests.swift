@@ -70,4 +70,32 @@ final class PolishTests: XCTestCase {
         XCTAssertNil(w.agent(pane: pane))
         XCTAssertEqual(w.status(pane: "p-gone"), .dormant)
     }
+
+    func testProgramsReportingTheirOwnStatusNeedNoHeartbeatAndShowFailures() throws {
+        let w = Workspace()
+        _ = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        let background = w.selectedTab!
+        _ = w.newTab(projectPath: "/tmp", cwd: "/tmp")
+        let pane = background.root.panes[0]
+        let long = UInt64(Date().addingTimeInterval(-600).timeIntervalSince1970 * 1000)
+        func session(_ fields: String) throws -> SessionInfo {
+            let json = """
+            {"id":"\(pane)","pid":1,"cols":80,"rows":24,"clients":0,"process":"cargo","title":"",
+             "last_output_ms":\(long),"bells":0,\(fields)}
+            """
+            let d = JSONDecoder()
+            d.keyDecodingStrategy = .convertFromSnakeCase
+            return try d.decode(SessionInfo.self, from: Data(json.utf8))
+        }
+        // Quiet for ten minutes: a hook turn is over, a program's own report still stands.
+        w.update(sessions: [try session(#""agent_state":"working","agent_state_ms":\#(long),"agent_osc":true,"program":"cargo","agent_progress":40"#)])
+        XCTAssertEqual(w.status(for: background), .working)
+        XCTAssertEqual(w.program(for: background), "cargo")
+        XCTAssertEqual(w.urgentSession(background)?.agentProgress, 40)
+        w.update(sessions: [try session(#""agent_state":"failed","agent_state_ms":\#(long + 1),"agent_osc":true,"agent_message":"Build failed""#)])
+        XCTAssertEqual(w.status(for: background), .failed)
+        XCTAssertEqual(w.agentMessage(background), "Build failed")
+        XCTAssertLessThan(SessionStatus.needsYou, SessionStatus.failed)
+        XCTAssertLessThan(SessionStatus.failed, SessionStatus.working)
+    }
 }

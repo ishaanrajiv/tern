@@ -3,7 +3,9 @@
 //!   tern attach [--cwd DIR] [--cmd CMD] [--init LINE] <id>
 //!                                              relay this terminal to a session (creating it if needed;
 //!                                              --init types LINE into a new session's shell)
-//!   tern ls [--json]                           list sessions
+//!   tern ls [--json]                           list sessions (with --json, every window's tabs and panes too)
+//!   tern split|tab|send|capture|wait|close|run drive panes from a script or agent (see agent.rs)
+//!   tern watch [--json]                        print events as they happen
 //!   tern kill <id>                             hang up a session
 //!   tern daemon [status|restart]              whether the running ternd matches this tern (JSON);
 //!                                              restart it, saving screens first
@@ -29,6 +31,9 @@ use nix::pty::{openpty, Winsize};
 use nix::sys::termios::{self, SetArg, Termios};
 use tern::*;
 
+#[path = "tern/agent.rs"]
+mod agent;
+
 nix::ioctl_read_bad!(get_winsize, nix::libc::TIOCGWINSZ, Winsize);
 
 fn main() {
@@ -39,6 +44,14 @@ fn main() {
         Some("attach") => attach(&args[1..]),
         Some("ls") => list(args.get(1).is_some_and(|a| a == "--json")),
         Some("kill") => kill(&args[1..]),
+        Some("split") => agent::split(&args[1..]),
+        Some("tab") => agent::tab(&args[1..]),
+        Some("send") => agent::send(&args[1..]),
+        Some("capture") => agent::capture(&args[1..]),
+        Some("wait") => agent::wait(&args[1..]),
+        Some("close") => agent::close(&args[1..]),
+        Some("run") => agent::run(&args[1..]),
+        Some("watch") => agent::watch(&args[1..]),
         Some("daemon") => daemon(args.get(1).map_or("status", String::as_str)),
         Some("bench") => bench(&args[1..]),
         Some("hook") => {
@@ -54,7 +67,8 @@ fn main() {
             eprintln!(
                 "usage: tern open [DIR] [--window | --split right|down] [--command CMD | -- ARGS...]\n       tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
                  tern daemon [status|restart]\n       \
-                 tern hooks [status|install|uninstall|link] [claude|codex]"
+                 tern hooks [status|install|uninstall|link] [claude|codex]\n       {}",
+                agent::USAGE
             );
             std::process::exit(2);
         }
@@ -63,7 +77,7 @@ fn main() {
         Ok(code) => std::process::exit(code),
         Err(e) => {
             eprintln!("tern: {e:#}");
-            std::process::exit(1);
+            std::process::exit(if agent::is_usage(&e) { 2 } else { 1 });
         }
     }
 }
@@ -427,11 +441,27 @@ fn list(json: bool) -> Result<i32> {
     let (_sock, mut reader) = request(&Request::List)?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
+    let sessions: Vec<SessionInfo> = serde_json::from_str(&line)?;
     if json {
-        print!("{line}");
+        // Windows, folders, tabs and their split panes, each pane with its session.
+        let (_sock, mut reader) = request(&Request::LayoutTree)?;
+        let mut tree = String::new();
+        reader.read_line(&mut tree)?;
+        let mut tree: serde_json::Value = serde_json::from_str(&tree)?;
+        for window in tree["windows"].as_array_mut().into_iter().flatten() {
+            for folder in window["folders"].as_array_mut().into_iter().flatten() {
+                for tab in folder["tabs"].as_array_mut().into_iter().flatten() {
+                    for pane in tab["panes"].as_array_mut().into_iter().flatten() {
+                        let session = sessions.iter().find(|s| pane["id"] == s.id.as_str());
+                        pane["session"] = serde_json::to_value(session)?;
+                    }
+                }
+            }
+        }
+        tree["sessions"] = serde_json::to_value(&sessions)?;
+        println!("{tree}");
         return Ok(0);
     }
-    let sessions: Vec<SessionInfo> = serde_json::from_str(&line)?;
     if sessions.is_empty() {
         println!("no sessions");
     }

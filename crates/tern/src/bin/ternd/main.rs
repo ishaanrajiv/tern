@@ -12,6 +12,10 @@ mod screen;
 mod vt;
 mod session;
 mod command;
+mod status;
+mod layout;
+mod events;
+mod away;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -25,7 +29,8 @@ use nix::unistd::Pid;
 use tern::*;
 
 use saved::{forget_saved, prune_saved, save_on_quit, save_periodically};
-use session::{attach, list_sessions, spawn_session, type_when_ready, Sessions};
+use layout::{Axis, Change, Place, Store};
+use session::{attach, list_sessions, spawn_session, type_when_ready, write_input, Sessions};
 
 fn main() -> Result<()> {
     // Everything ternd creates (screens, typed commands, the socket) is for this user
@@ -79,12 +84,20 @@ fn main() -> Result<()> {
         thread::spawn(move || save_on_quit(sessions));
     }
     let hello = Arc::new(hello);
+    let layouts = Arc::new(Store::default());
+    let bus = Arc::new(events::Bus::default());
+    {
+        let (sessions, layouts, bus) = (sessions.clone(), layouts.clone(), bus.clone());
+        thread::spawn(move || events::monitor(sessions, layouts, bus));
+    }
     for conn in listener.incoming() {
         let Ok(conn) = conn else { continue };
         let sessions = sessions.clone();
         let hello = hello.clone();
+        let layouts = layouts.clone();
+        let bus = bus.clone();
         thread::spawn(move || {
-            if let Err(e) = handle_conn(conn, sessions, &hello) {
+            if let Err(e) = handle_conn(conn, sessions, &layouts, &bus, &hello) {
                 eprintln!("connection error: {e:#}");
             }
         });
@@ -104,7 +117,7 @@ fn verify_peer(conn: &UnixStream, me: nix::unistd::Uid) -> Result<()> {
     Ok(())
 }
 
-fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Result<()> {
+fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, bus: &events::Bus, hello: &HelloReply) -> Result<()> {
     verify_peer(&conn, nix::unistd::geteuid())?;
     let mut reader = BufReader::new(conn.try_clone()?);
     let mut line = String::new();
@@ -117,8 +130,13 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
     let mut out = conn.try_clone()?;
 
     let id = match &req {
-        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } | Request::ReadOutput { id, .. } => Some(id),
-        Request::Hello | Request::List | Request::Watch | Request::SetScrollback { .. } => None,
+        Request::Attach { id, .. } | Request::Kill { id } | Request::Report { id, .. } | Request::ReadOutput { id, .. }
+        | Request::Input { id, .. } => Some(id),
+        Request::LayoutGet { window } | Request::LayoutPut { window, .. } if !layout::valid_window(window) => {
+            writeln!(out, "{}", serde_json::json!({ "ok": false, "rev": 0, "error": "invalid window id" }))?;
+            return Ok(());
+        }
+        _ => None,
     };
     if id.is_some_and(|id| !valid_session_id(id)) {
         // In the shape the caller expects for that request.
@@ -200,6 +218,60 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
             let ok = session::report(&sessions, &id, agent, state, agent_session, message, subagent);
             writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
         }
+        Request::LayoutGet { window } => {
+            writeln!(out, "{}", serde_json::to_string(&layouts.get(&window))?)?;
+        }
+        Request::LayoutPut { window, base, doc, by } => {
+            writeln!(out, "{}", serde_json::to_string(&layouts.put(&window, base, doc, &by))?)?;
+        }
+        Request::LayoutWatch => {
+            layouts.watch(|update| serde_json::to_string(update).is_ok_and(|line| writeln!(out, "{line}").is_ok()));
+        }
+        Request::Events => {
+            bus.watch(|event| serde_json::to_string(event).is_ok_and(|line| writeln!(out, "{line}").is_ok()));
+        }
+        Request::LayoutTree => {
+            writeln!(out, "{}", layouts.tree())?;
+        }
+        Request::Resolve { target } => {
+            let reply = match layouts.resolve(&target, |id| sessions.lock().unwrap().contains_key(id)) {
+                Ok(found) => PaneReply { ok: true, pane: Some(found.pane), tab: found.tab, window: found.window, ..Default::default() },
+                Err(reply) => *reply,
+            };
+            writeln!(out, "{}", serde_json::to_string(&reply)?)?;
+        }
+        Request::Split { target, direction, open } => {
+            let axis = match direction.as_str() {
+                "right" => Axis::Horizontal,
+                "down" => Axis::Vertical,
+                _ => {
+                    writeln!(out, "{}", serde_json::to_string(&PaneReply::failed("split right or down", None))?)?;
+                    return Ok(());
+                }
+            };
+            writeln!(out, "{}", serde_json::to_string(&open_pane(&sessions, layouts, &target, Some(axis), None, open))?)?;
+        }
+        Request::NewTab { target, folder, open } => {
+            writeln!(out, "{}", serde_json::to_string(&open_pane(&sessions, layouts, &target, None, folder, open))?)?;
+        }
+        Request::Close { target } => {
+            let reply = match layouts.resolve(&target, |id| sessions.lock().unwrap().contains_key(id)) {
+                Ok(found) => {
+                    let session = sessions.lock().unwrap().get(&found.pane).cloned();
+                    if let Some(s) = session { let _ = killpg(Pid::from_raw(s.pid), Signal::SIGHUP); }
+                    if valid_session_id(&found.pane) { forget_saved(&found.pane); }
+                    layouts.remove(&found.pane);
+                    PaneReply { ok: true, pane: Some(found.pane), tab: found.tab, window: found.window, ..Default::default() }
+                }
+                Err(reply) => *reply,
+            };
+            writeln!(out, "{}", serde_json::to_string(&reply)?)?;
+        }
+        Request::Input { id, data } => {
+            let session = sessions.lock().unwrap().get(&id).cloned();
+            let ok = session.is_some_and(|s| write_input(&s, data.as_bytes()).is_ok());
+            writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
+        }
         Request::Attach { id, cols, rows, cwd, cmd, init, env } => {
             let existing = sessions.lock().unwrap().get(&id).cloned();
             let (session, created) = match existing {
@@ -233,6 +305,49 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, hello: &HelloReply) -> Resu
     Ok(())
 }
 
+/// Starts a session in a new pane: beside the target with `axis`, otherwise in a new tab.
+fn open_pane(sessions: &Sessions, layouts: &Store, target: &Target, axis: Option<Axis>, folder: Option<String>, open: OpenPane) -> PaneReply {
+    let exists = |id: &str| sessions.lock().unwrap().contains_key(id);
+    let untargeted = target.pane.is_none() && target.tab.is_none() && !target.caller.as_deref().is_some_and(exists);
+    let near = if axis.is_none() && untargeted {
+        None
+    } else {
+        match layouts.resolve(target, exists) {
+            Ok(found) => Some(found.pane),
+            Err(reply) => return *reply,
+        }
+    };
+    let list = list_sessions(sessions);
+    let info = |id: &Option<String>| id.as_ref().and_then(|id| list.iter().find(|s| s.id == *id));
+    let beside = info(&near);
+    // Who asked, for the pane's header: the agent or reporting program in the calling pane.
+    let opener = info(&target.caller).and_then(|s| s.agent.clone().or(s.program.clone()));
+    let folder = folder.unwrap_or_default();
+    // A tab starts in its folder; a split, where the pane beside it is.
+    let folder_cwd = (!folder.is_empty()).then(|| folder.clone());
+    let beside_cwd = beside.and_then(|s| s.cwd.clone());
+    let Some(cwd) = open.cwd.clone().or(if axis.is_some() { beside_cwd.or(folder_cwd) } else { folder_cwd.or(beside_cwd) }) else {
+        return PaneReply::failed("say which folder the tab opens in", None);
+    };
+    let (cols, rows) = beside.map_or((80, 24), |s| match axis {
+        Some(Axis::Horizontal) => ((s.cols / 2).max(20), s.rows),
+        Some(Axis::Vertical) => (s.cols, (s.rows / 2).max(5)),
+        None => (s.cols, s.rows),
+    });
+    let place = match (axis, near) {
+        (Some(axis), Some(pane)) => Place::Beside { pane, axis },
+        (_, near) => Place::Tab { folder, near },
+    };
+    let change = Change { place, cwd: cwd.clone(), name: open.name.clone(), opener, focus: open.focus };
+    layouts.open(change, |pane| {
+        let (session, _) = spawn_session(pane, cols, rows, Some(cwd.clone()), None, open.env.clone(), sessions).map_err(|e| format!("{e:#}"))?;
+        if let Some(line) = open.line.clone() {
+            thread::spawn(move || type_when_ready(&session, &line, true));
+        }
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,7 +365,7 @@ mod tests {
         ] {
             let (server, mut client) = UnixStream::pair().unwrap();
             writeln!(client, "{request}").unwrap();
-            handle_conn(server, Sessions::default(), &hello()).unwrap();
+            handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).unwrap();
             let mut reply = String::new();
             BufReader::new(client).read_line(&mut reply).unwrap();
             let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -283,7 +398,7 @@ mod tests {
         for req in requests {
             let (server, mut client) = UnixStream::pair().unwrap();
             writeln!(client, "{req}").unwrap();
-            handle_conn(server, Sessions::default(), &hello()).unwrap();
+            handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).unwrap();
             let mut reply = String::new();
             BufReader::new(client).read_line(&mut reply).unwrap();
             let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
@@ -303,7 +418,7 @@ mod tests {
             // Stops once ternd hangs up.
             while client.write_all(&chunk).is_ok() {}
         });
-        assert!(handle_conn(server, Sessions::default(), &hello()).is_err());
+        assert!(handle_conn(server, Sessions::default(), &Store::default(), &events::Bus::default(), &hello()).is_err());
         writer.join().unwrap();
     }
 }

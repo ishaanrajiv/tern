@@ -16,11 +16,21 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let bells: UInt64
     /// "claude" or "codex" when one is running.
     let agent: String?
-    /// "idle", "working", "needs_you", "done"; nil without hooks.
+    /// "idle", "working", "needs_you", "done", "failed"; nil without hooks or an OSC 7501 report.
     let agentState: String?
     let agentStateMs: UInt64?
     let agentSession: String?
     let agentMessage: String?
+    /// What a blocked program needs: "permission", "question" or "auth" (OSC 7501 only).
+    var agentKind: String? = nil
+    /// Percent done, when the program said (OSC 7501 only).
+    var agentProgress: Int? = nil
+    /// The state is the program's own OSC 7501 report, which isn't repeated while it works.
+    var agentOsc: Bool? = nil
+    /// The OSC 7501 `app` of the program that reported ("cargo").
+    var program: String? = nil
+    /// How many OSC 7501 records the session holds: several tasks when more than one.
+    var statusRecords: Int? = nil
     /// What runs in the foreground, or last ran there ("npm run dev"); nil from an older ternd.
     let command: String?
     /// When the shell last finished a command (Unix ms); nil from an older ternd.
@@ -102,6 +112,59 @@ nonisolated enum TernClient {
         }
     }
 
+    /// A window's layout as ternd keeps it (nil if it has none yet) and its revision; nil
+    /// if ternd isn't running.
+    static func layout(window: String) -> (doc: Data?, rev: UInt64)? {
+        guard let conn = LineConnection(path: socketPath, maximumLine: 64 << 20) else { return nil }
+        conn.send(["op": "layout_get", "window": window])
+        guard let line = conn.readLine(), let reply = LayoutReply(line), reply.ok else { return nil }
+        return (reply.doc, reply.rev)
+    }
+
+    enum LayoutWrite {
+        case saved(rev: UInt64)
+        /// The CLI changed the layout since `base`: this is the layout as it is now.
+        case changed(rev: UInt64, doc: Data?)
+        case failed(String)
+        /// ternd isn't running, so nothing else writes the layout.
+        case unreachable
+    }
+
+    /// Replaces a window's layout, if it's still at revision `base`.
+    static func putLayout(window: String, base: UInt64, doc: Data, by writer: String) -> LayoutWrite {
+        guard let object = try? JSONSerialization.jsonObject(with: doc) else { return .failed("the layout isn't JSON") }
+        guard let conn = LineConnection(path: socketPath, maximumLine: 64 << 20) else { return .unreachable }
+        conn.send(["op": "layout_put", "window": window, "base": base, "doc": object, "by": writer])
+        guard let line = conn.readLine(), let reply = LayoutReply(line) else { return .failed("no reply from ternd") }
+        if reply.ok { return .saved(rev: reply.rev) }
+        if let error = reply.error, reply.doc == nil, error.hasPrefix("saving") { return .failed(error) }
+        return .changed(rev: reply.rev, doc: reply.doc)
+    }
+
+    /// Streams layout changes (window, revision, layout, who wrote it) to `onUpdate` on the main
+    /// queue, reconnecting forever. `onConnect` runs on each connection, when changes may have been missed.
+    static func watchLayouts(onConnect: @escaping @MainActor () -> Void,
+                             _ onUpdate: @escaping @MainActor (String, UInt64, Data, String) -> Void) {
+        let thread = Thread {
+            while true {
+                if let conn = LineConnection(path: socketPath, maximumLine: 64 << 20, timeout: 0) {
+                    conn.send(["op": "layout_watch"])
+                    DispatchQueue.main.async { onConnect() }
+                    while let line = conn.readLine() {
+                        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+                              let window = object["window"] as? String, let rev = (object["rev"] as? NSNumber)?.uint64Value,
+                              let doc = object["doc"].flatMap({ try? JSONSerialization.data(withJSONObject: $0) }) else { continue }
+                        let by = object["by"] as? String ?? ""
+                        DispatchQueue.main.async { onUpdate(window, rev, doc, by) }
+                    }
+                }
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        }
+        thread.name = "tern.layout-watch"
+        thread.start()
+    }
+
     /// Streams session lists to `onUpdate` on the main queue, reconnecting forever.
     static func watch(_ onUpdate: @escaping @MainActor ([SessionInfo]) -> Void) {
         let thread = Thread {
@@ -122,6 +185,22 @@ nonisolated enum TernClient {
     }
 }
 
+/// ternd's answer to `layout_get` or `layout_put`.
+nonisolated struct LayoutReply {
+    let ok: Bool
+    let rev: UInt64
+    let doc: Data?
+    let error: String?
+
+    init?(_ line: Data) {
+        guard let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        ok = object["ok"] as? Bool ?? false
+        rev = (object["rev"] as? NSNumber)?.uint64Value ?? 0
+        doc = object["doc"].flatMap { $0 is NSNull ? nil : try? JSONSerialization.data(withJSONObject: $0) }
+        error = object["error"] as? String
+    }
+}
+
 /// A blocking unix-socket connection that speaks newline-delimited JSON.
 nonisolated final class LineConnection {
     /// A longer line than any session list is junk; the connection is dropped.
@@ -133,13 +212,14 @@ nonisolated final class LineConnection {
 
     init(fd: Int32) { self.fd = fd; maximumLine = Self.maxLine }
 
-    init?(path: String, maximumLine: Int = LineConnection.maxLine) {
+    /// `timeout` bounds each read and write in seconds; 0 waits as long as it takes (a watch).
+    init?(path: String, maximumLine: Int = LineConnection.maxLine, timeout seconds: Int = 5) {
         self.maximumLine = maximumLine
         fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         var noSignal: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-        var timeout = timeval(tv_sec: 5, tv_usec: 0)
+        var timeout = timeval(tv_sec: seconds, tv_usec: 0)
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
         var addr = sockaddr_un()

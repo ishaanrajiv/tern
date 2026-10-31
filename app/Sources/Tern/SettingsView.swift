@@ -55,12 +55,12 @@ final class AgentHooks {
 
 /// Folders and tabs.
 struct GeneralSettings: View {
-    @AppStorage("globalHotkey") private var globalHotkey = false
-    @AppStorage(Prefs.notifyCommandDone) private var notifyCommandDone = true
-    @AppStorage("fileEditor") private var fileEditor = "system"
-    @AppStorage(Prefs.worktrees) private var worktrees = false
-    @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
-    @AppStorage(Prefs.repoRoots) private var repoRoots = "~/dev"
+    @AppStorage(Prefs.globalHotkey, store: Prefs.defaults) private var globalHotkey = false
+    @AppStorage(Prefs.notifyCommandDone, store: Prefs.defaults) private var notifyCommandDone = true
+    @AppStorage(Prefs.fileEditor, store: Prefs.defaults) private var fileEditor = "system"
+    @AppStorage(Prefs.worktrees, store: Prefs.defaults) private var worktrees = false
+    @AppStorage(Prefs.folderOrder, store: Prefs.defaults) private var folderOrder = FolderOrder.manual.rawValue
+    @AppStorage(Prefs.repoRoots, store: Prefs.defaults) private var repoRoots = "~/dev"
 
     var body: some View {
         Form {
@@ -84,6 +84,7 @@ struct GeneralSettings: View {
                 }
             }
 
+            ConfigFileSection()
             Section("Quick access") {
                 Toggle("Show or hide tern with \(ShortcutRegistry.label("app.globalHotkey"))", isOn: $globalHotkey)
             }
@@ -100,10 +101,36 @@ struct GeneralSettings: View {
     }
 }
 
+/// Where the settings are saved, and what's wrong with the file if you edited it.
+private struct ConfigFileSection: View {
+    private let store = ConfigStore.shared
+
+    var body: some View {
+        Section {
+            HStack {
+                Text((store.url.path as NSString).abbreviatingWithTildeInPath)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer()
+                Button("Open") { store.openInEditor() }
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([store.url]) }
+            }
+            ForEach(store.problems, id: \.self) { problem in
+                Text(problem).font(.caption).foregroundStyle(.red).textSelection(.enabled)
+            }
+        } header: {
+            Text("Config file")
+        } footer: {
+            Text("Settings are saved here. Edits apply when you save the file; a line tern can't use keeps the last good value.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
 /// Theme, and how the sidebar shows work.
 struct AppearanceSettings: View {
-    @AppStorage(Prefs.theme) private var theme = Theme.defaultID
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.theme, store: Prefs.defaults) private var theme = Theme.defaultID
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
 
     var body: some View {
         Form {
@@ -145,10 +172,11 @@ struct AgentSettings: View {
     let hooks: AgentHooks
     let updates: UpdateCenter
     let usage: AgentUsage
-    @AppStorage(Prefs.notifyNeedsYou) private var notifyNeedsYou = true
-    @AppStorage(Prefs.notifyDone) private var notifyDone = true
-    @AppStorage(Prefs.resumeAgents) private var resumeAgents = true
-    @AppStorage(Prefs.claudeAccountUsage) private var claudeAccountUsage = false
+    @AppStorage(Prefs.notifyNeedsYou, store: Prefs.defaults) private var notifyNeedsYou = true
+    @AppStorage(Prefs.notifyDone, store: Prefs.defaults) private var notifyDone = true
+    @AppStorage(Prefs.resumeAgents, store: Prefs.defaults) private var resumeAgents = true
+    @AppStorage(Prefs.claudeAccountUsage, store: Prefs.defaults) private var claudeAccountUsage = false
+    private let permission = NotificationPermission.shared
 
     var body: some View {
         Form {
@@ -179,9 +207,13 @@ struct AgentSettings: View {
                 if let error = hooks.error {
                     Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled)
                 }
-                if AgentNotifier.unavailable {
-                    Text("macOS notification permission is unavailable.")
-                        .font(.caption).foregroundStyle(.secondary)
+                if permission.denied {
+                    HStack {
+                        Text("Notifications are off for tern in System Settings. macOS also turns them off when its request goes unanswered, and doesn't ask again.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Open Notification Settings") { permission.openSystemSettings() }
+                    }
                 }
             }
         }
@@ -216,8 +248,8 @@ private struct AgentIntegrationRow: View {
             }
             .disabled(status?.available == false)
             .help(agent == "codex"
-                  ? "Reports agent status through ~/.codex/hooks.json. Run /hooks in Codex once to trust new hooks."
-                  : "Reports agent status through ~/.claude/settings.json and records usage through its status line.")
+                  ? "Reports agent status through ~/.codex/hooks.json, and adds a tern skill for driving panes. Run /hooks in Codex once to trust new hooks."
+                  : "Reports agent status through ~/.claude/settings.json, records usage through its status line, and adds a tern skill for driving panes.")
         }
     }
 }
@@ -358,7 +390,7 @@ final class SettingsWindowController: NSWindowController {
 
     convenience init(hooks: AgentHooks, updates: UpdateCenter, usage: AgentUsage) {
         // Read before adding panes: adding the first one selects it, which saves its index.
-        let last = min(max(UserDefaults.standard.integer(forKey: SettingsTabs.key), 0), Self.updatesPane)
+        let last = min(max(Prefs.defaults.integer(forKey: SettingsTabs.key), 0), Self.updatesPane)
         let tabs = SettingsTabs()
         tabs.tabStyle = .toolbar
         tabs.canPropagateSelectedChildViewControllerTitle = true
@@ -402,6 +434,6 @@ private final class SettingsTabs: NSTabViewController {
 
     override func tabView(_ tabView: NSTabView, didSelect item: NSTabViewItem?) {
         super.tabView(tabView, didSelect: item)
-        UserDefaults.standard.set(selectedTabViewItemIndex, forKey: Self.key)
+        Prefs.defaults.set(selectedTabViewItemIndex, forKey: Self.key)
     }
 }

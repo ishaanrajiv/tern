@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Prefs.registerDefaults()
+        // Before anything reads a setting: the config file is where they live.
+        ConfigStore.shared.start()
         // Overrides that break a rule or clash are logged and left out.
         ShortcutRegistry.reload()
         assert(ShortcutRegistry.clashes(ShortcutRegistry.defaults).isEmpty, "Default shortcuts clash")
@@ -37,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // restored in another window cannot also become an orphan in the first.
         let records = WindowCatalog.load()
         for record in records {
-            let workspace = Workspace(storageURL: WindowCatalog.storageURL(record.id))
+            let workspace = Workspace(storageURL: WindowCatalog.storageURL(record.id), window: record.id)
             workspace.adoptsOrphans = false
             workspace.load(excluding: ownedPanes)
             _ = makeWindow(workspace: workspace, id: record.id, frame: record.rect)
@@ -58,13 +60,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow?.checkDaemon()
         hotkey = TerminalHotkey { [weak self] in self?.toggleTerminal() }
         TernClient.watch { [weak self] list in self?.updateSessions(list) }
+        // `tern split`, `tern tab` and `tern close` change layouts in ternd.
+        TernClient.watchLayouts(onConnect: { [weak self] in
+            for controller in self?.windows ?? [] { controller.workspace.refreshLayout() }
+        }) { [weak self] window, rev, doc, writer in
+            self?.windows.first { $0.windowID == window }?.workspace.layoutChanged(rev: rev, doc: doc, by: writer)
+        }
         if ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] == nil { NSApp.activate(ignoringOtherApps: true) }
     }
 
     @discardableResult
     private func makeWindow(workspace: Workspace? = nil, id: String? = nil, frame: NSRect? = nil) -> MainWindowController {
         let id = id ?? "w-" + UUID().uuidString.lowercased()
-        let workspace = workspace ?? Workspace(storageURL: WindowCatalog.storageURL(id))
+        let workspace = workspace ?? Workspace(storageURL: WindowCatalog.storageURL(id), window: id)
         workspace.adoptsOrphans = false
         workspace.update(sessions: latestSessions)
         let controller = MainWindowController(workspace: workspace, ternBinary: ternBinary, hooks: hooks, usage: usage, updates: updates, windowID: id, restoredFrame: frame)
@@ -91,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 .filter { $0.1.id != controller.workspace.selectedTabID }
             let now = Date()
             let next = order.first { $0.0.workspace.status(for: $0.1, now: now) == .needsYou }
+                ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .failed }
                 ?? order.first { $0.0.workspace.status(for: $0.1, now: now) == .doneUnread }
                 ?? order.first { $0.0.workspace.isUnread($0.1) }
             guard let (owner, tab) = next else { NSSound.beep(); return }

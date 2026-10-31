@@ -39,7 +39,13 @@ Mac-native, and sessions survive quitting the app.
   tab return as fresh shells; reopening cannot undo their termination. Closing a window while
   others remain detaches its tabs. Quitting preserves all open windows and sessions.
 - **Agent status.** Claude Code and Codex report whether they're working, waiting for you, or done.
-  ⌘J jumps across windows to the next tab that needs you, and the Dock badge counts the waiting ones.
+  So can any program that speaks the [OSC 7501](https://www.superlogical.com/rex/docs/build/program-status)
+  program status protocol, such as a build or deploy script: it gets a rounded-square glyph, its
+  progress as a ring, and its message in the header. ⌘J jumps across windows to the next tab that
+  needs you, and the Dock badge counts the waiting ones. Notifications need macOS's permission,
+  which it asks for once: a request that goes unanswered counts as a no, and macOS doesn't ask
+  again. Settings → Agents then offers to open System Settings → Notifications, where you can turn
+  them on for tern.
 - **Usage limits.** The foot of the sidebar shows each agent's 5-hour and weekly limits.
 - **Persistent sessions.** A daemon owns the shells, so quitting tern leaves them running. After a
   reboot or daemon restart, panes come back with their old screens and agent conversations resume.
@@ -52,7 +58,8 @@ Mac-native, and sessions survive quitting the app.
 - **SSH.** File → Connect over SSH… uses your own SSH config and can reattach to a named tmux
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
-  commands and environment variables, and recreates them later.
+  commands and environment variables, and recreates them later. Each preset is a file in
+  `~/.config/tern/presets/`.
 - **Updates.** One card at the foot of the sidebar covers tern, ternd, Claude Code and Codex.
   The most urgent row shows in full, outlined in amber when it needs you; the others follow as
   one line each with their main action. Offers have Remind Me Tomorrow and Skip This Version.
@@ -78,13 +85,16 @@ Mac-native, and sessions survive quitting the app.
 |---|---|
 | Amber, bold name, tinted row | Needs you: a permission prompt or a question |
 | Blue | Working |
+| Red, bold name | Failed, and you haven't looked yet (reported over OSC 7501) |
 | Text-coloured, bold name | Done, and you haven't looked yet |
 | Grey | Idle |
 | Faint | Dormant, or waiting to be reopened after a restart |
 
 For accurate states, open Settings (⌘,) and click **Set Up** for Claude Code and Codex. This adds
-a `tern hook` command to `~/.claude/settings.json` and `~/.codex/hooks.json`, and **Remove** takes it
-out again without touching your other settings. In Codex, run `/hooks` once to trust them. Without
+a `tern hook` command to `~/.claude/settings.json` and `~/.codex/hooks.json`, and a `tern` skill
+in each agent's `skills/tern/` that teaches it the [pane commands](#driving-panes-from-an-agent-or-script).
+**Remove** takes them out again without touching your other settings, and a skill of your own by
+that name is left alone. In Codex, run `/hooks` once to trust them. Without
 hooks, tern guesses each agent's state from its output.
 
 Codex usage limits come from its session logs. Claude Code limits come from its status line, and
@@ -232,8 +242,123 @@ tern open . --command 'npm run dev'
 Finder's Services menu also offers **Open in tern**. External `tern://open?path=/absolute/path` URLs
 open folders and cannot execute commands.
 
+### Driving panes from an agent or script
+
+ternd keeps every window's layout, so an agent can open and drive panes with the app open or
+quit. Inside a tern pane, commands act on that pane by default; `--pane ID|NAME|@focused` or
+`--tab ID|NAME` picks another.
+
+```sh
+tern split down --name tests -- cargo test --watch   # prints the new pane's id
+tern tab ~/dev/api --name server -- 'npm run dev'
+tern send --pane server 'curl -s localhost:3000/health'
+tern wait --pane server --text 'listening on' --timeout 30
+tern wait --pane tests --prompt                    # back at a prompt, nothing typed since
+tern capture --pane tests --last-command
+tern run -- cargo clippy                           # prints its output, exits with its code
+tern close --pane server
+tern ls --json                                     # windows, folders, tabs, splits and sessions
+```
+
+New panes start in the background unless given `--focus`, and the pane header names the agent
+that opened one. `wait` also takes `--exit` and `--state idle|working|needs-you|done|failed`.
+Exit codes: 2 for bad arguments, 3 when no pane or tab matches, 4 when a name matches more than
+one, 5 on a timeout. `run` exits with its command's code.
+
+### Config file
+
+Settings live in `~/.config/tern/config` (or `$XDG_CONFIG_HOME/tern/config`), one `key = value`
+a line in Ghostty's style; a `#` starts a comment only at the beginning of a line. Settings writes
+to the file, changing only the lines it needs to, and your own edits apply as soon as you save it.
+A line tern can't use keeps the last good value and is listed in Settings → General, which also
+opens the file. On first launch tern moves the settings you had changed, your terminal settings and
+your launch presets there; the old files stay, for an older tern.
+
+```sh
+# graphite, midnight, ember, paper, or ghostty for your Ghostty config's colours
+theme = midnight
+# trailing or turning
+working-indicator = turning
+# manual or recent
+folder-order = recent
+# Repeat for more folders; `repo-root =` alone for none.
+repo-root = ~/dev
+# system, vscode, cursor or zed
+file-editor = zed
+global-hotkey = true
+tab-worktrees = false
+notify-needs-you = true
+notify-done = true
+notify-command-done = true
+resume-agents = true
+claude-account-usage = false
+check-app-updates = true
+download-app-updates = true
+install-updates-on-quit = true
+include-prereleases = true
+offer-agent-updates = true
+
+# The terminal, under Ghostty's own names. Only the keys given here override your Ghostty config.
+font-family = JetBrains Mono
+font-size = 14
+# block, bar, underline or block_hollow
+cursor-style = bar
+# false, true, left or right
+macos-option-as-alt = left
+# bytes, from 100000 to 1000000000
+scrollback-limit = 10000000
+keybind = ctrl+shift+c=copy_to_clipboard
+# An app command's title or id, then its keys or none.
+shortcut = New Tab = cmd+shift+y
+```
+
+Launch presets are JSON files in `~/.config/tern/presets/`, one a preset. ternd reads the
+`on-<event>`, `notify-ntfy`, `notify-events` and `away-after` keys described below from the same
+file. A private instance (`TERN_RUNTIME_DIR`) reads `config` and `presets/` in that folder and
+keeps its settings apart from the installed app's.
+
+### Events
+
+`tern watch` prints what happens in your panes as it happens; `--json` gives one object a line,
+and `--event` and `--pane` narrow it. The events are `needs-you`, `working`, `done` and `failed`
+(an agent's hooks or a program's OSC 7501 report), `command-done` and `command-failed` (a shell
+command, not counting ⌃C), `bell`, `start` and `exit`.
+
+To run a command on an event, add `on-<event>` lines to `~/.config/tern/config`. ternd runs
+them, so they work with the app quit:
+
+```sh
+# ~/.config/tern/config
+on-needs-you = say "$TERN_AGENT needs you"
+on-command-failed = osascript -e "display notification \"$TERN_COMMAND exited $TERN_EXIT_CODE\""
+```
+
+Each command runs through `/bin/sh` in your home folder with `TERN_EVENT`, `TERN_PANE`,
+`TERN_FOLDER`, `TERN_AGENT`, `TERN_PROGRAM`, `TERN_MESSAGE`, `TERN_COMMAND`, `TERN_EXIT_CODE`
+and `TERN_DURATION_MS` set where they apply, and the whole event as `TERN_EVENT_JSON`. A key can
+repeat to run several commands; an empty value drops the ones before it. A private instance reads
+`config` in its `TERN_RUNTIME_DIR` instead.
+
+### Notifications while you're away
+
+ternd can push to your phone through [ntfy](https://ntfy.sh) while you're away from the Mac: tern
+isn't the app in front, and the screen is locked or there has been no input for two minutes.
+
+```sh
+# ~/.config/tern/config
+notify-ntfy = https://ntfy.sh/a-topic-only-you-know
+# The default:
+notify-events = needs-you, done, failed
+# Seconds without input:
+away-after = 120
+```
+
+Only a title is sent, like "Claude Code needs you · api", never what the agent asked or a
+command line. Install the ntfy app and subscribe to the same topic. `on-<event>` commands also get
+`TERN_AWAY=1` while you're away, for any other service.
+
 Set `TERN_RUNTIME_DIR` to a short path (under about 100 characters) to run a private instance for
-testing. It keeps its own layout and spawns its own daemon without launchd.
+testing. It keeps its own layout and settings and spawns its own daemon without launchd.
 
 ## Known gaps
 
@@ -241,11 +366,10 @@ testing. It keeps its own layout and spawns its own daemon without launchd.
   running is typed at the prompt but not run. Full-screen programs like vim aren't saved while
   they're open.
 - Upgrading ternd ends the processes in your tabs.
+- When the CLI changes a window's layout at the same moment as you do, the CLI's change wins and
+  yours is undone.
 - A turn that ends without a Stop hook (an API error, or Esc while the model is writing) sends no
   "done" event. tern treats an agent that has been silent for five seconds as finished.
-- **Notifications don't work.** macOS refuses tern's permission request without showing a prompt.
-  A minimal test app gets the same refusal, so the cause seems to be how macOS treats locally built
-  apps. The Dock badge, Dock bounce and ⌘J still work.
 - **⌘C and ⌘V don't work inside Codex.** They work in a plain shell, and the keys do reach tern.
   The cause is unknown.
 - File-link clicking recognises whitespace-delimited paths. Select paths containing spaces and
@@ -265,8 +389,8 @@ tern has no account and no telemetry. It reaches the network to check npm for ag
 to check and download GitHub releases (every six hours unless you turn it off in Settings → Updates),
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
 
-Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, launch presets
-(environment values in plain text), saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.
+Your settings and launch presets (environment values in plain text) are in `~/.config/tern`,
+readable only by you. Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.
 Saved image and output files remain until you remove them from that folder.
 ternd keeps that folder readable only by you, and its socket refuses other users. Setting up hooks
 leaves a `.tern-backup` copy of each agent config it edits. See [SECURITY.md](SECURITY.md).

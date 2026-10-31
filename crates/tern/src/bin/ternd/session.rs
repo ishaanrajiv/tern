@@ -19,7 +19,8 @@ use tern::*;
 
 use crate::saved::{forget_saved, load_saved, restored_banner, SavedMeta, QUITTING};
 use crate::screen::snapshot;
-use crate::vt::Terminal;
+use crate::status::Records;
+use crate::vt::{Event, Terminal};
 
 const SCROLLBACK_LINES: usize = 10_000;
 pub static SCROLLBACK_BYTES: AtomicUsize = AtomicUsize::new(10_000_000);
@@ -136,9 +137,13 @@ pub struct SessionState {
     pub capture: super::command::CommandCapture,
     clients: Vec<Client>,
     pub last_output_ms: u64,
+    /// When something that could start a command was last typed into the session (see `runs_line`).
+    pub last_input_ms: u64,
     /// `last_output_ms` when the screen was last saved to disk.
     pub saved_output_ms: u64,
     pub agent: Option<AgentReport>,
+    /// What programs reported about themselves over OSC 7501.
+    pub status: Records,
     /// The foreground command, by its process, for shells without tern's integration.
     command: Option<String>,
     /// The last command that ran long enough to name the tab, from the shell integration.
@@ -178,12 +183,13 @@ fn session_info(s: &Session) -> SessionInfo {
     // Read terminal state under the lock, but query the OS for process details outside it.
     let fg = procinfo::foreground(s.master.as_raw_fd(), s.pid);
     let typed = shell::last_command(&s.id);
+    let last_command = typed.is_some().then(|| shell::last_line(&s.id)).flatten();
     let running = if typed.is_some() || fg.pid == s.pid || fg.agent.is_some() {
         None
     } else {
         procinfo::command_line(fg.pid).and_then(|c| shell::telling(&c))
     };
-    let (cols, rows, clients, title, bells, last_output_ms, report, command) = {
+    let (cols, rows, clients, title, bells, last_output_ms, report, command, status) = {
         let mut st = s.state.lock().unwrap();
         if running.is_some() {
             st.command = running;
@@ -198,8 +204,9 @@ fn session_info(s: &Session) -> SessionInfo {
         }
         let report = st.agent.as_ref().map(|a| (a.agent.clone(), a.state, a.at_ms, a.session.clone(), a.message.clone()));
         let (cols, rows) = st.screen.size();
-        (cols, rows, st.clients.len(), st.screen.title(), st.screen.bells(), st.last_output_ms, report, command)
+        (cols, rows, st.clients.len(), st.screen.title(), st.screen.bells(), st.last_output_ms, report, command, st.status.summary())
     };
+    let osc = status.as_ref().filter(|o| program_says(o.at_ms, report.as_ref().map(|r| r.2)));
     let cwd = fg.cwd.or_else(|| procinfo::process_cwd(s.pid)).or_else(|| s.start_cwd.clone());
     let git = cwd.as_deref().and_then(|d| procinfo::git_info(std::path::Path::new(d)));
     let st = s.state.lock().unwrap();
@@ -217,16 +224,32 @@ fn session_info(s: &Session) -> SessionInfo {
         last_output_ms,
         bells,
         agent: fg.agent.map(str::to_string).or_else(|| report.as_ref().map(|r| r.0.clone())),
-        agent_state: report.as_ref().map(|r| r.1),
-        agent_state_ms: report.as_ref().map_or(0, |r| r.2),
+        agent_state: osc.map(|o| o.state).or(report.as_ref().map(|r| r.1)),
+        agent_state_ms: osc.map(|o| o.at_ms).or(report.as_ref().map(|r| r.2)).unwrap_or(0),
         agent_session: report.as_ref().and_then(|r| r.3.clone()),
-        agent_message: report.and_then(|r| r.4),
+        agent_message: match osc {
+            Some(o) => o.message.clone(),
+            None => report.and_then(|r| r.4),
+        },
+        agent_kind: osc.and_then(|o| o.kind),
+        agent_progress: osc.and_then(|o| o.progress),
+        agent_osc: osc.is_some(),
+        program: status.as_ref().and_then(|o| o.app.clone()),
+        status_records: status.as_ref().map_or(0, |o| o.records),
         command,
         finished_ms: if st.capture.finished_ms > 0 { st.capture.finished_ms } else { shell::finished_ms(&s.id) },
         exit_code: st.capture.exit_code,
         duration_ms: st.capture.duration_ms,
         command_running: st.capture.running(),
+        input_ms: st.last_input_ms,
+        last_command,
     }
+}
+
+/// The newer of the hooks' report and the program's own OSC 7501 report says what it's
+/// doing. Only the hooks know the conversation to resume, so that comes from them either way.
+fn program_says(status_ms: u64, hook_ms: Option<u64>) -> bool {
+    hook_ms.is_none_or(|h| status_ms >= h)
 }
 
 pub fn list_sessions(sessions: &Sessions) -> Vec<SessionInfo> {
@@ -338,11 +361,16 @@ pub fn spawn_session(
     let mut screen = Terminal::new(cols, rows, SCROLLBACK_LINES);
     screen.set_scrollback_bytes(SCROLLBACK_BYTES.load(Ordering::Relaxed));
     // Lay the saved screen down before the new shell prints anything.
-    let restored = load_saved(id).map(|(meta, saved)| {
+    let mut status = Records::default();
+    let restored = load_saved(id).map(|(mut meta, saved)| {
         screen.write(&saved);
         screen.write(restored_banner(meta.saved_ms, cols).as_bytes());
+        status.restore(std::mem::take(&mut meta.status));
         meta
     });
+    // The old screen says nothing about what runs now.
+    screen.take_events();
+    screen.take_reply();
     let session = Arc::new(Session {
         id: id.to_string(),
         pid,
@@ -353,8 +381,10 @@ pub fn spawn_session(
             capture: super::command::CommandCapture::default(),
             clients: Vec::new(),
             last_output_ms: now_ms(),
+            last_input_ms: 0,
             saved_output_ms: 0,
             agent: None,
+            status,
             command: None,
             named: None,
         }),
@@ -397,9 +427,20 @@ fn pump_output(session: Arc<Session>, sessions: Sessions) {
                 st.capture.write(bytes);
                 let names_tab = st.capture.finished_ms != finished && st.capture.duration_ms.is_some_and(|d| d >= NAMES_TAB_MS);
                 st.screen.write(bytes);
-                st.last_output_ms = now_ms();
+                let now = now_ms();
+                st.last_output_ms = now;
+                for event in st.screen.take_events() {
+                    match event {
+                        Event::Status(report) => st.status.apply(report, now),
+                        Event::Prompt => st.status.prompt(),
+                    }
+                }
+                let reply = st.screen.take_reply();
                 st.clients.retain(|c| c.send(bytes));
                 drop(st);
+                if !reply.is_empty() {
+                    let _ = (&session.master).write_all(&reply);
+                }
                 // The command file still holds the line that just finished; the next is
                 // written only when another command starts.
                 if names_tab {
@@ -490,6 +531,7 @@ pub fn attach(session: Arc<Session>, mut reader: BufReader<UnixStream>, out: Uni
                 if master.write_all(&buf).is_err() {
                     break;
                 }
+                if runs_line(&buf) { session.state.lock().unwrap().last_input_ms = now_ms(); }
                 answer_prompt(&session, &buf);
             }
             Ok(Some(FRAME_RESIZE)) => {
@@ -524,18 +566,34 @@ pub fn type_when_ready(session: &Session, line: &str, enter: bool) {
             break;
         }
     }
-    let mut master = &session.master;
-    let _ = master.write_all(format!("{line}{}", if enter { "\r" } else { "" }).as_bytes());
+    let _ = write_input(session, format!("{line}{}", if enter { "\r" } else { "" }).as_bytes());
+}
+
+/// Types `data` as `tern send` does: like a keypress, except it doesn't count as the
+/// user having looked at the pane.
+pub fn write_input(session: &Session, data: &[u8]) -> std::io::Result<()> {
+    (&session.master).write_all(data)?;
+    if runs_line(data) { session.state.lock().unwrap().last_input_ms = now_ms(); }
+    Ok(())
+}
+
+/// Whether input could start a command: it has an Enter, or a pasted line break. The terminal's
+/// own reports (focus in and out, mouse, replies to queries) never do, so one arriving after a
+/// command finishes doesn't make `tern wait --prompt` wait for another.
+fn runs_line(input: &[u8]) -> bool {
+    input.contains(&b'\r') || input.contains(&b'\n')
 }
 
 /// A keypress (not a focus report or mouse event) while the agent waits on the
-/// user answers it. If the answer was "no", the agent goes quiet and the app
+/// user answers it, and says the user has seen what the pane reported. If the answer was "no", the agent goes quiet and the app
 /// stops showing it as working.
 fn answer_prompt(session: &Session, input: &[u8]) {
     if !(input.contains(&b'\r') || input.len() == 1) {
         return;
     }
     let mut st = session.state.lock().unwrap();
+    // Back at the terminal: what finished or failed there has been seen.
+    st.status.seen();
     if let Some(a) = st.agent.as_mut().filter(|a| a.state == AgentState::NeedsYou) {
         a.state = AgentState::Working;
         a.at_ms = now_ms();
@@ -558,6 +616,16 @@ fn resize_locked(session: &Session, st: &mut SessionState, cols: u16, rows: u16)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_input_that_could_run_a_line_counts() {
+        for report in [&b"\x1b[I"[..], b"\x1b[O", b"\x1b[?62;22c", b"\x1b[12;40R", b"\x1b]11;rgb:0000/0000/0000\x1b\\", b"\x1b[<0;10;5M", b"l"] {
+            assert!(!runs_line(report), "{report:?}");
+        }
+        for typed in [&b"ls\r"[..], b"\r", b"\x1b[200~a\nb\x1b[201~"] {
+            assert!(runs_line(typed), "{typed:?}");
+        }
+    }
 
     #[test]
     fn quick_commands_show_while_running_but_dont_name_the_tab() {
@@ -622,6 +690,14 @@ mod tests {
         thread::sleep(Duration::from_millis(50));
         queue.close();
         assert_eq!(waiting.join().unwrap(), None);
+    }
+
+    #[test]
+    fn the_newer_report_wins_between_hooks_and_the_program() {
+        assert!(program_says(5, None));
+        assert!(program_says(5, Some(5)));
+        assert!(program_says(6, Some(5)));
+        assert!(!program_says(4, Some(5)));
     }
 
     #[test]

@@ -25,9 +25,9 @@ struct SidebarView: View {
     let hints: ShortcutHints
     let layout: HeaderLayout
     let actions: SidebarActions
-    @AppStorage(Prefs.hooksPromptDismissed) private var hooksPromptDismissed = false
+    @AppStorage(Prefs.hooksPromptDismissed, store: Prefs.defaults) private var hooksPromptDismissed = false
     // Read so a change in Settings re-sorts the sidebar.
-    @AppStorage(Prefs.folderOrder) private var folderOrder = FolderOrder.manual.rawValue
+    @AppStorage(Prefs.folderOrder, store: Prefs.defaults) private var folderOrder = FolderOrder.manual.rawValue
 
     var body: some View {
         // Status depends on how long a session has been quiet, so re-evaluate every second.
@@ -161,7 +161,7 @@ private struct FolderHeader: View {
     let now: Date
     let actions: SidebarActions
     let hint: Int?
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
@@ -191,7 +191,8 @@ private struct FolderHeader: View {
                     Spinner(color: worst.1 == .working ? Palette.working : Palette.ring)
                         .frame(width: 12, height: 12)
                 } else {
-                    StatusIcon(status: worst.1, agent: workspace.agent(for: worst.0), turning: indicator == .turning)
+                    StatusIcon(status: worst.1, agent: workspace.agent(for: worst.0), program: workspace.program(for: worst.0),
+                               turning: indicator == .turning)
                 }
             }
             if waiting > 0 {
@@ -241,17 +242,19 @@ private struct TabRow: View {
     let now: Date
     let actions: SidebarActions
     let hint: String?
-    @AppStorage(Prefs.workingIndicator) private var indicator = WorkingIndicator.trailing
+    @AppStorage(Prefs.workingIndicator, store: Prefs.defaults) private var indicator = WorkingIndicator.trailing
     @State private var hovering = false
 
     var body: some View {
         let status = workspace.status(for: tab, now: now)
         let selected = tab.id == workspace.selectedTabID
         // Weight is for what wants you; selection shows in the background alone.
-        let emphasized = status == .needsYou || status == .doneUnread
+        let emphasized = status == .needsYou || status == .failed || status == .doneUnread
         let busy = status == .working || status == .starting
+        let progress = busy ? workspace.urgentSession(tab, now: now)?.agentProgress : nil
         HStack(spacing: 8) {
-            StatusIcon(status: status, agent: workspace.agent(for: tab), turning: indicator == .turning)
+            StatusIcon(status: status, agent: workspace.agent(for: tab), program: workspace.program(for: tab),
+                       turning: indicator == .turning)
             let title = workspace.title(for: tab)
             if workspace.renamingTabID == tab.id {
                 RenameField(initial: tab.name ?? title) { workspace.finishRename(tab.id, name: $0) }
@@ -295,6 +298,11 @@ private struct TabRow: View {
                 .buttonStyle(.plain)
                 .frame(minWidth: 22, alignment: .trailing)
                 .help("Close tab (\(ShortcutRegistry.label("tab.close")))")
+            } else if let progress {
+                ProgressRing(progress: progress, color: Palette.working)
+                    .frame(width: 12, height: 12)
+                    .frame(minWidth: 22, alignment: .trailing)
+                    .help("\(status.label) · \(progress)%")
             } else if indicator == .trailing, busy {
                 Spinner(color: status == .working ? Palette.working : Palette.ring)
                     .frame(width: 12, height: 12)
@@ -390,47 +398,69 @@ private struct KeyBadge: View {
     }
 }
 
-/// Session state as one 12pt glyph. Its shape says who: the agent's mark, or a circle for a
-/// shell. Colour says what: amber when it needs you, the working colour while it works, text
+/// Session state as one 12pt glyph. Its shape says who: the agent's mark, a rounded square for
+/// another program that reports its own status (OSC 7501), or a circle for a shell. Colour says
+/// what: amber when it needs you, red when it failed, the working colour while it works, text
 /// colour when done and unread, grey when idle, fainter when dormant. Solid means there's
 /// something for you to see.
 struct StatusIcon: View {
     let status: SessionStatus
     var agent: String?
+    /// The program that reported its status, shown when no agent runs.
+    var program: String?
     /// Turn while working; otherwise the glyph holds still and a Spinner shows elsewhere.
     var turning = false
 
     var body: some View {
+        let mark = program == nil || agent != nil ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
         Group {
             if let agent, status != .starting {
                 AgentGlyph(agent: agent, color: color, turning: turning && status == .working)
             } else {
                 switch status {
-                case .needsYou, .doneUnread:
-                    Circle().fill(color).frame(width: 8, height: 8)
+                case .needsYou, .failed, .doneUnread:
+                    mark.fill(color).frame(width: 8, height: 8)
                 case .working, .starting:
                     if turning {
                         Spinner(color: color)
                     } else {
-                        Circle().strokeBorder(color, lineWidth: 1.5).frame(width: 8.5, height: 8.5)
+                        mark.stroke(color, lineWidth: 1.5).frame(width: 7, height: 7)
                     }
                 case .idle, .dormant:
-                    Circle().strokeBorder(color, lineWidth: 1.25).frame(width: 7.5, height: 7.5)
+                    mark.stroke(color, lineWidth: 1.25).frame(width: 6.25, height: 6.25)
                 }
             }
         }
         .frame(width: 12, height: 12)
-        .help(agent.map { "\(agentName($0)) · \(status.label)" } ?? status.label)
+        .help((agent.map(agentName) ?? program).map { "\($0) · \(status.label)" } ?? status.label)
     }
 
     private var color: Color {
         switch status {
         case .needsYou: Palette.amber
+        case .failed: Palette.failed
         case .working: Palette.working
         case .doneUnread: Palette.text
         case .starting, .idle: Palette.ring
         case .dormant: Palette.ring.opacity(0.45)
         }
+    }
+}
+
+/// A ring filled to the percentage a program reported, in place of a Spinner.
+struct ProgressRing: View {
+    let progress: Int
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Palette.border, lineWidth: 1.5)
+            Circle().trim(from: 0, to: CGFloat(min(max(progress, 0), 100)) / 100)
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .padding(0.75)
+        .animation(Motion.animation(), value: progress)
     }
 }
 

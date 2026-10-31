@@ -164,13 +164,14 @@ enum FocusDirection { case left, right, up, down }
 
 /// Ordered by urgency: a tab shows its most urgent pane.
 enum SessionStatus: Int, Comparable {
-    case needsYou, working, doneUnread, starting, idle, dormant
+    case needsYou, failed, working, doneUnread, starting, idle, dormant
 
     static func < (a: Self, b: Self) -> Bool { a.rawValue < b.rawValue }
 
     var label: String {
         switch self {
         case .needsYou: "Needs you"
+        case .failed: "Failed"
         case .working: "Working"
         case .doneUnread: "Done"
         case .starting: "Starting"
@@ -198,6 +199,24 @@ nonisolated struct AgentRef: Codable, Equatable, Sendable {
 
 /// UserDefaults keys for the settings window.
 enum Prefs {
+    /// Where settings live while tern runs. The config file is their source (see ConfigStore), copied
+    /// here so the app reads them as it always has. A private instance (`TERN_RUNTIME_DIR`) keeps
+    /// its own, emptied at launch, so its config never changes the installed app's settings.
+    /// UserDefaults is thread-safe, though not marked Sendable.
+    nonisolated(unsafe) static let defaults: UserDefaults = {
+        guard ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] != nil,
+              let suite = UserDefaults(suiteName: privateSuite) else { return .standard }
+        suite.removePersistentDomain(forName: privateSuite)
+        return suite
+    }()
+    nonisolated static let privateSuite = "dev.tern.Tern.private"
+    /// The persistent domain `defaults` writes to, which settings are migrated from.
+    nonisolated static var domain: String {
+        defaults == .standard ? Bundle.main.bundleIdentifier ?? "dev.tern.Tern" : privateSuite
+    }
+
+    static let globalHotkey = "globalHotkey"
+    static let fileEditor = "fileEditor"
     static let notifyNeedsYou = "notifyNeedsYou"
     static let notifyCommandDone = "notifyCommandDone"
     static let notifyDone = "notifyDone"
@@ -221,8 +240,8 @@ enum Prefs {
     static let offerAgentUpdates = "offerAgentUpdates"
 
     static func registerDefaults() {
-        UserDefaults.standard.register(defaults: [
-            notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
+        defaults.register(defaults: [
+            globalHotkey: false, fileEditor: "system", notifyNeedsYou: true, notifyDone: true, notifyCommandDone: true, worktrees: false, resumeAgents: true,
             folderOrder: FolderOrder.manual.rawValue, repoRoots: "~/dev", theme: Theme.defaultID,
             claudeAccountUsage: false, workingIndicator: WorkingIndicator.trailing.rawValue,
             // Every release is an alpha prerelease for now.
@@ -233,8 +252,8 @@ enum Prefs {
 
     /// The repository folders, one per line (older builds separated them with commas).
     static var repoRootList: [String] {
-        get { parseRoots(UserDefaults.standard.string(forKey: repoRoots) ?? "") }
-        set { UserDefaults.standard.set(joinRoots(newValue), forKey: repoRoots) }
+        get { parseRoots(Prefs.defaults.string(forKey: repoRoots) ?? "") }
+        set { Prefs.defaults.set(joinRoots(newValue), forKey: repoRoots) }
     }
 
     static func parseRoots(_ text: String) -> [String] {
@@ -248,14 +267,19 @@ enum Prefs {
     }
 
     static var order: FolderOrder {
-        FolderOrder(rawValue: UserDefaults.standard.string(forKey: folderOrder) ?? "") ?? .manual
+        FolderOrder(rawValue: Prefs.defaults.string(forKey: folderOrder) ?? "") ?? .manual
     }
 }
 
 @Observable
 final class Workspace {
     let storageURL: URL
-    init(storageURL: URL = Workspace.layoutURL) { self.storageURL = storageURL }
+    /// The window whose layout this is. ternd keeps it (in `storageURL`) and applies the CLI's
+    /// changes to it; without one, as in tests, the layout is only ever the file.
+    let window: String?
+    /// The revision of ternd's layout this one is based on. Only touched on `saveQueue`.
+    private let revision = LayoutRevision()
+    init(storageURL: URL = Workspace.layoutURL, window: String? = nil) { self.storageURL = storageURL; self.window = window }
     nonisolated private static let saveQueue = DispatchQueue(label: "tern.layout-save")
     private(set) var projects: [Project] = []
     var selectedTabID: String?
@@ -279,6 +303,10 @@ final class Workspace {
     /// The agent conversation last seen in each pane, so it can be resumed after a reboot.
     private var paneAgent: [String: AgentRef] = [:]
     private var paneRemote: [String: RemoteConnection] = [:]
+    /// Names given with `tern split --name`, which the CLI addresses panes by.
+    private var paneName: [String: String] = [:]
+    /// The agent or program that opened a pane from the CLI.
+    private var paneOpener: [String: String] = [:]
     /// Lines to type into a new pane's shell when it starts (`codex update`).
     @ObservationIgnored private var pendingLines: [String: String] = [:]
     /// When each folder was last used in tern, for the folder picker and recent-first order.
@@ -395,6 +423,23 @@ final class Workspace {
         return status(pane: pane, visible: tab.map(isVisible) ?? false, now: now)
     }
 
+    /// The program in a tab that reported its own status (OSC 7501), when no agent runs there.
+    func program(for tab: Tab) -> String? {
+        guard agent(for: tab) == nil else { return nil }
+        let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
+        return panes.lazy.compactMap { self.sessions[$0]?.program }.first
+    }
+
+    func program(pane: String) -> String? {
+        agent(pane: pane) == nil ? sessions[pane]?.program : nil
+    }
+
+    /// The session of the tab's most urgent pane, which says what the tab shows.
+    func urgentSession(_ tab: Tab, now: Date = Date()) -> SessionInfo? {
+        let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
+        return panes.min { status(pane: $0, now: now) < status(pane: $1, now: now) }.flatMap { sessions[$0] }
+    }
+
     /// The agent in one pane, or the one it ran before a restart.
     func agent(pane: String) -> String? {
         sessions[pane]?.agent ?? (sessions[pane] == nil ? paneAgent[pane]?.agent : nil)
@@ -407,18 +452,21 @@ final class Workspace {
         let nowMs = UInt64(max(0, now.timeIntervalSince1970 * 1000))
         let quiet = Double(nowMs &- min(nowMs, s.lastOutputMs)) / 1000
 
-        // Agents with hooks say what they're doing.
+        // Agents with hooks, and programs speaking OSC 7501, say what they're doing.
         if let state = s.agentState, let at = s.agentStateMs {
             let unseen = !visible && (seen.map { at > $0.agent } ?? false)
             switch state {
             case "needs_you":
                 return .needsYou
             case "working":
-                // A turn that ends without a Stop hook (an error, an interrupt) goes quiet: trust the silence.
-                if quiet < 5 || Double(nowMs &- min(nowMs, at)) / 1000 < 5 { return .working }
+                // A program's own report isn't repeated while it works. A hook turn that ends
+                // without a Stop hook (an error, an interrupt) goes quiet: trust the silence.
+                if s.agentOsc == true || quiet < 5 || Double(nowMs &- min(nowMs, at)) / 1000 < 5 { return .working }
                 return unseen ? .doneUnread : .idle
             case "done":
                 return unseen ? .doneUnread : .idle
+            case "failed":
+                return unseen ? .failed : .idle
             default:
                 return .idle
             }
@@ -443,7 +491,8 @@ final class Workspace {
     /// What the agent in this tab last said, if it's waiting on you or just finished.
     func agentMessage(_ tab: Tab) -> String? {
         let infos = tab.root.panes.compactMap { sessions[$0] }
-        return (infos.first { $0.agentState == "needs_you" } ?? infos.first { $0.id == tab.focusedPane })?.agentMessage
+        return (infos.first { $0.agentState == "needs_you" } ?? infos.first { $0.agentState == "failed" }
+            ?? infos.first { $0.id == tab.focusedPane })?.agentMessage
     }
 
     /// Time of the latest output in any of the tab's panes.
@@ -583,7 +632,7 @@ final class Workspace {
 
     @discardableResult
     func newSession(projectPath: String, cwd: String, worktree: Bool? = nil) -> Worktree.Failure? {
-        let wanted = worktree ?? UserDefaults.standard.bool(forKey: Prefs.worktrees)
+        let wanted = worktree ?? Prefs.defaults.bool(forKey: Prefs.worktrees)
         // The setting applies only where it can: inside a git repository.
         guard wanted, worktree == true || Worktree.mainRoot(of: cwd) != nil else {
             newTab(projectPath: projectPath, cwd: cwd)
@@ -665,6 +714,8 @@ final class Workspace {
             paneCwd[pane] = nil
             paneAgent[pane] = nil
             paneRemote[pane] = nil
+            paneName[pane] = nil
+            paneOpener[pane] = nil
             seen[pane] = nil
             changed()
             return
@@ -931,6 +982,7 @@ final class Workspace {
             .filter { $0.id != selectedTabID }
         let now = Date()
         let pick = order.first { status(for: $0, now: now) == .needsYou }
+            ?? order.first { status(for: $0, now: now) == .failed }
             ?? order.first { status(for: $0, now: now) == .doneUnread }
             ?? order.first { isUnread($0) }
         guard let pick else { return false }
@@ -1061,7 +1113,7 @@ final class Workspace {
         // pane can destroy its first relay before that relay has sent the attach.
         if sessions[pane] == nil, let line = pendingLines[pane] { return line }
         if sessions[pane] == nil, let remote = paneRemote[pane] { return remote.command() }
-        guard sessions[pane] == nil, let ref = paneAgent[pane], UserDefaults.standard.bool(forKey: Prefs.resumeAgents) else { return nil }
+        guard sessions[pane] == nil, let ref = paneAgent[pane], Prefs.defaults.bool(forKey: Prefs.resumeAgents) else { return nil }
         return Self.resumeCommand(agent: ref.agent, session: ref.session)
     }
 
@@ -1088,6 +1140,10 @@ final class Workspace {
     }
 
     func remote(for pane: String) -> RemoteConnection? { paneRemote[pane] }
+    /// The name a pane was given from the CLI.
+    func name(pane: String) -> String? { paneName[pane] }
+    /// Who opened a pane from the CLI: "claude", "codex" or a program's name.
+    func opener(pane: String) -> String? { paneOpener[pane] }
 
     func openRemote(_ remote: RemoteConnection) throws {
         try remote.validate()
@@ -1146,6 +1202,8 @@ final class Workspace {
         var paneRemote: [String: RemoteConnection]? = nil
         var detachedPanes: [String]? = nil
         var closedTabs: [ClosedTab]? = nil
+        var paneName: [String: String]? = nil
+        var paneOpener: [String: String]? = nil
     }
 
     /// With TERN_RUNTIME_DIR set (a private ternd for testing), everything tern keeps goes there instead.
@@ -1162,12 +1220,28 @@ final class Workspace {
     /// Reads what it can: a folder, tab or field that doesn't decode is skipped, not the
     /// whole file. Anything lost that way is kept aside first, since the next save overwrites it.
     func load(excluding occupied: Set<String> = []) {
-        guard let data = try? Data(contentsOf: storageURL) else { return }
+        guard let data = readLayout() else { return }
         let (saved, dropped) = Self.decodeLayout(data)
         if saved == nil || dropped > 0 || saved?.version != Self.layoutVersion {
             Self.keepAside(data, url: storageURL, reason: saved == nil ? "unreadable" : "v\(saved?.version ?? 0)")
         }
         guard let saved else { return }
+        if apply(saved, excluding: occupied) { Self.keepAside(data, url: storageURL, reason: "duplicate-sessions") }
+    }
+
+    /// The window's layout from ternd, or from the file while ternd isn't running. A file
+    /// ternd couldn't parse is read here too, so it's kept aside before being replaced.
+    private func readLayout() -> Data? {
+        if let window, let (doc, rev) = TernClient.layout(window: window) {
+            let revision = revision
+            Self.saveQueue.sync { revision.rev = rev }
+            if let doc { return doc }
+        }
+        return try? Data(contentsOf: storageURL)
+    }
+
+    /// Takes on a layout; true if a tab was dropped for sharing panes with another.
+    private func apply(_ saved: Saved, excluding occupied: Set<String>) -> Bool {
         var owned = occupied, tabIDs = Set<String>(), skipped = false
         projects = saved.projects.compactMap { project in
             var project = project
@@ -1179,7 +1253,6 @@ final class Workspace {
             }
             return project.tabs.isEmpty ? nil : project
         }
-        if skipped { Self.keepAside(data, url: storageURL, reason: "duplicate-sessions") }
         for i in projects.indices { projects[i].numberTabs() }
         detachedPanes = Set(saved.detachedPanes ?? [])
         closedTabs = Array((saved.closedTabs ?? []).prefix(20))
@@ -1190,12 +1263,51 @@ final class Workspace {
         paneCwd = saved.paneCwd.filter { panes.contains($0.key) }
         paneAgent = (saved.paneAgent ?? [:]).filter { panes.contains($0.key) }
         paneRemote = (saved.paneRemote ?? [:]).filter { panes.contains($0.key) }
+        paneName = (saved.paneName ?? [:]).filter { panes.contains($0.key) }
+        paneOpener = (saved.paneOpener ?? [:]).filter { panes.contains($0.key) }
         // Folders not used for 90 days drop out of the picker's recents.
         recents = (saved.recents ?? [:]).filter { $0.value.timeIntervalSinceNow > -90 * 86400 }
         for p in projects.indices {
             for t in projects[p].tabs.indices { projects[p].tabs[t].zoomed = false }
         }
+        return skipped
     }
+
+    /// ternd says this window's layout changed: the CLI split a pane, opened a tab or closed one.
+    func layoutChanged(rev: UInt64, doc: Data, by writer: String) {
+        guard writer != Self.writer else { return }
+        let revision = revision
+        Self.saveQueue.async { [weak self] in
+            guard rev > revision.rev else { return }
+            revision.rev = rev
+            DispatchQueue.main.async { [weak self] in self?.adopt(doc) }
+        }
+    }
+
+    /// After (re)connecting to ternd, catches up on changes made while it was out of reach.
+    func refreshLayout() {
+        guard let window else { return }
+        let revision = revision
+        Self.saveQueue.async { [weak self] in
+            guard let (doc, rev) = TernClient.layout(window: window), rev != revision.rev else { return }
+            revision.rev = rev
+            if let doc { DispatchQueue.main.async { [weak self] in self?.adopt(doc) } }
+        }
+    }
+
+    /// Shows a layout someone else wrote, keeping what only this window knows: which tabs are zoomed.
+    private func adopt(_ doc: Data) {
+        guard let saved = Self.decodeLayout(doc).0 else { return }
+        let zoomed = Set(allTabs.filter(\.zoomed).map(\.id))
+        _ = apply(saved, excluding: [])
+        for p in projects.indices {
+            for t in projects[p].tabs.indices where zoomed.contains(projects[p].tabs[t].id) { projects[p].tabs[t].zoomed = true }
+        }
+        changed()
+    }
+
+    /// Who this app is in ternd's layout updates, to skip its own.
+    nonisolated static let writer = "app-\(getpid())"
 
     /// The saved layout, and how many folders, tabs or fields in it didn't decode.
     static func decodeLayout(_ data: Data) -> (Saved?, dropped: Int) {
@@ -1231,12 +1343,31 @@ final class Workspace {
 
     func save() {
         let saved = Saved(version: Self.layoutVersion, projects: projects, selectedTabID: selectedTabID, paneCwd: paneCwd,
-                          paneAgent: paneAgent, recents: recents, paneRemote: paneRemote, detachedPanes: Array(detachedPanes).sorted(), closedTabs: closedTabs)
+                          paneAgent: paneAgent, recents: recents, paneRemote: paneRemote, detachedPanes: Array(detachedPanes).sorted(), closedTabs: closedTabs,
+                          paneName: paneName.isEmpty ? nil : paneName, paneOpener: paneOpener.isEmpty ? nil : paneOpener)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         guard let data = try? encoder.encode(saved) else { return }
-        let url = storageURL
-        Self.saveQueue.async {
+        let url = storageURL, window = window, revision = revision
+        Self.saveQueue.async { [weak self] in
+            if let window {
+                switch TernClient.putLayout(window: window, base: revision.rev, doc: data, by: Self.writer) {
+                case .saved(let rev):
+                    revision.rev = rev
+                    return
+                case .changed(let rev, let doc):
+                    // The CLI got there first; its change stands and this one is dropped.
+                    revision.rev = rev
+                    NSLog("tern: the layout changed in ternd; showing its version")
+                    if let doc { DispatchQueue.main.async { [weak self] in self?.adopt(doc) } }
+                    return
+                case .failed(let error):
+                    NSLog("tern: couldn't save layout: %@", error)
+                    return
+                case .unreachable:
+                    break // ternd isn't running, so the file is ours to write.
+                }
+            }
             do {
                 try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
                 try data.write(to: url, options: .atomic)
@@ -1244,6 +1375,11 @@ final class Workspace {
             } catch { NSLog("tern: couldn't save layout: %@", error.localizedDescription) }
         }
     }
+}
+
+/// Which of ternd's layout revisions a workspace's layout is based on.
+nonisolated final class LayoutRevision: @unchecked Sendable {
+    var rev: UInt64 = 0
 }
 
 // MARK: Forgiving decoding
@@ -1313,7 +1449,7 @@ extension Project {
 }
 
 extension Workspace.Saved {
-    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents, paneRemote, detachedPanes, closedTabs }
+    private enum CodingKeys: String, CodingKey { case version, projects, selectedTabID, paneCwd, paneAgent, recents, paneRemote, detachedPanes, closedTabs, paneName, paneOpener }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -1326,5 +1462,7 @@ extension Workspace.Saved {
         recents = c.lenient([String: Date].self, .recents, decoder: decoder)
         detachedPanes = c.lenient([String].self, .detachedPanes, decoder: decoder)
         closedTabs = c.lossyArray(ClosedTab.self, .closedTabs, decoder: decoder)
+        paneName = c.lenient([String: String].self, .paneName, decoder: decoder)
+        paneOpener = c.lenient([String: String].self, .paneOpener, decoder: decoder)
     }
 }

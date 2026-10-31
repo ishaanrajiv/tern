@@ -9,7 +9,7 @@ struct ShortcutSheet: View {
     @FocusState private var searching: Bool
 
     private var sections: [ShortcutRegistry.Section] {
-        let all = ShortcutRegistry.cheatSheet(globalHotkey: UserDefaults.standard.bool(forKey: "globalHotkey"))
+        let all = ShortcutRegistry.cheatSheet(globalHotkey: Prefs.defaults.bool(forKey: Prefs.globalHotkey))
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return all }
         return all.compactMap { section in

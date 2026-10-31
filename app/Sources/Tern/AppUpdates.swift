@@ -249,7 +249,7 @@ nonisolated enum UpdateInstaller {
     }
 
     private func scheduledCheck() {
-        guard UserDefaults.standard.bool(forKey: Prefs.checkAppUpdates) else { return }
+        guard Prefs.defaults.bool(forKey: Prefs.checkAppUpdates) else { return }
         check(interactive: false)
     }
 
@@ -288,12 +288,12 @@ nonisolated enum UpdateInstaller {
         // Restart to Update was chosen while the list loaded.
         guard phase != .installing else { return }
         release = Self.newest(in: releases, current: current,
-                              prereleases: UserDefaults.standard.bool(forKey: Prefs.includePrereleases))
+                              prereleases: Prefs.defaults.bool(forKey: Prefs.includePrereleases))
         // A newer release, or prereleases turned off, replaces what was staged.
         if staged != nil, stagedTag != release?.tag_name { discardStaged() }
         if staged != nil { phase = .ready; return }
         phase = .idle
-        if release != nil, interactive || UserDefaults.standard.bool(forKey: Prefs.downloadAppUpdates) {
+        if release != nil, interactive || Prefs.defaults.bool(forKey: Prefs.downloadAppUpdates) {
             download(interactive: interactive)
         }
     }
@@ -362,7 +362,7 @@ nonisolated enum UpdateInstaller {
 
     /// Called as tern quits.
     func installOnQuit() {
-        guard UserDefaults.standard.bool(forKey: Prefs.installAppUpdatesOnQuit),
+        guard Prefs.defaults.bool(forKey: Prefs.installAppUpdatesOnQuit),
               phase == .ready, let tag = release?.tag_name, !UpdateDismissals().isHidden(.app, version: tag) else { return }
         install(relaunch: false)
     }

@@ -86,7 +86,7 @@ struct QuickSetting: Identifiable {
             QuickSetting(section: "General", title: "New tabs use worktrees", symbol: "arrow.triangle.branch",
                          control: toggle(Prefs.worktrees)),
             QuickSetting(section: "General", title: "Open file links with", symbol: "doc.text",
-                         control: defaults("fileEditor", [("system", "Default app"), ("vscode", "VS Code"),
+                         control: defaults(Prefs.fileEditor, [("system", "Default app"), ("vscode", "VS Code"),
                                                           ("cursor", "Cursor"), ("zed", "Zed")])),
             QuickSetting(section: "General", title: "All settings…", symbol: "gearshape",
                          control: .action(shortcut: settingsShortcut, run: openSettings)),
@@ -94,12 +94,12 @@ struct QuickSetting: Identifiable {
     }
 
     private static func defaults(_ key: String, _ options: [(value: String, label: String)]) -> Control {
-        .choice(options, get: { UserDefaults.standard.string(forKey: key) ?? options[0].value },
-                set: { UserDefaults.standard.set($0, forKey: key) })
+        .choice(options, get: { Prefs.defaults.string(forKey: key) ?? options[0].value },
+                set: { Prefs.defaults.set($0, forKey: key) })
     }
 
     private static func toggle(_ key: String) -> Control {
-        .toggle(get: { UserDefaults.standard.bool(forKey: key) }, set: { UserDefaults.standard.set($0, forKey: key) })
+        .toggle(get: { Prefs.defaults.bool(forKey: key) }, set: { Prefs.defaults.set($0, forKey: key) })
     }
 
     /// Changes the terminal settings file, as the Settings window does. A value the palette offers
