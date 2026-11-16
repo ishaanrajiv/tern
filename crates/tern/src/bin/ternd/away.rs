@@ -4,51 +4,72 @@
 //! has been no keyboard or mouse input for a while (`away-after`, two minutes by default).
 //! Only a title is sent, like "Claude Code needs you · api": never what the agent said,
 //! since the push service sees it.
+//!
+//! ternd on another device (a Linux server whose folders the app shows) can't see whether
+//! you're at a screen, so there you always count as away: `notify-ntfy` set in that device's
+//! config pushes every event it lists.
 
 use std::process::{Command, Stdio};
 
 use tern::config::Config;
 use tern::Event;
 
-const BUNDLE_ID: &str = "dev.tern.Tern";
 /// Events pushed when `notify-events` doesn't say.
 const DEFAULT_EVENTS: &[&str] = &["needs-you", "done", "failed"];
 
-#[link(name = "CoreGraphics", kind = "framework")]
-unsafe extern "C" {
-    fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+#[cfg(target_os = "macos")]
+mod presence {
+    use super::*;
+
+    const BUNDLE_ID: &str = "dev.tern.Tern";
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    unsafe extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, event_type: u32) -> f64;
+    }
+
+    /// Seconds since the last keyboard, mouse or trackpad input anywhere in the session.
+    pub fn idle_seconds() -> f64 {
+        // kCGEventSourceStateHIDSystemState and kCGAnyInputEventType.
+        unsafe { CGEventSourceSecondsSinceLastEventType(1, u32::MAX) }
+    }
+
+    fn output(program: &str, args: &[&str]) -> Option<String> {
+        let out = Command::new(program).args(args).stderr(Stdio::null()).output().ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// The console session says its screen is locked.
+    fn screen_locked() -> bool {
+        output("/usr/sbin/ioreg", &["-n", "Root", "-d1", "-a"]).is_some_and(|plist| locked_in(&plist))
+    }
+
+    pub fn locked_in(plist: &str) -> bool {
+        let compact: String = plist.split_whitespace().collect();
+        compact.contains("<key>CGSSessionScreenIsLocked</key><true/>")
+    }
+
+    fn tern_in_front() -> bool {
+        let Some(front) = output("/usr/bin/lsappinfo", &["front"]) else { return false };
+        output("/usr/bin/lsappinfo", &["info", "-only", "bundleid", front.trim()]).is_some_and(|info| info.contains(BUNDLE_ID))
+    }
+
+    pub fn away(after: f64) -> bool {
+        !tern_in_front() && (screen_locked() || idle_seconds() >= after)
+    }
 }
 
-/// Seconds since the last keyboard, mouse or trackpad input anywhere in the session.
-fn idle_seconds() -> f64 {
-    // kCGEventSourceStateHIDSystemState and kCGAnyInputEventType.
-    unsafe { CGEventSourceSecondsSinceLastEventType(1, u32::MAX) }
-}
-
-fn output(program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program).args(args).stderr(Stdio::null()).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// The console session says its screen is locked.
-fn screen_locked() -> bool {
-    output("/usr/sbin/ioreg", &["-n", "Root", "-d1", "-a"]).is_some_and(|plist| locked_in(&plist))
-}
-
-fn locked_in(plist: &str) -> bool {
-    let compact: String = plist.split_whitespace().collect();
-    compact.contains("<key>CGSSessionScreenIsLocked</key><true/>")
-}
-
-fn tern_in_front() -> bool {
-    let Some(front) = output("/usr/bin/lsappinfo", &["front"]) else { return false };
-    output("/usr/bin/lsappinfo", &["info", "-only", "bundleid", front.trim()]).is_some_and(|info| info.contains(BUNDLE_ID))
+#[cfg(not(target_os = "macos"))]
+mod presence {
+    pub fn away(_after: f64) -> bool {
+        true
+    }
 }
 
 /// Whether you're away now, by the config's `away-after` (seconds).
 pub fn away(config: &Config) -> bool {
     let after = config.get("away-after").and_then(|s| s.parse::<f64>().ok()).filter(|s| *s >= 0.0).unwrap_or(120.0);
-    !tern_in_front() && (screen_locked() || idle_seconds() >= after)
+    presence::away(after)
 }
 
 /// Whether the config wants `event` pushed while away.
@@ -92,7 +113,8 @@ pub fn push(config: &Config, e: &Event) {
         eprintln!("notify-ntfy must be an http(s) URL, like https://ntfy.sh/your-topic");
         return;
     }
-    let mut curl = Command::new("/usr/bin/curl");
+    // Off a Mac, curl is wherever the distribution keeps it.
+    let mut curl = Command::new(if cfg!(target_os = "macos") { "/usr/bin/curl" } else { "curl" });
     curl.args(["-fsS", "-m", "10", "-H", "Tags: tern", "--data-binary", &title(e), "--", url]).stdin(Stdio::null()).stdout(Stdio::null());
     match curl.spawn() {
         Ok(mut child) => { std::thread::spawn(move || {
@@ -127,15 +149,18 @@ mod tests {
         assert!(!wanted(&some, "done"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_locked_screen_reads_from_the_console_plist() {
+        use presence::locked_in;
         assert!(locked_in("<dict>\n\t<key>CGSSessionScreenIsLocked</key>\n\t<true/>\n</dict>"));
         assert!(!locked_in("<dict><key>CGSSessionScreenIsLocked</key><false/></dict>"));
         assert!(!locked_in("<dict></dict>"));
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn idle_time_comes_back() {
-        assert!(idle_seconds() >= 0.0);
+        assert!(presence::idle_seconds() >= 0.0);
     }
 }

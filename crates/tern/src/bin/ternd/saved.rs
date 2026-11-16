@@ -98,6 +98,8 @@ pub fn restored_banner(saved_ms: u64, cols: u16) -> String {
 
 fn local_time(ms: u64) -> String {
     use nix::libc;
+    // 64-bit on every target tern builds for; the libc crate warns about 32-bit musl.
+    #[allow(deprecated)]
     let t = (ms / 1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     let mut buf = [0u8; 64];

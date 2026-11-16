@@ -148,10 +148,14 @@ pub fn stable_binary() -> Result<PathBuf> {
     Ok(crate::runtime_dir().join("bin/tern"))
 }
 
-/// Points the stable path at this binary.
+/// Points the stable path at this binary, or at the `tern` beside it when ternd sets up hooks
+/// (on a device, for the app's Settings → Devices).
 pub fn link_binary() -> Result<PathBuf> {
     let link = stable_binary()?;
-    let exe = std::env::current_exe()?.canonicalize()?;
+    let mut exe = std::env::current_exe()?.canonicalize()?;
+    if exe.file_name().is_some_and(|n| n == "ternd") {
+        exe = exe.with_file_name("tern");
+    }
     if std::fs::read_link(&link).ok().as_deref() == Some(exe.as_path()) {
         return Ok(link);
     }
@@ -465,10 +469,10 @@ mod tests {
 
     #[test]
     fn hook_paths_are_quoted_for_the_shell() {
-        with_home(|home| {
+        with_home(|_| {
             let cmd = command("claude").unwrap();
             assert!(cmd.starts_with('\''), "{cmd}");
-            assert_eq!(cmd, format!("'{}' hook claude", home.join("Library/Application Support/tern/bin/tern").display()));
+            assert_eq!(cmd, format!("'{}' hook claude", crate::runtime_dir().join("bin/tern").display()));
             assert!(is_our_command(&cmd, "hook claude"));
             assert!(is_our_command(&statusline_command().unwrap(), "statusline"));
         });

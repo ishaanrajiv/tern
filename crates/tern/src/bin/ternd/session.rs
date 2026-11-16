@@ -325,22 +325,23 @@ pub fn spawn_session(
     let master = File::from(pty.master);
     let slave: OwnedFd = pty.slave;
 
+    let shell = shell::login_shell();
     let mut command = match &cmd {
         Some(c) => {
             let mut c2 = Command::new("/bin/sh");
             c2.arg("-c").arg(c);
             c2
         }
-        None => {
-            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-            Command::new(&shell)
-        }
+        None => Command::new(&shell),
     };
-    if let Some(dir) = &cwd {
-        command.current_dir(dir);
+    // A folder that's gone starts the shell at home instead of failing.
+    match cwd.as_ref().filter(|d| std::path::Path::new(d).is_dir()) {
+        Some(dir) => { command.current_dir(dir); }
+        None => if let Some(home) = std::env::var_os("HOME") { command.current_dir(home); },
     }
+    let env = shell::terminal_env(env);
     command.envs(env.clone()).env("TERN_SESSION_ID", id);
-    if cmd.is_none() { shell::configure(&mut command, &std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into()), &env); }
+    if cmd.is_none() { shell::configure(&mut command, &shell, &env); }
     let commands = shell::command_file(id);
     let _ = std::fs::remove_file(&commands);
     let _ = std::fs::remove_file(shell::finished_file(id));

@@ -127,6 +127,60 @@ if functions -q fish_prompt
 end
 "#;
 
+/// The shell sessions run: `$SHELL`, else the user's login shell from the password database
+/// (ternd started over SSH by a non-interactive command may have no `$SHELL`).
+pub fn login_shell() -> String {
+    if let Some(shell) = std::env::var("SHELL").ok().filter(|s| s.starts_with('/')) {
+        return shell;
+    }
+    nix::unistd::User::from_uid(nix::unistd::getuid())
+        .ok()
+        .flatten()
+        .map(|u| u.shell.display().to_string())
+        .filter(|s| s.starts_with('/') && Path::new(s).exists())
+        .unwrap_or_else(|| if Path::new("/bin/zsh").exists() { "/bin/zsh" } else { "/bin/sh" }.into())
+}
+
+/// A session's environment, with `TERM` one this machine knows. The app's terminal is
+/// `xterm-ghostty`; a device without that terminfo entry gets `xterm-256color`, which Ghostty
+/// also speaks, rather than programs that can't draw. A `TERMINFO` that isn't here is dropped.
+pub fn terminal_env(env: Vec<(String, String)>) -> Vec<(String, String)> {
+    let terminfo = env.iter().find(|(k, _)| k == "TERMINFO").map(|(_, v)| PathBuf::from(v)).filter(|p| p.is_dir());
+    let mut env: Vec<(String, String)> = env.into_iter().filter(|(k, _)| k != "TERMINFO").collect();
+    if let Some(dir) = &terminfo {
+        env.push(("TERMINFO".into(), dir.display().to_string()));
+    }
+    for (key, value) in env.iter_mut() {
+        if key == "TERM" && value != "xterm-256color" && !knows_terminal(value, terminfo.as_deref()) {
+            *value = "xterm-256color".into();
+        }
+    }
+    env
+}
+
+/// Whether a terminfo entry for `term` is where ncurses looks: `$TERMINFO`, `~/.terminfo`,
+/// `$TERMINFO_DIRS`, then the system folders. Entries sit under their first letter, or its hex
+/// code on macOS (`78/xterm-ghostty`).
+pub fn knows_terminal(term: &str, terminfo: Option<&Path>) -> bool {
+    let Some(first) = term.chars().next() else { return false };
+    if term.contains('/') {
+        return false;
+    }
+    let mut dirs: Vec<PathBuf> = terminfo.map(Path::to_path_buf).into_iter().collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        dirs.push(PathBuf::from(home).join(".terminfo"));
+    }
+    if let Some(list) = std::env::var_os("TERMINFO_DIRS") {
+        dirs.extend(std::env::split_paths(&list).filter(|p| !p.as_os_str().is_empty()));
+    }
+    for dir in ["/etc/terminfo", "/lib/terminfo", "/usr/share/terminfo", "/usr/lib/terminfo", "/usr/local/share/terminfo",
+                "/opt/homebrew/share/terminfo", "/usr/share/lib/terminfo"] {
+        dirs.push(dir.into());
+    }
+    let hex = format!("{:02x}", first as u32);
+    dirs.iter().any(|d| d.join(first.to_string()).join(term).is_file() || d.join(&hex).join(term).is_file())
+}
+
 /// Configure only the shell being spawned; user dotfiles are never edited.
 pub fn configure(command: &mut std::process::Command, shell: &str, env: &[(String, String)]) {
     let dir = std::path::absolute(runtime_dir()).unwrap_or_else(|_| runtime_dir());
@@ -239,7 +293,8 @@ mod tests {
         std::fs::create_dir_all(root.join("commands")).unwrap();
         std::fs::write(root.join(".zshrc"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
         std::fs::write(root.join(".bash_profile"), "printf 'USER-STARTUP\\n'\nPS1='test> '\n").unwrap();
-        let mut shells = vec![("/bin/zsh".to_string(), false), ("/bin/bash".to_string(), false)];
+        let mut shells: Vec<(String, bool)> =
+            ["/bin/zsh", "/bin/bash"].into_iter().filter(|s| std::path::Path::new(s).exists()).map(|s| (s.to_string(), false)).collect();
         // Exercise PS0 with an existing DEBUG trap when modern bash is available.
         if let Ok(shell) = std::env::var("TERN_TEST_BASH") { shells.push((shell, true)); }
         for (shell, debug_trap) in shells {
@@ -288,6 +343,29 @@ mod tests {
         }
         std::env::remove_var("TERN_RUNTIME_DIR");
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_unknown_terminal_falls_back_to_one_ghostty_speaks() {
+        let env = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let out = super::terminal_env(env(&[("TERM", "xterm-tern-test-none"), ("COLORTERM", "truecolor")]));
+        assert_eq!(out, env(&[("TERM", "xterm-256color"), ("COLORTERM", "truecolor")]));
+        // A TERMINFO folder this machine has is kept and searched; one it hasn't is dropped.
+        let dir = std::env::temp_dir().join(format!("tern-terminfo-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("78")).unwrap();
+        std::fs::write(dir.join("78/xterm-tern-test"), b"").unwrap();
+        let dir_text = dir.display().to_string();
+        let out = super::terminal_env(env(&[("TERM", "xterm-tern-test"), ("TERMINFO", &dir_text)]));
+        assert_eq!(out, env(&[("TERM", "xterm-tern-test"), ("TERMINFO", &dir_text)]));
+        let out = super::terminal_env(env(&[("TERM", "xterm-256color"), ("TERMINFO", "/nonexistent/terminfo")]));
+        assert_eq!(out, env(&[("TERM", "xterm-256color")]));
+        assert!(!super::knows_terminal("../../x", Some(&dir)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_login_shell_is_always_found() {
+        assert!(super::login_shell().starts_with('/'));
     }
 
     #[test]
