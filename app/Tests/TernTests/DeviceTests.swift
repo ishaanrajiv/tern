@@ -81,6 +81,19 @@ final class DeviceTests: XCTestCase {
         XCTAssertEqual(w.title(for: try XCTUnwrap(w.allTabs.first { $0.id == remote.id })), "web")
     }
 
+    func testAFileOnADeviceOpensInTheEditorsSSHRemote() throws {
+        let ref = try XCTUnwrap(FileReference.parse("src/main.rs:42:8", cwd: "~/api", home: "/home/me", host: "me@devbox"))
+        XCTAssertEqual(ref.path, "/home/me/api/src/main.rs")
+        XCTAssertEqual(FileReference.parse("~/notes #1.md", cwd: "/srv", home: "/home/me", host: "devbox")?.path, "/home/me/notes #1.md")
+        XCTAssertEqual(ref.editorURL("vscode")?.absoluteString, "vscode://vscode-remote/ssh-remote+me@devbox/home/me/api/src/main.rs:42:8")
+        XCTAssertEqual(ref.editorURL("cursor")?.absoluteString, "cursor://vscode-remote/ssh-remote+me@devbox/home/me/api/src/main.rs:42:8")
+        XCTAssertEqual(ref.editorURL("zed")?.absoluteString, "zed://ssh/me@devbox/home/me/api/src/main.rs")
+        XCTAssertNil(ref.editorURL("system"))
+        // Without a line it still names a file, and odd characters stay in the path.
+        let plain = FileReference(path: "/srv/a #?.txt", line: nil, column: nil, host: "devbox")
+        XCTAssertEqual(plain.editorURL("vscode")?.absoluteString, "vscode://vscode-remote/ssh-remote+devbox/srv/a%20%23%3F.txt:1:1")
+    }
+
     func testOnlyThisMacsSessionsOnADeviceBecomeTabs() throws {
         let ours = Device.clientID
         XCTAssertTrue(Workspace.adoptable(try session("p-1", cwd: "/tmp", owner: nil)))

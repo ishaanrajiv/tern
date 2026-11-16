@@ -6,8 +6,11 @@ nonisolated struct FileReference: Equatable {
     let path: String
     let line: Int?
     let column: Int?
+    /// The device the file is on; nil on this Mac.
+    var host: String? = nil
 
-    static func parse(_ text: String, cwd: String) -> Self? {
+    /// `home` is what `~` means: a device's home for a path on a device.
+    static func parse(_ text: String, cwd: String, home: String = NSHomeDirectory(), host: String? = nil) -> Self? {
         let value = text.trimmingCharacters(in: CharacterSet(charactersIn: " \t\n\"'()[]{}<>.,;"))
         guard !value.contains("://"), !value.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { return nil }
         let regex = try! NSRegularExpression(pattern: #"^(.+?)(?::([1-9][0-9]*)(?::([1-9][0-9]*))?)?:?$"#)
@@ -15,17 +18,31 @@ nonisolated struct FileReference: Equatable {
         guard let match = regex.firstMatch(in: value, range: NSRange(location: 0, length: ns.length)) else { return nil }
         let raw = ns.substring(with: match.range(at: 1))
         guard !raw.isEmpty else { return nil }
-        let expanded = (raw as NSString).expandingTildeInPath
-        let path = (expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : URL(fileURLWithPath: cwd).appendingPathComponent(expanded)).standardized.path
+        let tilde = { (p: String) in p == "~" ? home : p.hasPrefix("~/") ? home + p.dropFirst() : p }
+        let expanded = tilde(raw)
+        let path = (expanded.hasPrefix("/") ? URL(fileURLWithPath: expanded) : URL(fileURLWithPath: tilde(cwd)).appendingPathComponent(expanded)).standardized.path
         let number = { (i: Int) -> Int? in
             let r = match.range(at: i)
             return r.location == NSNotFound ? nil : Int(ns.substring(with: r))
         }
-        return Self(path: path, line: number(2), column: number(3))
+        return Self(path: path, line: number(2), column: number(3), host: host)
     }
 
+    /// Editors opened by URL. Each also reaches a file on a device over SSH, through its own
+    /// remote support; the system's default app can't.
+    static let urlEditors: Set<String> = ["vscode", "cursor", "zed"]
+
     func editorURL(_ editor: String) -> URL? {
-        guard ["vscode", "cursor", "zed"].contains(editor) else { return nil }
+        guard Self.urlEditors.contains(editor) else { return nil }
+        if let host {
+            // VS Code and Cursor treat a remote path with a line as a file, not a folder.
+            let position = ":\(line ?? 1):\(column ?? 1)"
+            let allowed = CharacterSet.urlPathAllowed
+            guard let encoded = path.addingPercentEncoding(withAllowedCharacters: allowed),
+                  let target = host.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed.union(["@"])) else { return nil }
+            return editor == "zed" ? URL(string: "zed://ssh/\(target)\(encoded)")
+                : URL(string: "\(editor)://vscode-remote/ssh-remote+\(target)\(encoded)\(position)")
+        }
         var parts = URLComponents()
         parts.scheme = editor
         parts.host = "file"
@@ -35,8 +52,12 @@ nonisolated struct FileReference: Equatable {
 }
 
 enum FileEditor {
+    static var editor: String { Prefs.defaults.string(forKey: Prefs.fileEditor) ?? "system" }
+
     static func open(_ ref: FileReference) {
-        let editor = Prefs.defaults.string(forKey: Prefs.fileEditor) ?? "system"
+        let editor = editor
+        // A file on a device opens only in an editor that reaches it over SSH.
+        if ref.host != nil, ref.editorURL(editor) == nil { return NSSound.beep() }
         if let url = ref.editorURL(editor) {
             NSWorkspace.shared.open(url)
         } else {
@@ -90,7 +111,15 @@ extension TerminalView {
         var start = col, end = col
         while start > 0 && !chars[start - 1].isWhitespace { start -= 1 }
         while end < chars.count && !chars[end].isWhitespace { end += 1 }
-        guard let ref = FileReference.parse(String(chars[start..<end]), cwd: workingDirectory()), FileManager.default.fileExists(atPath: ref.path) else { return nil }
+        let token = String(chars[start..<end])
+        if let host {
+            // A device's files can't be checked from here, so only what looks like a path to
+            // one counts, and only when the editor can open it there.
+            guard FileReference.urlEditors.contains(FileEditor.editor), token.contains("/"),
+                  let home = Device.home(host) else { return nil }
+            return FileReference.parse(token, cwd: workingDirectory(), home: home, host: host)
+        }
+        guard let ref = FileReference.parse(token, cwd: workingDirectory()), FileManager.default.fileExists(atPath: ref.path) else { return nil }
         return ref
     }
 
@@ -100,7 +129,9 @@ extension TerminalView {
         guard ghostty_surface_read_selection(surface, &text), let ptr = text.text else { return }
         defer { ghostty_surface_free_text(surface, &text) }
         let value = String(decoding: UnsafeBufferPointer(start: UnsafeRawPointer(ptr).assumingMemoryBound(to: UInt8.self), count: Int(text.text_len)), as: UTF8.self)
-        if let ref = FileReference.parse(value, cwd: workingDirectory()) { FileEditor.open(ref) }
+        // A device's home is known once its link is up.
+        guard let home = host == nil ? NSHomeDirectory() : host.flatMap(Device.home) else { return NSSound.beep() }
+        if let ref = FileReference.parse(value, cwd: workingDirectory(), home: home, host: host) { FileEditor.open(ref) }
     }
 }
 
