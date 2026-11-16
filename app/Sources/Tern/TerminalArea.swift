@@ -76,7 +76,7 @@ final class TerminalArea: NSView {
 
         for pane in visible.union(workspace.panesNeedingLaunch) where terminals[pane] == nil {
             let view = TerminalView(sessionID: pane, ternBinary: ternBinary, cwd: workspace.cwd(for: pane),
-                                    initLine: workspace.resumeCommand(for: pane))
+                                    host: workspace.host(pane: pane), initLine: workspace.resumeCommand(for: pane))
             view.onSearch = { [weak self, weak view] needle in
                 guard let self, let view else { return }
                 self.searchBar.open(view, needle: needle)
@@ -135,8 +135,10 @@ final class TerminalArea: NSView {
     /// session (the client was killed or crashed), attach again rather than lose the tab.
     private func attachEnded(_ pane: String) {
         guard let original = terminals[pane] else { return }
+        let host = original.host
         DispatchQueue.global(qos: .utility).async { [weak self, weak original] in
-            let list = TernClient.listNow()
+            // A device that can't be reached says nothing: the pane attaches again and waits.
+            let list = TernClient.listNow(host: host)
             DispatchQueue.main.async {
                 guard let self, let original, self.terminals[pane] === original,
                       self.workspace.allTabs.contains(where: { $0.root.panes.contains(pane) }) else { return }

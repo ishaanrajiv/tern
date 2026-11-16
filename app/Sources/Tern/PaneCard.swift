@@ -151,7 +151,7 @@ struct PaneHeader: View {
 
     private func place(_ s: SessionInfo?) -> String? {
         if let remote = workspace.remote(for: pane) { return remote.host + ":" + remote.directory }
-        return s?.cwd.map(abbreviateHome)
+        return s?.place
     }
 }
 

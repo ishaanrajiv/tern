@@ -12,11 +12,12 @@ enum Worktree {
     enum Failure: Error, CustomStringConvertible {
         case notARepo(String)
         case git(String)
+        case unsupported(String)
 
         var description: String {
             switch self {
             case .notARepo(let dir): "\(abbreviateHome(dir)) is not in a git repository."
-            case .git(let message): message
+            case .git(let message), .unsupported(let message): message
             }
         }
     }

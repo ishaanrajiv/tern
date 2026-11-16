@@ -386,7 +386,7 @@ private struct Labeled: View {
 
 /// Settings use a shared, bounded viewport across all toolbar tabs.
 final class SettingsWindowController: NSWindowController {
-    static let updatesPane = 4
+    static let updatesPane = 5
 
     convenience init(hooks: AgentHooks, updates: UpdateCenter, usage: AgentUsage) {
         // Read before adding panes: adding the first one selects it, which saves its index.
@@ -407,6 +407,7 @@ final class SettingsWindowController: NSWindowController {
         pane("Appearance", "paintpalette", AppearanceSettings())
         pane("Terminal", "terminal", TerminalSettings())
         pane("Agents", "sparkles", AgentSettings(hooks: hooks, updates: updates, usage: usage))
+        pane("Devices", "network", DeviceSettings())
         pane("Updates", "arrow.down.circle", UpdatesSettings(center: updates))
         let window = NSWindow(contentViewController: tabs)
         window.identifier = NSUserInterfaceItemIdentifier("tern.settings")

@@ -8,6 +8,8 @@ import GhosttyKit
 /// Keyboard handling follows Ghostty's own SurfaceView_AppKit (MIT).
 final class TerminalView: NSView, NSTextInputClient {
     var workingDirectory: () -> String = { NSHomeDirectory() }
+    /// The device the session runs on; nil on this Mac.
+    let host: String?
     private var openedFileClick = false
     let sessionID: String
     // Only touched on the main thread; nonisolated so deinit can free it.
@@ -35,8 +37,10 @@ final class TerminalView: NSView, NSTextInputClient {
 
     /// `initLine` is typed into the session's shell if this creates it (resuming an agent).
     /// `command` runs in place of the shell, through `/bin/sh -c`, if this creates the session.
-    init(sessionID: String, ternBinary: String, cwd: String, initLine: String? = nil, command: String? = nil) {
+    /// With `host`, the session is on that device and `cwd` is a folder there.
+    init(sessionID: String, ternBinary: String, cwd: String, host: String? = nil, initLine: String? = nil, command: String? = nil) {
         self.sessionID = sessionID
+        self.host = host
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
         registerForDraggedTypes([.fileURL])
@@ -49,9 +53,12 @@ final class TerminalView: NSView, NSTextInputClient {
         config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
         let initArg = initLine.map { " --init \(shellQuote($0))" } ?? ""
         let cmdArg = command.map { " --cmd \(shellQuote($0))" } ?? ""
-        let attach = "\(shellQuote(ternBinary)) attach --cwd \(shellQuote(cwd))\(initArg)\(cmdArg) \(shellQuote(sessionID))"
+        let hostArg = host.map { " --host \(shellQuote($0))" } ?? ""
+        let attach = "\(shellQuote(ternBinary)) attach\(hostArg) --cwd \(shellQuote(cwd))\(initArg)\(cmdArg) \(shellQuote(sessionID))"
+        // The relay itself runs on this Mac, so it starts in a folder here.
+        let local = host == nil ? cwd : NSHomeDirectory()
         surface = attach.withCString { cmd in
-            cwd.withCString { dir in
+            local.withCString { dir in
                 config.command = cmd
                 config.working_directory = dir
                 return ghostty_surface_new(GhosttyApp.shared.app, &config)

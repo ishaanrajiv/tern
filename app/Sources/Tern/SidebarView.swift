@@ -143,7 +143,8 @@ private struct FolderSection: View {
                         .contextMenu {
                             Button("Rename…") { actions.rename(tab.id) }
                             Menu("Move to Folder") {
-                                ForEach(workspace.projects) { folder in
+                                // Only folders on the same machine: the tab's sessions stay where they run.
+                                ForEach(workspace.projects.filter { $0.host == project.host }) { folder in
                                     Button(folder.name) { workspace.moveTab(tab.id, to: folder.path) }
                                 }
                             }
@@ -167,8 +168,11 @@ private struct FolderHeader: View {
     var body: some View {
         let statuses = project.tabs.map { workspace.status(for: $0, now: now) }
         let waiting = statuses.filter { $0 == .needsYou }.count
-        let branch = Worktree.headBranch(at: project.path)
-        let place = branch ?? abbreviateHome(project.path)
+        let host = project.host
+        // A device's folder can't be read from here; its sessions say which branch they're on.
+        let branch = host == nil ? Worktree.headBranch(at: project.path)
+            : project.tabs.lazy.compactMap { workspace.sessions[$0.focusedPane]?.branch }.first
+        let place = branch ?? project.location.shortPath
         HStack(spacing: 7) {
             Image(systemName: "chevron.right")
                 .font(.system(size: 9, weight: .bold))
@@ -179,6 +183,7 @@ private struct FolderHeader: View {
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .layoutPriority(1)
+            if let host { DeviceChip(host: host) }
             Text(project.collapsed ? "\(place) · \(project.tabs.count) tab\(project.tabs.count == 1 ? "" : "s")" : place)
                 .font(.system(size: 11.5))
                 .foregroundStyle(.secondary)
@@ -220,12 +225,21 @@ private struct FolderHeader: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture { workspace.setCollapsed(project.path, !project.collapsed) }
-        .help(abbreviateHome(project.path))
+        .help(project.location.label)
         .contextMenu {
             Button("New Tab") { actions.newTab(project.path) }
-            Button("New Tab in Worktree") { actions.newWorktreeTab(project.path) }
-            Divider()
-            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)]) }
+            if let host {
+                let status = DeviceCenter.shared.statuses[host]
+                Divider()
+                if status?.needsSignIn == true {
+                    Button("Sign In to \(host)…") { workspace.run(DeviceCenter.shared.signInCommand(host), in: NSHomeDirectory()) }
+                }
+                Button("Reconnect to \(host)") { DeviceCenter.shared.reconnect(host) }
+            } else {
+                Button("New Tab in Worktree") { actions.newWorktreeTab(project.path) }
+                Divider()
+                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: project.path)]) }
+            }
             Button("Copy Path") {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(project.path, forType: .string)
@@ -341,7 +355,7 @@ private struct TabRow: View {
 
     private var helpText: String {
         let s = workspace.sessions[tab.focusedPane]
-        let facts = [s?.process, s?.cwd.map(abbreviateHome), s?.branch].compactMap { $0 }.joined(separator: " · ")
+        let facts = [s?.process, s?.place, s?.branch].compactMap { $0 }.joined(separator: " · ")
         return [workspace.agentMessage(tab), facts].compactMap { $0 }.joined(separator: "\n")
     }
 }
@@ -479,6 +493,32 @@ struct Spinner: View {
         }
         .padding(0.75)
         .onAppear { turning = true }
+    }
+}
+
+/// The device a folder is on, with how its connection is doing: no dot while connected,
+/// a ring while connecting, amber when it needs you, red when it can't connect.
+struct DeviceChip: View {
+    let host: String
+
+    var body: some View {
+        let status = DeviceCenter.shared.statuses[host] ?? .stopped
+        HStack(spacing: 4) {
+            if !status.connected {
+                Circle()
+                    .fill(status.needsSignIn || status.state == "incompatible" ? Palette.amber : status.failed ? Palette.failed : Palette.ring)
+                    .frame(width: 6, height: 6)
+            }
+            Text(host)
+        }
+        .font(.system(size: 10.5))
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 1)
+        .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4))
+        .fixedSize()
+        .help("\(host): \(status.summary)")
     }
 }
 
