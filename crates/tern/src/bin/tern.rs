@@ -117,6 +117,7 @@ fn manage_hooks(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+#[cfg(target_os = "macos")]
 const LAUNCHD_LABEL: &str = "dev.tern.ternd";
 
 /// Connects to ternd, starting it next to this binary if it isn't running.
@@ -134,12 +135,7 @@ fn connect() -> Result<UnixStream> {
     if let Ok(s) = UnixStream::connect(&path) {
         return Ok(s);
     }
-    if std::env::var_os("TERN_RUNTIME_DIR").is_some() {
-        // Tests and benches get a private daemon, spawned directly.
-        spawn_detached(&ternd)?;
-    } else {
-        start_launch_agent(&ternd)?;
-    }
+    start_daemon(&ternd)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
         if let Ok(s) = UnixStream::connect(&path) {
@@ -150,8 +146,34 @@ fn connect() -> Result<UnixStream> {
     bail!("ternd did not come up at {}", path.display())
 }
 
+#[cfg(target_os = "macos")]
+fn start_daemon(ternd: &std::path::Path) -> Result<()> {
+    if std::env::var_os("TERN_RUNTIME_DIR").is_some() {
+        // Tests and benches get a private daemon, spawned directly.
+        return spawn_detached(ternd);
+    }
+    match start_launch_agent(ternd) {
+        Ok(()) => Ok(()),
+        // Over SSH to a Mac nobody is logged in to, launchd has no session to run an agent in.
+        // A detached ternd outlives the connection, though not a restart of that Mac.
+        Err(e) if std::env::var_os("SSH_CONNECTION").is_some() => {
+            eprintln!("tern: {e:#}; starting ternd without launchd");
+            spawn_detached(ternd)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Off a Mac there is no app to be killed along with: ternd is started by whoever first
+/// needs it, usually `tern proxy` over SSH, and its own session keeps it past that connection.
+#[cfg(not(target_os = "macos"))]
+fn start_daemon(ternd: &std::path::Path) -> Result<()> {
+    spawn_detached(ternd)
+}
+
 /// Runs ternd as a per-user launchd agent. macOS kills processes attributed to
 /// an app when it quits, even setsid'd ones, so the daemon must belong to launchd.
+#[cfg(target_os = "macos")]
 fn start_launch_agent(ternd: &std::path::Path) -> Result<()> {
     let home = std::env::var("HOME").context("HOME not set")?;
     let plist_path = std::path::PathBuf::from(&home).join(format!("Library/LaunchAgents/{LAUNCHD_LABEL}.plist"));
@@ -199,6 +221,11 @@ fn spawn_detached(ternd: &std::path::Path) -> Result<()> {
     let log = File::options().create(true).append(true).open(runtime_dir().join("ternd.log"))?;
     let mut cmd = Command::new(ternd);
     cmd.stdin(Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    // Whatever started it over SSH is gone long before its sessions are: an agent socket or
+    // client address from that connection would be stale in every shell ternd starts later.
+    for stale in ["SSH_AUTH_SOCK", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY"] {
+        cmd.env_remove(stale);
+    }
     unsafe {
         cmd.pre_exec(|| nix::unistd::setsid().map(|_| ()).map_err(Into::into));
     }

@@ -55,6 +55,9 @@ impl OpenRequest {
 
 pub fn run(args: &[String]) -> Result<i32> {
     use std::os::unix::fs::OpenOptionsExt;
+    if !cfg!(target_os = "macos") {
+        bail!("`tern open` opens a folder in the tern app, which runs on a Mac; this device only hosts sessions for it");
+    }
     use std::io::Write;
     let request = OpenRequest::parse(args, &std::env::current_dir()?)?;
     let directory = crate::prepare_runtime_dir()?.join("open-requests");

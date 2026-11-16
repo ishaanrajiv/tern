@@ -45,7 +45,7 @@ fn main() -> Result<()> {
         session::SCROLLBACK_BYTES.store(bytes as usize, std::sync::atomic::Ordering::Relaxed);
     }
     let path = socket_path();
-    // sockaddr_un.sun_path is 104 bytes on macOS.
+    // sockaddr_un.sun_path is 104 bytes on macOS and 108 on Linux.
     if path.as_os_str().len() >= 104 {
         anyhow::bail!("socket path is too long for a unix socket: {}", path.display());
     }
@@ -108,11 +108,7 @@ fn main() -> Result<()> {
 /// ternd hands out terminal output and takes keystrokes, so only its own user may
 /// talk to it. The socket's mode keeps others out; this refuses one that got in anyway.
 fn verify_peer(conn: &UnixStream, me: nix::unistd::Uid) -> Result<()> {
-    use std::os::fd::AsRawFd;
-    let (mut uid, mut gid) = (0, 0);
-    if unsafe { nix::libc::getpeereid(conn.as_raw_fd(), &mut uid, &mut gid) } != 0 {
-        return Err(std::io::Error::last_os_error()).context("reading the peer's credentials");
-    }
+    let uid = peer_uid(conn).context("reading the peer's credentials")?;
     anyhow::ensure!(uid == me.as_raw(), "refused a connection from uid {uid}");
     Ok(())
 }

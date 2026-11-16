@@ -1,12 +1,17 @@
-//! ternd links libghostty-vt statically from the vendored Ghostty build.
+//! ternd links libghostty-vt statically from the vendored Ghostty build: `zig-out/lib` for this
+//! machine, or `zig-out/<target>/lib` when cross-compiling (`scripts/build-ghostty.sh --vt-linux`).
 
 use std::path::PathBuf;
 
 fn main() {
-    let lib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/ghostty/zig-out/lib/libghostty-vt.a");
+    let out_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/ghostty/zig-out");
+    let target = std::env::var("TARGET").unwrap();
+    let host = std::env::var("HOST").unwrap();
+    let lib = if target == host { out_root.join("lib") } else { out_root.join(&target).join("lib") }.join("libghostty-vt.a");
     println!("cargo:rerun-if-changed={}", lib.display());
     if !lib.exists() {
-        panic!("{} is missing: run scripts/build-ghostty.sh first", lib.display());
+        let how = if target == host { "scripts/build-ghostty.sh --vt".to_string() } else { format!("scripts/build-ghostty.sh --vt-linux {}", target.split('-').next().unwrap()) };
+        panic!("{} is missing: run {how} first", lib.display());
     }
     // Zig installs the dylib beside it, and the linker would prefer that; search
     // a folder that holds only the static library.

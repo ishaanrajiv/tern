@@ -372,7 +372,17 @@ pub fn runtime_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| "/tmp".into());
-    home.join("Library/Application Support/tern")
+    default_runtime_dir(&home, cfg!(target_os = "macos"), std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
+}
+
+/// `~/Library/Application Support/tern` on a Mac. Elsewhere `$XDG_STATE_HOME/tern`
+/// (`~/.local/state/tern`), not `$XDG_RUNTIME_DIR`: logind empties that at the last logout,
+/// and sessions are meant to outlive the SSH connection that started them.
+fn default_runtime_dir(home: &std::path::Path, mac: bool, xdg_state: Option<PathBuf>) -> PathBuf {
+    if mac {
+        return home.join("Library/Application Support/tern");
+    }
+    xdg_state.filter(|p| p.is_absolute()).unwrap_or_else(|| home.join(".local/state")).join("tern")
 }
 
 /// Creates the runtime directory private to this user, or makes it so, and tightens
@@ -426,6 +436,32 @@ fn secure_tree(path: &std::path::Path) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// The user id of whoever is at the other end of a unix socket.
+#[cfg(target_os = "macos")]
+pub fn peer_uid(conn: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid) = (0, 0);
+    if unsafe { nix::libc::getpeereid(conn.as_raw_fd(), &mut uid, &mut gid) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(uid)
+}
+
+/// Linux has no getpeereid; SO_PEERCRED gives the credentials of whoever connected.
+#[cfg(not(target_os = "macos"))]
+pub fn peer_uid(conn: &std::os::unix::net::UnixStream) -> io::Result<u32> {
+    use std::os::fd::AsRawFd;
+    let mut cred = nix::libc::ucred { pid: 0, uid: 0, gid: 0 };
+    let mut len = std::mem::size_of::<nix::libc::ucred>() as nix::libc::socklen_t;
+    let got = unsafe {
+        nix::libc::getsockopt(conn.as_raw_fd(), nix::libc::SOL_SOCKET, nix::libc::SO_PEERCRED, (&mut cred as *mut nix::libc::ucred).cast(), &mut len)
+    };
+    if got != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(cred.uid)
 }
 
 pub fn socket_path() -> PathBuf {
@@ -646,6 +682,16 @@ mod tests {
         assert_eq!(mode(&fresh), 0o700);
         std::env::remove_var("TERN_RUNTIME_DIR");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_runtime_folder_follows_the_platform() {
+        let home = std::path::Path::new("/home/x");
+        assert_eq!(default_runtime_dir(home, true, None), home.join("Library/Application Support/tern"));
+        assert_eq!(default_runtime_dir(home, false, None), home.join(".local/state/tern"));
+        assert_eq!(default_runtime_dir(home, false, Some("/data/state".into())), PathBuf::from("/data/state/tern"));
+        // A relative XDG_STATE_HOME is invalid by the spec, and ignored.
+        assert_eq!(default_runtime_dir(home, false, Some("state".into())), home.join(".local/state/tern"));
     }
 
     #[test]
