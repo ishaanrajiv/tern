@@ -229,6 +229,28 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, bus: &even
         Request::LayoutTree => {
             writeln!(out, "{}", layouts.tree())?;
         }
+        Request::Folders { roots } => {
+            let found = tern::folders::list(&roots);
+            // Where sessions are now comes first: on a device, that's where you've been working.
+            let mut recent: Vec<String> = Vec::new();
+            for cwd in list_sessions(&sessions).into_iter().filter_map(|s| s.git_root.or(s.cwd)).chain(found.recent) {
+                if cwd != found.home && !recent.contains(&cwd) {
+                    recent.push(cwd);
+                }
+            }
+            let reply = FoldersReply { ok: true, home: found.home, recent, repos: found.repos };
+            writeln!(out, "{}", serde_json::to_string(&reply)?)?;
+        }
+        Request::ListDirs { path } => {
+            let reply = match tern::folders::subdirs(&path) {
+                Ok((path, dirs)) => DirsReply { ok: true, path, dirs, error: None },
+                Err(e) => DirsReply { ok: false, path, dirs: vec![], error: Some(e.to_string()) },
+            };
+            writeln!(out, "{}", serde_json::to_string(&reply)?)?;
+        }
+        Request::Hooks { action, agent } => {
+            writeln!(out, "{}", manage_hooks(&action, agent.as_deref()))?;
+        }
         Request::Resolve { target } => {
             let reply = match layouts.resolve(&target, |id| sessions.lock().unwrap().contains_key(id)) {
                 Ok(found) => PaneReply { ok: true, pane: Some(found.pane), tab: found.tab, window: found.window, ..Default::default() },
@@ -268,11 +290,11 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, bus: &even
             let ok = session.is_some_and(|s| write_input(&s, data.as_bytes()).is_ok());
             writeln!(out, "{}", serde_json::json!({ "ok": ok }))?;
         }
-        Request::Attach { id, cols, rows, cwd, cmd, init, env } => {
+        Request::Attach { id, cols, rows, cwd, cmd, init, env, owner } => {
             let existing = sessions.lock().unwrap().get(&id).cloned();
             let (session, created) = match existing {
                 Some(s) => (s, false),
-                None => match spawn_session(&id, cols, rows, cwd, cmd, env, &sessions) {
+                None => match spawn_session(&id, cols, rows, cwd, cmd, env, owner, &sessions) {
                     Ok((s, restored)) => {
                         // An agent's resume command wins over retyping what was running.
                         let typed = match (init, restored.and_then(|m| m.command)) {
@@ -299,6 +321,27 @@ fn handle_conn(conn: UnixStream, sessions: Sessions, layouts: &Store, bus: &even
         }
     }
     Ok(())
+}
+
+/// Agent hooks where this ternd runs, for the app's Settings → Devices: the same as
+/// `tern hooks` there, with the hooks' command pointing at the `tern` installed beside ternd.
+fn manage_hooks(action: &str, agent: Option<&str>) -> serde_json::Value {
+    let agents: Vec<&str> = match agent {
+        Some(a) if hooks::AGENTS.contains(&a) => vec![a],
+        Some(a) => return serde_json::json!({ "ok": false, "error": format!("unknown agent {a}") }),
+        None => hooks::AGENTS.to_vec(),
+    };
+    let done = match action {
+        "status" => Ok(()),
+        "install" => agents.iter().try_for_each(|a| hooks::install(a).map(drop)),
+        "uninstall" => agents.iter().try_for_each(|a| hooks::uninstall(a).map(drop)),
+        _ => return serde_json::json!({ "ok": false, "error": format!("unknown hooks action {action}") }),
+    };
+    let status: Vec<_> = agents.iter().filter_map(|a| hooks::status(a).ok()).collect();
+    match done {
+        Ok(()) => serde_json::json!({ "ok": true, "agents": status }),
+        Err(e) => serde_json::json!({ "ok": false, "agents": status, "error": format!("{e:#}") }),
+    }
 }
 
 /// Starts a session in a new pane: beside the target with `axis`, otherwise in a new tab.
@@ -336,7 +379,7 @@ fn open_pane(sessions: &Sessions, layouts: &Store, target: &Target, axis: Option
     };
     let change = Change { place, cwd: cwd.clone(), name: open.name.clone(), opener, focus: open.focus };
     layouts.open(change, |pane| {
-        let (session, _) = spawn_session(pane, cols, rows, Some(cwd.clone()), None, open.env.clone(), sessions).map_err(|e| format!("{e:#}"))?;
+        let (session, _) = spawn_session(pane, cols, rows, Some(cwd.clone()), None, open.env.clone(), None, sessions).map_err(|e| format!("{e:#}"))?;
         if let Some(line) = open.line.clone() {
             thread::spawn(move || type_when_ready(&session, &line, true));
         }

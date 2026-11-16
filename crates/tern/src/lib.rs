@@ -14,7 +14,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 pub mod config;
+pub mod device;
+pub mod folders;
 pub mod hooks;
+pub mod mux;
 pub mod open;
 pub mod procinfo;
 pub mod shell;
@@ -53,6 +56,10 @@ pub enum Request {
         /// Extra environment for a new session (TERM, COLORTERM, ...).
         #[serde(default)]
         env: Vec<(String, String)>,
+        /// The Mac that started it (`device::client_id`). Another Mac's app sharing this ternd
+        /// doesn't take the session for one of its own tabs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        owner: Option<String>,
     },
     List,
     /// Read retained terminal text or the last completed command output.
@@ -117,6 +124,42 @@ pub enum Request {
     Input { id: String, data: String },
     /// Streams an `Event` line for everything that happens from now on.
     Events,
+    /// Folders to offer in the folder picker, found where ternd runs: the folders sessions are
+    /// in, zoxide's history and git repositories under `roots`. Answered with a `FoldersReply`.
+    Folders {
+        #[serde(default)]
+        roots: Vec<String>,
+    },
+    /// The folders inside `path`, for completing a typed path. Answered with a `DirsReply`.
+    ListDirs { path: String },
+    /// Agent hooks where ternd runs: `status`, `install` or `uninstall`, for one agent or both.
+    /// Answered with `{"ok", "agents": [hooks status...], "error"}`.
+    Hooks {
+        action: String,
+        #[serde(default)]
+        agent: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct FoldersReply {
+    pub ok: bool,
+    pub home: String,
+    /// Where sessions are now, then zoxide's history, best first.
+    pub recent: Vec<String>,
+    pub repos: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DirsReply {
+    pub ok: bool,
+    /// The folder listed, with `~` expanded.
+    #[serde(default)]
+    pub path: String,
+    #[serde(default)]
+    pub dirs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Something that happened in a pane, as `tern watch` prints it and `on-<event>` commands get it.
@@ -341,6 +384,9 @@ pub struct SessionInfo {
     /// The last command line the shell ran, as typed, however quick; nil without the integration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_command: Option<String>,
+    /// The Mac whose app started the session; none for one started from the CLI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 /// Quotes a string for a POSIX shell. Plain words are left alone; anything
@@ -705,7 +751,13 @@ mod tests {
         assert_eq!(serde_json::to_string(&Request::Hello).unwrap(), r#"{"op":"hello"}"#);
         // An attach from an older client (no init, no env) still parses.
         let req: Request = serde_json::from_str(r#"{"op":"attach","id":"p-1","cols":80,"rows":24,"cwd":null,"cmd":null}"#).unwrap();
-        assert!(matches!(req, Request::Attach { init: None, ref env, .. } if env.is_empty()));
+        assert!(matches!(req, Request::Attach { init: None, ref env, owner: None, .. } if env.is_empty()));
+        // An older ternd ignores the owner a newer client sends.
+        let line = serde_json::to_string(&Request::Attach {
+            id: "p".into(), cols: 1, rows: 1, cwd: None, cmd: None, init: None, env: vec![], owner: Some("c-1".into()),
+        }).unwrap();
+        assert!(line.contains(r#""owner":"c-1""#));
+        assert_eq!(serde_json::to_string(&Request::ListDirs { path: "~".into() }).unwrap(), r#"{"op":"list_dirs","path":"~"}"#);
         let req: Request =
             serde_json::from_str(r#"{"op":"report","id":"p","agent":"claude","state":"needs_you","agent_session":null,"message":"Allow?"}"#)
                 .unwrap();

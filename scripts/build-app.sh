@@ -5,6 +5,8 @@
 #   --install   also copy it to ~/Applications/Tern.app. Run tern from there: macOS
 #               refuses notification permission to apps run from a build folder.
 #   --debug     debug Swift build
+#   --no-remote leave out the Linux builds of tern the app installs on devices
+#               (scripts/build-remote.sh); the app then reaches only Macs
 #   --dist      build to run on other Macs: sign with Developer ID and the hardened
 #               runtime, notarize, staple, and write a versioned ZIP and checksum. Needs a
 #               "Developer ID Application" certificate and a notarytool keychain
@@ -15,16 +17,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CONFIG=release
 INSTALL=0
 DIST=0
+REMOTE=1
 for arg in "$@"; do
     case "$arg" in
         --install) INSTALL=1 ;;
         --debug) CONFIG=debug ;;
         --dist) DIST=1 ;;
+        --no-remote) REMOTE=0 ;;
         *) echo "unknown option $arg" >&2; exit 2 ;;
     esac
 done
 if [ "$DIST" = 1 ] && [ "$CONFIG" = debug ]; then
     echo "--dist and --debug don't mix" >&2; exit 2
+fi
+if [ "$DIST" = 1 ] && [ "$REMOTE" = 0 ]; then
+    echo "a distributed build includes the Linux builds; drop --no-remote" >&2; exit 2
 fi
 
 identity() {
@@ -50,6 +57,7 @@ else
 fi
 
 cargo build --release --locked --manifest-path "$ROOT/Cargo.toml"
+[ "$REMOTE" = 1 ] && "$ROOT/scripts/build-remote.sh"
 swift build -c "$CONFIG" --package-path "$ROOT/app"
 BIN="$(swift build -c "$CONFIG" --package-path "$ROOT/app" --show-bin-path)"
 
@@ -60,6 +68,9 @@ cp "$BIN/Tern" "$APP/Contents/MacOS/Tern"
 # Helpers/, not MacOS/: "tern" and "Tern" collide on a case-insensitive filesystem.
 cp "$ROOT/target/release/tern" "$ROOT/target/release/ternd" "$APP/Contents/Helpers/"
 cp -R "$ROOT/vendor/ghostty/zig-out/share/ghostty" "$ROOT/vendor/ghostty/zig-out/share/terminfo" "$APP/Contents/Resources/"
+# tern for Linux devices, which the app copies to them over SSH (crates/tern/src/bin/tern/link.rs).
+# Not code macOS runs, so not signed; a Mac device gets the signed helpers above.
+[ "$REMOTE" = 1 ] && cp -R "$ROOT/build/remote" "$APP/Contents/Resources/remote"
 cp "$ROOT/app/Info.plist" "$APP/Contents/Info.plist"
 # The licenses of everything bundled above; regenerate with scripts/notices.py.
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$APP/Contents/Resources/"

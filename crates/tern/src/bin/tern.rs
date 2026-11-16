@@ -1,9 +1,13 @@
 //! tern: command-line client for ternd.
 //!
-//!   tern attach [--cwd DIR] [--cmd CMD] [--init LINE] <id>
+//!   tern attach [--host HOST] [--cwd DIR] [--cmd CMD] [--init LINE] <id>
 //!                                              relay this terminal to a session (creating it if needed;
-//!                                              --init types LINE into a new session's shell)
-//!   tern ls [--json]                           list sessions (with --json, every window's tabs and panes too)
+//!                                              --init types LINE into a new session's shell; --host
+//!                                              reaches a device's ternd through `tern link`)
+//!   tern ls [--json] [--host HOST]             list sessions (with --json, every window's tabs and panes too)
+//!   tern link HOST [--ensure|--status|--wake|--sign-in|--restart-daemon]
+//!                                              hold the SSH connection to a device (see link.rs)
+//!   tern proxy                                 (run over SSH by a link) carry its streams to ternd here
 //!   tern split|tab|send|capture|wait|close|run drive panes from a script or agent (see agent.rs)
 //!   tern watch [--json]                        print events as they happen
 //!   tern kill <id>                             hang up a session
@@ -33,6 +37,8 @@ use tern::*;
 
 #[path = "tern/agent.rs"]
 mod agent;
+#[path = "tern/link.rs"]
+mod link;
 
 nix::ioctl_read_bad!(get_winsize, nix::libc::TIOCGWINSZ, Winsize);
 
@@ -42,8 +48,11 @@ fn main() {
         Some("open") => tern::open::run(&args[1..]),
         Some(".") => tern::open::run(&args),
         Some("attach") => attach(&args[1..]),
-        Some("ls") => list(args.get(1).is_some_and(|a| a == "--json")),
+        Some("ls") => list(&args[1..]),
         Some("kill") => kill(&args[1..]),
+        Some("link") => link::run(&args[1..]),
+        Some("proxy") => link::proxy(),
+        Some("build-id") => link::print_build_ids(&args[1..]),
         Some("split") => agent::split(&args[1..]),
         Some("tab") => agent::tab(&args[1..]),
         Some("send") => agent::send(&args[1..]),
@@ -65,7 +74,8 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: tern open [DIR] [--window | --split right|down] [--command CMD | -- ARGS...]\n       tern attach [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] | tern kill <id> | tern bench [n]\n       \
+                "usage: tern open [DIR] [--window | --split right|down] [--command CMD | -- ARGS...]\n       tern attach [--host HOST] [--cwd DIR] [--cmd CMD] <id> | tern ls [--json] [--host HOST] | tern kill [--host HOST] <id> | tern bench [n]\n       \
+                 tern link HOST [--ensure | --status | --wake | --sign-in | --restart-daemon]\n       \
                  tern daemon [status|restart]\n       \
                  tern hooks [status|install|uninstall|link] [claude|codex]\n       {}",
                 agent::USAGE
@@ -327,10 +337,38 @@ fn restart_daemon() -> Result<()> {
 }
 
 fn request(req: &Request) -> Result<(UnixStream, BufReader<UnixStream>)> {
-    let mut sock = connect()?;
+    request_on(None, req, Duration::ZERO)
+}
+
+/// A request to this machine's ternd, or to a device's through its link, waiting up to `wait`
+/// for the link to connect.
+fn request_on(host: Option<&str>, req: &Request, wait: Duration) -> Result<(UnixStream, BufReader<UnixStream>)> {
+    let mut sock = match host {
+        Some(host) => link::connect_within(host, wait)?,
+        None => connect()?,
+    };
     writeln!(sock, "{}", serde_json::to_string(req)?)?;
     let reader = BufReader::new(sock.try_clone()?);
     Ok((sock, reader))
+}
+
+/// Takes `--host HOST` out of `args`.
+fn take_host(args: &[String]) -> Result<(Option<String>, Vec<String>)> {
+    let mut rest = Vec::new();
+    let mut host = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--host" {
+            let h = it.next().context("--host needs an SSH destination")?;
+            if !tern::device::valid_host(h) {
+                bail!("{h:?} isn't an SSH destination tern can use");
+            }
+            host = Some(h.clone());
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    Ok((host, rest))
 }
 
 fn tty_size() -> (u16, u16) {
@@ -364,6 +402,7 @@ impl Drop for RawMode {
 const CLEAR: &[u8] = b"\x1b[m\x1b[H\x1b[2J\x1b[3J";
 
 fn attach(args: &[String]) -> Result<i32> {
+    let (host, args) = take_host(args)?;
     let (mut cwd, mut cmd, mut init, mut id) = (None, None, None, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -375,23 +414,33 @@ fn attach(args: &[String]) -> Result<i32> {
         }
     }
     let id = id.context("attach needs a session id")?;
-    let cwd = cwd.or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()));
+    let host = host.as_deref();
+    // A folder on a device is that device's; this machine's own folder means nothing there.
+    let cwd = if host.is_some() { cwd } else { cwd.or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string())) };
     // New sessions inherit this client's environment (PATH, SSH_AUTH_SOCK, TERM...),
-    // not the launchd daemon's minimal one.
-    let env: Vec<(String, String)> = std::env::vars().filter(|(k, _)| k != "TERN_SESSION_ID").collect();
+    // not the launchd daemon's minimal one. On a device, only what describes the terminal.
+    let env: Vec<(String, String)> = std::env::vars()
+        .filter(|(k, _)| k != "TERN_SESSION_ID")
+        .filter(|(k, _)| host.is_none() || tern::device::FORWARDED_ENV.contains(&k.as_str()))
+        .collect();
+    let owner = Some(tern::device::client_id());
     let open = |init: Option<String>| -> Result<(UnixStream, BufReader<UnixStream>)> {
         let (cols, rows) = tty_size();
-        let req = Request::Attach { id: id.clone(), cols, rows, cwd: cwd.clone(), cmd: cmd.clone(), init, env: env.clone() };
-        let (sock, mut reader) = request(&req)?;
+        let req = Request::Attach { id: id.clone(), cols, rows, cwd: cwd.clone(), cmd: cmd.clone(), init, env: env.clone(), owner: owner.clone() };
+        // Briefly: wait_for_device says what is happening meanwhile.
+        let (sock, mut reader) = request_on(host, &req, Duration::from_secs(1))?;
         let mut line = String::new();
         reader.read_line(&mut line)?;
         let reply: AttachReply = serde_json::from_str(&line).context("bad attach reply")?;
         if !reply.ok {
-            bail!("attach failed: {}", reply.error.unwrap_or_default());
+            return Err(Refused(reply.error.unwrap_or_default()).into());
         }
         Ok((sock, reader))
     };
-    let (sock, mut reader) = open(init)?;
+    let (sock, mut reader) = match host {
+        Some(host) => wait_for_device(host, || open(init.clone()))?,
+        None => open(init)?,
+    };
 
     let _raw = RawMode::enable();
     let sock_w = Arc::new(Mutex::new(sock));
@@ -439,12 +488,23 @@ fn attach(args: &[String]) -> Result<i32> {
             Some(_) => {}
             None => {
                 // ternd went away (restarted, upgraded, crashed). launchd brings it back;
-                // reattach, and the session returns with its saved screen.
+                // reattach, and the session returns with its saved screen. A device's
+                // connection may take longer to come back, so its panes keep trying.
                 let deadline = Instant::now() + Duration::from_secs(10);
+                let mut said = false;
+                let mut delay = Duration::from_millis(300);
                 let reattached = loop {
-                    std::thread::sleep(Duration::from_millis(300));
+                    std::thread::sleep(delay);
                     if let Ok(pair) = open(None) {
                         break Some(pair);
+                    }
+                    if let Some(host) = host {
+                        if !said {
+                            stdout.write_all(format!("\r\n\x1b[2m[tern: lost the connection to {host}; reconnecting…]\x1b[m\r\n").as_bytes())?;
+                            said = true;
+                        }
+                        delay = (delay * 2).min(Duration::from_secs(5));
+                        continue;
                     }
                     if Instant::now() > deadline {
                         break None;
@@ -464,11 +524,72 @@ fn attach(args: &[String]) -> Result<i32> {
     }
 }
 
-fn list(json: bool) -> Result<i32> {
-    let (_sock, mut reader) = request(&Request::List)?;
+/// ternd answered and said no: trying again won't help.
+#[derive(Debug)]
+struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "attach failed: {}", self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Opens a pane's session on a device, saying what's happening while the device connects.
+/// When SSH needs a password, a passphrase or a host key answered, the pane is where it asks.
+fn wait_for_device<T>(host: &str, mut open: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut shown = String::new();
+    let mut delay = Duration::from_millis(200);
+    loop {
+        let error = match open() {
+            Ok(done) => return Ok(done),
+            Err(e) if e.downcast_ref::<Refused>().is_some() => return Err(e),
+            Err(e) => e,
+        };
+        let status = link::current_status(host);
+        let message = match status.state.as_str() {
+            "sign_in" => {
+                println!("\r\n{host} needs you to sign in: {}\r", status.message);
+                println!("Press Return to sign in here, or close this pane.\r");
+                let mut line = String::new();
+                if std::io::stdin().read_line(&mut line)? == 0 {
+                    return Err(error);
+                }
+                match link::sign_in(host) {
+                    Ok(true) => println!("Signed in. Connecting…\r"),
+                    _ => println!("Signing in didn't work; press Return to try again.\r"),
+                }
+                shown.clear();
+                delay = Duration::from_millis(200);
+                continue;
+            }
+            "installing" => format!("Copying tern to {host}…"),
+            "connecting" | "stopped" | "" => format!("Connecting to {host}…"),
+            "incompatible" => format!("{}. Restart it from tern's Settings → Devices.", status.message),
+            _ => format!("Can't reach {host}: {}. Trying again…", if status.message.is_empty() { error.to_string() } else { status.message.clone() }),
+        };
+        if message != shown {
+            println!("\x1b[2m{message}\x1b[m\r");
+            shown = message;
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(Duration::from_secs(3));
+    }
+}
+
+fn list(args: &[String]) -> Result<i32> {
+    let (host, args) = take_host(args)?;
+    let json = args.iter().any(|a| a == "--json");
+    let (_sock, mut reader) = request_on(host.as_deref(), &Request::List, Duration::from_secs(90))?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let sessions: Vec<SessionInfo> = serde_json::from_str(&line)?;
+    if json && host.is_some() {
+        // Windows and tabs are the Mac's; a device only has sessions.
+        println!("{}", serde_json::json!({ "sessions": sessions }));
+        return Ok(0);
+    }
     if json {
         // Windows, folders, tabs and their split panes, each pane with its session.
         let (_sock, mut reader) = request(&Request::LayoutTree)?;
@@ -500,8 +621,9 @@ fn list(json: bool) -> Result<i32> {
 }
 
 fn kill(args: &[String]) -> Result<i32> {
+    let (host, args) = take_host(args)?;
     let id = args.first().context("kill needs a session id")?.clone();
-    let (_sock, mut reader) = request(&Request::Kill { id })?;
+    let (_sock, mut reader) = request_on(host.as_deref(), &Request::Kill { id }, Duration::from_secs(90))?;
     let mut line = String::new();
     reader.read_line(&mut line)?;
     print!("{line}");

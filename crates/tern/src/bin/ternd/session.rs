@@ -128,6 +128,8 @@ pub struct Session {
     pub id: String,
     pub pid: i32,
     start_cwd: Option<String>,
+    /// The Mac whose app started it.
+    owner: Option<String>,
     pub master: File,
     pub state: Mutex<SessionState>,
 }
@@ -243,6 +245,7 @@ fn session_info(s: &Session) -> SessionInfo {
         command_running: st.capture.running(),
         input_ms: st.last_input_ms,
         last_command,
+        owner: s.owner.clone(),
     }
 }
 
@@ -311,6 +314,7 @@ fn merge_report(
     AgentReport { agent, state, at_ms, session: session.or(old_session), message, asked_by }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_session(
     id: &str,
     cols: u16,
@@ -318,6 +322,7 @@ pub fn spawn_session(
     cwd: Option<String>,
     cmd: Option<String>,
     env: Vec<(String, String)>,
+    owner: Option<String>,
     sessions: &Sessions,
 ) -> Result<(Arc<Session>, Option<SavedMeta>)> {
     let ws = Winsize { ws_row: rows, ws_col: cols, ws_xpixel: 0, ws_ypixel: 0 };
@@ -376,6 +381,7 @@ pub fn spawn_session(
         id: id.to_string(),
         pid,
         start_cwd: cwd,
+        owner,
         master,
         state: Mutex::new(SessionState {
             screen,
