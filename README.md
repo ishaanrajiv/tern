@@ -55,6 +55,18 @@ Mac-native, and sessions survive quitting the app.
 - **Quick settings.** ⌘⇧, (tern → Quick Settings…) changes the theme,
   text size, cursor, notifications and more without leaving the keyboard: ←/→ change the selected
   value, and the theme list previews each theme as you move through it (Esc puts yours back).
+- **Devices.** Folders on other machines sit in the sidebar beside this Mac's, their sessions
+  running on that machine: a Linux box or another Mac you reach over SSH. Add one in Settings →
+  Devices, then type its name and a colon in ⌘N (`devbox:`) for its recent folders and
+  repositories, or a path (`devbox:~/dev/`) to browse. A device's tabs work like local ones:
+  splits, agent status, notifications, and sessions that keep running while this Mac sleeps,
+  quits tern or loses the network, and that come back when it reconnects. tern uses your SSH
+  config, keys and agent; the first time, it copies its own `tern` and `ternd` to
+  `~/.local/share/tern` on the device (static builds for x86_64 and ARM Linux, or this app's for an
+  Apple Silicon Mac) and keeps them in step with the app. A device that wants a password or a host
+  key confirmed asks in the pane, once. Settings → Devices shows each connection, sets up agent
+  hooks there and restarts its ternd after an update. The folder header's chip shows the device,
+  with a dot while it isn't connected.
 - **SSH.** File → Connect over SSH… uses your own SSH config and can reattach to a named tmux
   session on the host.
 - **Launch presets.** File → Project Launch Presets… saves a folder's tabs, splits, startup
@@ -223,6 +235,13 @@ ternd (Rust, launchd agent dev.tern.ternd)
   └─ owns each session's PTY + a headless libghostty-vt terminal
 ```
 
+A pane on a device runs `tern attach --host <device> <session>`, which reaches the device's ternd
+through `tern link <device>`: one SSH connection per device, held by the Mac, carrying every
+pane's stream to `tern proxy` on the device and on to its ternd. The link reconnects by itself,
+installs or updates tern on the device when it needs to, and reports how it's doing to
+`devices/<device>.json` in the runtime folder; `tern link <device> --status` prints it. On Linux,
+ternd keeps its socket and log in `~/.local/state/tern`.
+
 ternd runs under launchd because macOS kills an app's child processes when it quits. Its headless
 terminal is Ghostty's own engine, so a reattaching pane gets back exactly what it showed. The log is
 at `~/Library/Application Support/tern/ternd.log`.
@@ -285,6 +304,8 @@ working-indicator = turning
 folder-order = recent
 # Repeat for more folders; `repo-root =` alone for none.
 repo-root = ~/dev
+# Machines whose folders tern offers: a Host from ~/.ssh/config, or user@host. Repeat for more.
+device = devbox
 # system, vscode, cursor or zed
 file-editor = zed
 global-hotkey = true
@@ -367,7 +388,13 @@ testing. It keeps its own layout and settings and spawns its own daemon without 
 - A reboot or ternd restart ends running processes. Screens come back, and the command that was
   running is typed at the prompt but not run. Full-screen programs like vim aren't saved while
   they're open.
-- Upgrading ternd ends the processes in your tabs.
+- Upgrading ternd ends the processes in your tabs. A device's ternd is restarted only from
+  Settings → Devices, so after updating tern a device keeps its older ternd until you do.
+- On a device, ⌘-click, Open Selected File, Show in Finder and worktrees don't work yet, and
+  dropping a file or pasting an image types this Mac's path. Running `tern split` or `tern tab`
+  inside a device's pane doesn't reach the app. A device's ternd reads its own
+  `~/.config/tern/config` for `on-<event>` commands and `notify-ntfy`, and can't tell whether
+  you're at the Mac, so it counts you as always away.
 - When the CLI changes a window's layout at the same moment as you do, the CLI's change wins and
   yours is undone.
 - A turn that ends without a Stop hook (an API error, or Esc while the model is writing) sends no
@@ -390,6 +417,8 @@ testing. It keeps its own layout and settings and spawns its own daemon without 
 tern has no account and no telemetry. It reaches the network to check npm for agent updates,
 to check and download GitHub releases (every six hours unless you turn it off in Settings → Updates),
 to fetch Claude Code usage limits if you turn that on, and for SSH connections and commands you run.
+For a device, it connects with your own SSH setup and copies its own binaries there; nothing goes
+anywhere else.
 
 Your settings and launch presets (environment values in plain text) are in `~/.config/tern`,
 readable only by you. Everything else stays unencrypted in `~/Library/Application Support/tern`: the layout, saved screens, typed commands, usage numbers, pasted PNGs, exported output, staged updates and ternd's log.

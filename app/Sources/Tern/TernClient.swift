@@ -21,6 +21,10 @@ nonisolated struct SessionInfo: Decodable, Equatable {
     let agentStateMs: UInt64?
     let agentSession: String?
     let agentMessage: String?
+    /// The Mac whose app started the session; nil for one started from the CLI.
+    var owner: String? = nil
+    /// The device the session runs on; nil on this Mac. Set by the app, not ternd.
+    var host: String? = nil
     /// What a blocked program needs: "permission", "question" or "auth" (OSC 7501 only).
     var agentKind: String? = nil
     /// Percent done, when the program said (OSC 7501 only).
@@ -67,13 +71,19 @@ nonisolated struct DaemonStatus: Decodable {
 
 /// Talks to ternd over its unix socket (see crates/tern/src/lib.rs for the protocol).
 nonisolated enum TernClient {
-    static let socketPath: String = {
-        if let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] {
-            return dir + "/ternd.sock"
-        }
+    /// Where ternd and the tern CLI keep their files: the layout, the socket, devices/.
+    static let runtimeDir: String = {
+        if let dir = ProcessInfo.processInfo.environment["TERN_RUNTIME_DIR"] { return dir }
         return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/tern/ternd.sock").path
+            .appendingPathComponent("Library/Application Support/tern").path
     }()
+
+    static let socketPath: String = runtimeDir + "/ternd.sock"
+
+    /// This Mac's ternd, or a device's through its link (`tern link`).
+    static func socket(_ host: String?) -> String {
+        host.map(Device.socketPath) ?? socketPath
+    }
 
     private static var decoder: JSONDecoder {
         let d = JSONDecoder()
@@ -81,24 +91,54 @@ nonisolated enum TernClient {
         return d
     }
 
-    /// The current session list, or nil if ternd isn't running.
-    static func listNow() -> [SessionInfo]? {
-        guard let conn = LineConnection(path: socketPath) else { return nil }
+    /// The current session list, or nil if ternd (or the device) can't be reached.
+    static func listNow(host: String? = nil) -> [SessionInfo]? {
+        guard let conn = LineConnection(path: socket(host), timeout: host == nil ? 5 : 15) else { return nil }
         conn.send(["op": "list"])
-        guard let line = conn.readLine() else { return nil }
-        return try? decoder.decode([SessionInfo].self, from: line)
+        guard let line = conn.readLine(), var list = try? decoder.decode([SessionInfo].self, from: line) else { return nil }
+        for i in list.indices { list[i].host = host }
+        return list
     }
 
-    static func kill(_ id: String) {
+    static func kill(_ id: String, host: String? = nil) {
         DispatchQueue.global().async {
-            guard let conn = LineConnection(path: socketPath) else { return }
+            guard let conn = LineConnection(path: socket(host), timeout: host == nil ? 5 : 15) else { return }
             conn.send(["op": "kill", "id": id])
             _ = conn.readLine()
         }
     }
 
-    static func output(_ id: String, lastCommand: Bool = false) -> TerminalOutput? {
-        guard let conn = LineConnection(path: socketPath, maximumLine: 64 << 20) else { return nil }
+    /// Folders on a device for the folder picker; nil while it can't be reached.
+    static func folders(host: String, roots: [String]) -> RemoteFolders? {
+        guard let conn = LineConnection(path: socket(host), timeout: 20) else { return nil }
+        conn.send(["op": "folders", "roots": roots])
+        guard let line = conn.readLine() else { return nil }
+        return try? JSONDecoder().decode(RemoteFolders.self, from: line)
+    }
+
+    /// The folders inside `path` on a device (`~` is its home).
+    static func listDirs(host: String, path: String) -> RemoteDirs? {
+        guard let conn = LineConnection(path: socket(host), timeout: 15) else { return nil }
+        conn.send(["op": "list_dirs", "path": path])
+        guard let line = conn.readLine() else { return nil }
+        return try? JSONDecoder().decode(RemoteDirs.self, from: line)
+    }
+
+    /// Agent hooks on a device: `status`, `install` or `uninstall`. Nil when it can't be reached.
+    static func hooks(host: String, action: String, agent: String? = nil) -> (agents: [RemoteHooks], error: String?)? {
+        guard let conn = LineConnection(path: socket(host), timeout: 20) else { return nil }
+        var request: [String: Any] = ["op": "hooks", "action": action]
+        if let agent { request["agent"] = agent }
+        conn.send(request)
+        guard let line = conn.readLine(),
+              let object = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { return nil }
+        let agents = (object["agents"]).flatMap { try? JSONSerialization.data(withJSONObject: $0) }
+            .flatMap { try? JSONDecoder().decode([RemoteHooks].self, from: $0) } ?? []
+        return (agents, object["error"] as? String)
+    }
+
+    static func output(_ id: String, host: String? = nil, lastCommand: Bool = false) -> TerminalOutput? {
+        guard let conn = LineConnection(path: socket(host), maximumLine: 64 << 20, timeout: host == nil ? 5 : 15) else { return nil }
         conn.send(["op": "read_output", "id": id, "last_command": lastCommand])
         guard let data = conn.readLine() else { return nil }
         return try? JSONDecoder().decode(TerminalOutput.self, from: data)
@@ -239,6 +279,9 @@ nonisolated final class LineConnection {
     }
 
     deinit { close(fd) }
+
+    /// Ends a read waiting on another thread.
+    func hangUp() { shutdown(fd, SHUT_RDWR) }
 
     func send(_ object: [String: Any]) {
         guard var data = try? JSONSerialization.data(withJSONObject: object) else { return }

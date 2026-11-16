@@ -263,7 +263,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
         if let tab {
             window?.title = workspace.title(for: tab)
             let s = workspace.sessions[tab.focusedPane]
-            let dir = s?.cwd.map(abbreviateHome) ?? ""
+            let dir = s?.place ?? ""
             window?.subtitle = [dir, s?.branch].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
         } else {
             window?.title = "tern"
@@ -602,6 +602,10 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             self?.closeFolderPicker()
             self?.newSession { $0.openFolder(path, worktree: worktree) }
         }
+        model.onSignIn = { [weak self] host in
+            self?.closeFolderPicker()
+            self?.workspace.run(DeviceCenter.shared.signInCommand(host), in: NSHomeDirectory())
+        }
         let host = NSHostingView(rootView: FolderPickerView(model: model))
         // The terminal lets go of the keyboard, or it can keep it from the picker's field.
         window?.makeFirstResponder(nil)
@@ -768,7 +772,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             if let tabID { self?.workspace.rememberClosedTab(tabID) }
             else if let tab = self?.workspace.selectedTab, tab.root.panes == panes { self?.workspace.rememberClosedTab(tab.id) }
             for pane in panes {
-                TernClient.kill(pane)
+                TernClient.kill(pane, host: self?.workspace.host(pane: pane))
                 self?.workspace.removePane(pane)
             }
         }

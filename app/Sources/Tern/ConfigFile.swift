@@ -120,6 +120,7 @@ final class ConfigStore {
         ConfigSetting(key: "working-indicator", pref: Prefs.workingIndicator, kind: .choice(["trailing", "turning"])),
         ConfigSetting(key: "folder-order", pref: Prefs.folderOrder, kind: .choice(["manual", "recent"])),
         ConfigSetting(key: "repo-root", pref: Prefs.repoRoots, kind: .list),
+        ConfigSetting(key: "device", pref: Prefs.devices, kind: .list),
         ConfigSetting(key: "file-editor", pref: Prefs.fileEditor, kind: .choice(["system", "vscode", "cursor", "zed"])),
         ConfigSetting(key: "global-hotkey", pref: Prefs.globalHotkey, kind: .flag),
         ConfigSetting(key: "tab-worktrees", pref: Prefs.worktrees, kind: .flag),
@@ -229,6 +230,9 @@ final class ConfigStore {
 
     /// The values to use, or nil for the default. A list given only as `key =` is empty.
     static func validate(_ s: ConfigSetting, _ values: [String], given: Bool) -> Result<[String]?, ConfigProblem> {
+        if s.key == "device", let bad = values.first(where: { !$0.isEmpty && !Device.validHost($0) }) {
+            return .failure(ConfigProblem("device is an SSH destination, an alias from ~/.ssh/config or user@host, not \(bad)."))
+        }
         if case .list = s.kind, given { return .success(values) }
         guard let last = values.last else { return .success(nil) }
         switch s.kind {

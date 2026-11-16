@@ -10,6 +10,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var openMonitor: AppOpenMonitor?
     private var pendingOpens: [AppOpenRequest] = []
     private var latestSessions: [SessionInfo] = []
+    private var localSessions: [SessionInfo] = []
+    /// Each device's sessions, from its watch.
+    private var deviceSessions: [String: [SessionInfo]] = [:]
+    /// Devices whose orphan sessions have been taken as tabs this run.
+    private var adoptedDevices: Set<String> = []
     private var ready = false
     private var terminating = false
     private var lastFocusedWindowID: String?
@@ -60,6 +65,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainWindow?.checkDaemon()
         hotkey = TerminalHotkey { [weak self] in self?.toggleTerminal() }
         TernClient.watch { [weak self] list in self?.updateSessions(list) }
+        DeviceCenter.shared.ternBinary = ternBinary
+        DeviceCenter.shared.onSessions = { [weak self] host, list in self?.updateDevice(host, list) }
+        DeviceCenter.shared.onSignIn = { [weak self] host in
+            guard let window = self?.mainWindow ?? self?.makeWindow() else { return }
+            window.workspace.run(DeviceCenter.shared.signInCommand(host), in: NSHomeDirectory())
+            window.showWindow(nil)
+            window.window?.makeKeyAndOrderFront(nil)
+        }
+        watchDevices()
         // `tern split`, `tern tab` and `tern close` change layouts in ternd.
         TernClient.watchLayouts(onConnect: { [weak self] in
             for controller in self?.windows ?? [] { controller.workspace.refreshLayout() }
@@ -150,6 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         controller.onGeometryChanged = { [weak self] in self?.saveWindows() }
         controller.onSync = { [weak self, weak controller] in
+            self?.watchDevices()
             self?.notifier?.updateBadge()
             if let controller, let id = controller.workspace.selectedTabID, controller.workspace.isActive { self?.notifier?.clear(tabID: id) }
         }
@@ -166,19 +181,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     private var adopted = false
     private func updateSessions(_ list: [SessionInfo]) {
-        latestSessions = list
-        for window in windows { window.workspace.update(sessions: list) }
+        localSessions = list
+        publishSessions()
         updates.update(sessions: list)
-        if !adopted, let first = windows.first {
+        if !adopted, windows.first != nil {
             adopted = true
-            let detached = Set(windows.flatMap { $0.workspace.detachedPanes })
-            let known = ownedPanes.union(detached)
-            for session in list where !known.contains(session.id) && !session.id.hasPrefix("bench-") && !UpdateRunner.isRunSession(session.id) {
-                first.workspace.newTab(projectPath: session.gitRoot ?? session.cwd ?? NSHomeDirectory(), cwd: session.cwd ?? NSHomeDirectory(), paneID: session.id)
-            }
+            adopt(list)
             TernClient.setScrollback(TerminalPreferences.current.scrollback)
         }
         notifier?.updateBadge()
+    }
+
+    /// A device's sessions changed, or its watch stopped (nil).
+    private func updateDevice(_ host: String, _ list: [SessionInfo]?) {
+        deviceSessions[host] = list
+        publishSessions()
+        if let list, !adoptedDevices.contains(host), windows.first != nil {
+            adoptedDevices.insert(host)
+            adopt(list)
+        }
+        notifier?.updateBadge()
+    }
+
+    /// Every session the windows can show: this Mac's and each device's.
+    private func publishSessions() {
+        latestSessions = localSessions + deviceSessions.values.joined()
+        for window in windows { window.workspace.update(sessions: latestSessions) }
+    }
+
+    /// Sessions no window has (started from the CLI, or left from an older layout) become tabs
+    /// in the first window, grouped by repository.
+    private func adopt(_ list: [SessionInfo]) {
+        guard let first = windows.first else { return }
+        let detached = Set(windows.flatMap { $0.workspace.detachedPanes })
+        let known = ownedPanes.union(detached)
+        for session in list where !known.contains(session.id) && Workspace.adoptable(session) {
+            first.workspace.newTab(projectPath: Workspace.folder(of: session), cwd: session.startDirectory, paneID: session.id)
+        }
+    }
+
+    /// Follows the sessions of every device a window shows a folder of, and of those in Settings.
+    private func watchDevices() {
+        let hosts = Set(windows.flatMap { $0.workspace.hosts }).union(Prefs.deviceList)
+        if hosts != DeviceCenter.shared.watched { DeviceCenter.shared.watch(hosts) }
     }
     private func saveWindows() {
         guard ready else { return }

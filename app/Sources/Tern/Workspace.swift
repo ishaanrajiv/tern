@@ -128,9 +128,12 @@ struct Project: Codable, Identifiable, Equatable {
     /// The tab last selected here, which ⌘1–9 and reopening the folder return to.
     var lastTab: String?
 
-    var name: String {
-        path == NSHomeDirectory() ? "Home" : (path as NSString).lastPathComponent
-    }
+    var name: String { location.name }
+
+    /// Where the folder is: on this Mac, or on a device (`host:/path`).
+    var location: FolderLocation { FolderLocation(path) }
+    /// The device the folder is on; nil on this Mac.
+    var host: String? { location.host }
 
     /// The lowest tab number not in use here.
     var freeNumber: Int {
@@ -226,6 +229,8 @@ enum Prefs {
     static let folderOrder = "folderOrder"
     /// Folders searched for git repositories to offer in the folder picker, comma-separated.
     static let repoRoots = "repoRoots"
+    /// SSH destinations whose folders tern offers, one per line (`device =` in the config file).
+    static let devices = "devices"
     static let theme = "theme"
     /// Read Claude Code's usage limits from the account (needs Claude Code's Keychain item). Off until
     /// the user turns it on: it reads a credential and sends it to Anthropic.
@@ -264,6 +269,12 @@ enum Prefs {
     /// Always ends in a newline, so a single folder with a comma in its name reads back whole.
     static func joinRoots(_ roots: [String]) -> String {
         roots.map { $0 + "\n" }.joined()
+    }
+
+    /// Devices from Settings → Devices, in the order added.
+    static var deviceList: [String] {
+        get { parseRoots(Prefs.defaults.string(forKey: devices) ?? "").filter(Device.validHost) }
+        set { Prefs.defaults.set(joinRoots(newValue), forKey: devices) }
     }
 
     static var order: FolderOrder {
@@ -371,6 +382,16 @@ final class Workspace {
         projects.first { $0.path == path }
     }
 
+    /// The device a pane's session runs on, from its folder; nil on this Mac.
+    func host(pane: String) -> String? {
+        projects.first { $0.tabs.contains { $0.root.panes.contains(pane) } }?.host
+    }
+
+    /// The devices whose folders this window shows, or whose tabs it could reopen.
+    var hosts: Set<String> {
+        Set(projects.compactMap(\.host) + closedTabs.compactMap { FolderLocation($0.project).host })
+    }
+
     /// The agent a tab runs (or ran, if it hasn't been reopened since a restart).
     func agent(for tab: Tab) -> String? {
         let panes = [tab.focusedPane] + tab.root.panes.filter { $0 != tab.focusedPane }
@@ -382,6 +403,12 @@ final class Workspace {
     /// relative inside the folder, otherwise from home.
     func strayCwd(_ tab: Tab) -> String? {
         guard let cwd = sessions[tab.focusedPane]?.cwd, let project = project(containing: tab.id) else { return nil }
+        if project.host != nil {
+            let base = project.location.path
+            if cwd == base { return nil }
+            if cwd.hasPrefix(base + "/") { return String(cwd.dropFirst(base.count + 1)) }
+            return Device.abbreviate(cwd, home: project.host.flatMap(Device.home))
+        }
         let base = tab.worktree ?? project.path
         for root in [base, resolved(base)] {
             if cwd == root { return nil }
@@ -398,8 +425,10 @@ final class Workspace {
         return real
     }
 
+    /// Where a pane is, on the device its folder is on.
     func cwd(for pane: String) -> String {
-        sessions[pane]?.cwd ?? paneCwd[pane] ?? NSHomeDirectory()
+        sessions[pane]?.cwd ?? paneCwd[pane] ?? projects.first { $0.tabs.contains { $0.root.panes.contains(pane) } }
+            .map { $0.host == nil ? NSHomeDirectory() : $0.location.path } ?? NSHomeDirectory()
     }
 
     func isUnread(_ tab: Tab) -> Bool {
@@ -613,6 +642,8 @@ final class Workspace {
     }
 
     nonisolated static func normalize(_ path: String) -> String {
+        let location = FolderLocation(path)
+        if let host = location.host { return FolderLocation(host: host, path: FolderLocation.normalizeRemote(location.path)).string }
         let p = ((path as NSString).expandingTildeInPath as NSString).standardizingPath
         return p.count > 1 && p.hasSuffix("/") ? String(p.dropLast()) : p
     }
@@ -633,6 +664,13 @@ final class Workspace {
     @discardableResult
     func newSession(projectPath: String, cwd: String, worktree: Bool? = nil) -> Worktree.Failure? {
         let wanted = worktree ?? Prefs.defaults.bool(forKey: Prefs.worktrees)
+        // Worktrees are made on this Mac; a folder on a device gets a plain tab.
+        if FolderLocation(projectPath).host != nil {
+            if worktree == true { return .unsupported("tern can't make worktrees on a device yet.") }
+            // Callers pass the folder itself as where to start: on the device, that's its path.
+            newTab(projectPath: projectPath, cwd: FolderLocation(cwd).path)
+            return nil
+        }
         // The setting applies only where it can: inside a git repository.
         guard wanted, worktree == true || Worktree.mainRoot(of: cwd) != nil else {
             newTab(projectPath: projectPath, cwd: cwd)
@@ -810,7 +848,7 @@ final class Workspace {
             closedTabs.removeAll { $0.id == record.id }
         } else {
             detachedPanes.remove(id)
-            newTab(projectPath: session.gitRoot ?? session.cwd ?? NSHomeDirectory(), cwd: session.cwd ?? NSHomeDirectory(), paneID: id)
+            newTab(projectPath: Self.folder(of: session), cwd: session.startDirectory, paneID: id)
         }
         save()
     }
@@ -886,7 +924,9 @@ final class Workspace {
         guard id != target,
               let source = projects.firstIndex(where: { $0.tabs.contains(where: { $0.id == id }) }),
               let index = projects[source].tabs.firstIndex(where: { $0.id == id }),
-              projects.contains(where: { $0.path == project }) else { return }
+              projects.contains(where: { $0.path == project }),
+              // A tab's sessions run where its folder is: it can't move to another machine's folder.
+              projects[source].host == FolderLocation(project).host else { return }
         var tab = projects[source].tabs.remove(at: index)
         if projects[source].lastTab == id { projects[source].lastTab = projects[source].tabs.first?.id }
         guard let destination = projects.firstIndex(where: { $0.path == project }) else { return }
@@ -1131,12 +1171,25 @@ final class Workspace {
     private func adoptOrphans(_ list: [SessionInfo]) {
         let known = Set(allTabs.flatMap { $0.root.panes })
         let selected = selectedTabID
-        for s in list where !known.contains(s.id) && !s.id.hasPrefix("bench-") && !UpdateRunner.isRunSession(s.id) {
-            let cwd = s.cwd ?? NSHomeDirectory()
-            newTab(projectPath: s.gitRoot ?? cwd, cwd: cwd, paneID: s.id)
+        for s in list where !known.contains(s.id) && Self.adoptable(s) {
+            newTab(projectPath: Self.folder(of: s), cwd: s.startDirectory, paneID: s.id)
         }
         if let selected { selectedTabID = selected }
         if selectedTabID == nil { selectedTabID = allTabs.first?.id }
+    }
+
+    /// A session no tab has that may become one: not a benchmark's or an updater's, nor one
+    /// another Mac started on a ternd it shares. On a device, only those this Mac started:
+    /// the rest belong to whoever uses that machine.
+    static func adoptable(_ s: SessionInfo) -> Bool {
+        guard !s.id.hasPrefix("bench-"), !UpdateRunner.isRunSession(s.id) else { return false }
+        return s.host == nil ? Device.isOurs(s) : s.owner == Device.clientID
+    }
+
+    /// The sidebar folder for a session found running: its repository, or where it is.
+    static func folder(of s: SessionInfo) -> String {
+        let path = s.gitRoot ?? s.cwd ?? (s.host == nil ? NSHomeDirectory() : "~")
+        return FolderLocation(host: s.host, path: path).string
     }
 
     func remote(for pane: String) -> RemoteConnection? { paneRemote[pane] }
