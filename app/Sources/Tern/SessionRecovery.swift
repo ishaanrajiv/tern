@@ -34,13 +34,20 @@ struct DetachedSessionsView: View {
                 HStack {
                     VStack(alignment: .leading) {
                         Text(session.command ?? session.title.nonempty ?? session.process)
-                        Text(session.cwd ?? session.id).font(.caption).foregroundStyle(.secondary)
+                        Text(origin(session)).font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
                     Button("Reattach") { attach(session.id) }
                 }
             }
         }.padding(16).frame(minWidth: 620, minHeight: 360)
+    }
+
+    /// Where it runs, and who started it when that wasn't this Mac.
+    private func origin(_ session: SessionInfo) -> String {
+        let place = session.place ?? session.id
+        guard Device.isOurs(session) || session.owner == nil else { return place + " · started from another Mac" }
+        return place
     }
 }
 

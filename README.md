@@ -32,7 +32,8 @@ Mac-native, and sessions survive quitting the app.
   File → Export Scrollback… opens selectable output with Find, Save and Open in Editor actions.
 - **Files and images.** Drop Finder files, or copy them in Finder and paste, to type their quoted
   full paths. ⌘-click a local `path:line:column` diagnostic, or select a path and choose Edit → Open
-  Selected File in Editor. Choose the editor in Settings → General. **Paste Image as File Path** saves a private PNG and pastes its quoted path;
+  Selected File in Editor. Choose the editor in Settings → General. In a device's pane, VS Code
+  and Cursor open the file through Remote - SSH, and Zed through its own SSH remoting. **Paste Image as File Path** saves a private PNG and pastes its quoted path;
   programs supporting Kitty clipboard requests can also read image MIME types directly.
 - **Recovery.** File → Detach Tab leaves its processes running. Detached Sessions… reattaches them.
   Reopen Closed Tab restores a recently closed layout. Processes deliberately stopped by closing a
@@ -390,8 +391,10 @@ testing. It keeps its own layout and settings and spawns its own daemon without 
   they're open.
 - Upgrading ternd ends the processes in your tabs. A device's ternd is restarted only from
   Settings → Devices, so after updating tern a device keeps its older ternd until you do.
-- On a device, ⌘-click, Open Selected File, Show in Finder and worktrees don't work yet, and
-  dropping a file or pasting an image types this Mac's path. Running `tern split` or `tern tab`
+- On a device, Show in Finder and worktrees don't work yet, and dropping a file or pasting an
+  image types this Mac's path. ⌘-click needs VS Code, Cursor or Zed as the editor, and in a
+  device's pane it underlines any `path/with/slashes`, since tern can't check the file exists. Zed
+  opens the file without going to its line. Running `tern split` or `tern tab`
   inside a device's pane doesn't reach the app. A device's ternd reads its own
   `~/.config/tern/config` for `on-<event>` commands and `notify-ntfy`, and can't tell whether
   you're at the Mac, so it counts you as always away.
