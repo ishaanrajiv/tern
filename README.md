@@ -179,7 +179,9 @@ open ~/Applications/Tern.app
 ```
 
 `build-app.sh` writes `build/Tern.app`. `--install` copies it to `~/Applications`, and `--debug`
-makes a debug build. It signs with your Apple Development identity if you have one, or ad hoc.
+makes a debug build. It also builds tern and ternd for Linux devices with `scripts/build-remote.sh`
+(static musl binaries for x86_64 and aarch64, linked with rustup's `rust-lld`); `--no-remote`
+leaves them out, and the app then reaches only Macs. It signs with your Apple Development identity if you have one, or ad hoc.
 Set `TERN_SIGN_IDENTITY` to pick another, or `-` for ad hoc.
 
 `build-ghostty.sh` downloads and verifies Ghostty's Zig dependencies into `.zig-deps/`, then builds
