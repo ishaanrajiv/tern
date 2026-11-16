@@ -2,18 +2,15 @@
   "fill-specializations": [
     {
       "value": {
-        "linear-gradient": [
-          "srgb:0.98039,0.98431,0.98824,1.00000",
-          "srgb:0.88627,0.89804,0.91765,1.00000"
-        ]
+        "solid": "srgb:0.96863,0.92549,0.83922,1.00000"
       }
     },
     {
       "appearance": "dark",
       "value": {
         "linear-gradient": [
-          "srgb:0.17255,0.18431,0.21176,1.00000",
-          "srgb:0.07059,0.07843,0.09412,1.00000"
+          "srgb:0.10980,0.10196,0.09020,1.00000",
+          "srgb:0.04314,0.03922,0.03529,1.00000"
         ]
       }
     }
@@ -28,7 +25,7 @@
           "fill-specializations": [
             {
               "value": {
-                "solid": "srgb:0.94902,0.63529,0.22745,1.00000"
+                "solid": "srgb:0.71373,0.49020,0.03529,1.00000"
               }
             },
             {
@@ -43,10 +40,10 @@
       "lighting": "individual",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.4
+        "opacity": 0.5
       },
       "translucency": {
-        "enabled": true,
+        "enabled": false,
         "value": 0.4
       },
       "specular": true
@@ -54,19 +51,37 @@
     {
       "layers": [
         {
-          "name": "t",
-          "image-name": "t.svg",
+          "name": "stem",
+          "image-name": "stem.svg",
           "glass": true,
           "fill-specializations": [
             {
               "value": {
-                "solid": "srgb:0.10588,0.11373,0.13333,1.00000"
+                "solid": "srgb:0.13725,0.15686,0.21961,1.00000"
               }
             },
             {
               "appearance": "dark",
               "value": {
-                "solid": "srgb:0.94902,0.95294,0.96078,1.00000"
+                "solid": "srgb:0.95294,0.92157,0.86667,1.00000"
+              }
+            }
+          ]
+        },
+        {
+          "name": "crossbar",
+          "image-name": "crossbar.svg",
+          "glass": true,
+          "fill-specializations": [
+            {
+              "value": {
+                "solid": "srgb:0.21961,0.23529,0.28235,1.00000"
+              }
+            },
+            {
+              "appearance": "dark",
+              "value": {
+                "solid": "srgb:0.86275,0.83529,0.78431,1.00000"
               }
             }
           ]
@@ -75,7 +90,7 @@
       "lighting": "individual",
       "shadow": {
         "kind": "neutral",
-        "opacity": 0.4
+        "opacity": 0.5
       },
       "translucency": {
         "enabled": false,
