@@ -10,6 +10,9 @@ import AppKit
 /// An app may capture its own windows without screen-recording permission.
 enum DebugHooks {
     private static var sources: [DispatchSourceSignal] = []
+    /// The window `WindowID` last chose, which `Type` and the mouse commands use when the app
+    /// isn't frontmost and so has no key window.
+    private static weak var chosen: NSWindow?
 
     static func install(commands: @escaping () -> [Command]) {
         guard ProcessInfo.processInfo.environment["TERN_DEBUG"] == "1" else { return }
@@ -24,6 +27,16 @@ enum DebugHooks {
             if title.hasPrefix("WindowID "), let window = NSApp.windows.first(where: { $0.identifier?.rawValue == String(title.dropFirst(9)) }) {
                 NSApp.activate(ignoringOtherApps: true)
                 window.makeKeyAndOrderFront(nil)
+                chosen = window
+                return
+            }
+            // "Appearance light|dark|system": as if macOS changed mode, without changing it.
+            if title.hasPrefix("Appearance ") {
+                switch title.dropFirst(11) {
+                case "light": NSApp.appearance = NSAppearance(named: .aqua)
+                case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+                default: NSApp.appearance = nil
+                }
                 return
             }
             // Target auxiliary editors explicitly when checking an isolated app.
@@ -43,7 +56,7 @@ enum DebugHooks {
             // "Drag X1 Y1 X2 Y2": a left-button drag, to select text.
             if parts.count == 5, parts[0] == "Drag",
                let x1 = Double(parts[1]), let y1 = Double(parts[2]), let x2 = Double(parts[3]), let y2 = Double(parts[4]),
-               let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+               let window = NSApp.keyWindow ?? chosen ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
                 let steps: [(NSEvent.EventType, Double, Double)] = [(.leftMouseDown, x1, y1)]
                     + (1...8).map { (.leftMouseDragged, x1 + (x2 - x1) * Double($0) / 8, y1 + (y2 - y1) * Double($0) / 8) }
                     + [(.leftMouseUp, x2, y2)]
@@ -58,7 +71,7 @@ enum DebugHooks {
             }
             if parts.count == 3, ["Hover", "Click", "DoubleClick"].contains(parts[0]),
                let x = Double(parts[1]), let y = Double(parts[2]),
-               let window = NSApp.keyWindow ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
+               let window = NSApp.keyWindow ?? chosen ?? NSApp.windows.first(where: { $0.isVisible && $0.frame.width > 400 }) {
                 let point = NSPoint(x: x, y: window.frame.height - y)
                 let click: [(NSEvent.EventType, Int)] = [(.leftMouseDown, 1), (.leftMouseUp, 1)]
                 let events: [(NSEvent.EventType, Int)] = switch parts[0] {
@@ -77,7 +90,7 @@ enum DebugHooks {
             }
             // "Type <text>" enters text into whatever has focus (say, the folder picker).
             if title.hasPrefix("Type ") {
-                let window = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
+                let window = NSApp.keyWindow ?? chosen ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
                 (window?.firstResponder as? any NSTextInputClient)?.insertText(String(title.dropFirst(5)), replacementRange: NSRange(location: NSNotFound, length: 0))
                 return
             }
@@ -93,7 +106,7 @@ enum DebugHooks {
                 // A real key event, so it reaches whatever view (or sheet) has focus.
                 // Straight to the window: NSApp routes keys to the key window, and there's
                 // none while tern is in the background.
-                let target = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
+                let target = NSApp.keyWindow ?? chosen ?? NSApp.mainWindow ?? NSApp.windows.first { $0.isVisible }
                 if let window = target,
                    let down = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: command == nil ? [] : .command, timestamp: 0,
                                                windowNumber: window.windowNumber, context: nil, characters: chars,

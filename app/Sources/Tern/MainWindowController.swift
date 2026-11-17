@@ -493,7 +493,7 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
             Command("pane.previous") { w.cyclePane(-1) },
         ]
         // Palette-only: "theme" finds them all.
-        + (Theme.builtIn.map { ($0.id, $0.name) } + [("ghostty", "Ghostty Colours")]).map { id, name in
+        + (Theme.builtIn(dark: ThemeStore.systemIsDark).map { ($0.id, $0.name) } + [("ghostty", "Ghostty Colours")]).map { id, name in
             Command(id: "theme.\(id)", title: "Theme: \(name)", menu: "View", inMenu: false) {
                 Prefs.defaults.set(id, forKey: Prefs.theme)
             }
@@ -788,56 +788,45 @@ final class MainWindowController: NSWindowController, NSToolbarDelegate, NSWindo
     }
 }
 
-/// The card shown with no tabs: tern's mark and the way to start.
+/// The card shown with no tabs: tern's mark, dimmed with its cursor lit, and the way to start.
 private struct EmptyState: View {
     var shortcut = ""
 
     var body: some View {
-        VStack(spacing: 10) {
-            TernMark()
-                .stroke(style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
-                .foregroundStyle(.tertiary)
-                .frame(width: 44, height: 44)
-            Text("Open a folder to start")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(.secondary)
-            if !shortcut.isEmpty {
-                HStack(spacing: 6) {
-                    Text(shortcut)
-                        .font(.system(size: 11).monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .frame(height: 18)
-                        .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.border))
-                    Text("open a folder")
+        VStack(spacing: 14) {
+            TernLogo(unitsOpacity: Ink.faint)
+                .frame(width: 64, height: 64)
+            VStack(spacing: 8) {
+                Text("Open a folder to start")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.secondary)
+                if !shortcut.isEmpty {
+                    HStack(spacing: 6) {
+                        Text(shortcut)
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .frame(height: 18)
+                            .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.border))
+                        Text("open a folder")
+                    }
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(.secondary)
                 }
-                .font(.system(size: 12.5))
-                .foregroundStyle(.tertiary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .bottom) {
+            Wordmark(height: 13)
+                .foregroundStyle(.tertiary)
+                .padding(.bottom, 22)
+        }
         .background {
             let card = RoundedRectangle(cornerRadius: PaneCard.radius, style: .continuous)
             card.fill(Palette.terminal).overlay(card.strokeBorder(Palette.border))
         }
         .themedText()
-    }
-}
-
-/// A tern in flight, drawn in two strokes: wings, then the forked tail.
-private nonisolated struct TernMark: Shape {
-    func path(in rect: CGRect) -> Path {
-        let s = min(rect.width, rect.height) / 48
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * s, y: rect.minY + y * s) }
-        var path = Path()
-        path.move(to: p(6, 20))
-        path.addCurve(to: p(24, 28), control1: p(14, 19), control2: p(19, 22))
-        path.addCurve(to: p(42, 20), control1: p(29, 22), control2: p(34, 19))
-        path.move(to: p(21, 40))
-        path.addLine(to: p(24, 28))
-        path.addLine(to: p(27, 40))
-        return path
     }
 }
 

@@ -144,76 +144,82 @@ struct TerminalPreferences: Codable, Equatable {
 }
 
 struct TerminalSettings: View {
-    private enum Page: String, CaseIterable, Identifiable {
+    enum Page: String, CaseIterable, Identifiable {
         case text = "Text & input"
         case shortcuts = "App shortcuts"
         case bindings = "Terminal bindings"
         var id: Self { self }
     }
 
+    @Bindable var model: SettingsModel
     @State private var draft = TerminalPreferences.current
-    @State private var page = Page.text
     @State private var message = ""
     @State private var failed = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Terminal settings", selection: $page) {
-                ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 16) {
+                SettingsHeader(pane: .terminal, subtitle: "These override your Ghostty config. Changes apply when you save.")
+                SegmentedChoice(options: Page.allCases.map { ($0, $0.rawValue) }, selection: $model.terminalPage)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 20).padding(.top, 16).padding(.bottom, 4)
+            .padding(.horizontal, 32)
+            .padding(.top, 40)
+            .padding(.bottom, 12)
 
-            if page == .text {
-                Form {
-                    Section("Text") {
-                        TextField("Font family", text: $draft.font, prompt: Text("Ghostty default"))
-                        TextField("Font size", value: $draft.size, format: .number)
-                        Picker("Cursor", selection: $draft.cursor) {
-                            Text("Block").tag("block")
-                            Text("Bar").tag("bar")
-                            Text("Underline").tag("underline")
-                            Text("Hollow block").tag("block_hollow")
+            if model.terminalPage == .text {
+                SettingsPage(pane: .terminal, header: false) {
+                    SettingsSection("Text") {
+                        SettingsRow("font-family") {
+                            TextField("", text: $draft.font, prompt: Text("Ghostty default")).fieldChrome().frame(width: 200)
+                        }
+                        SettingsRow("font-size") {
+                            TextField("", value: $draft.size, format: .number).fieldChrome().frame(width: 64)
+                        }
+                        SettingsRow("cursor-style") {
+                            ChoiceMenu(options: [("block", "Block"), ("bar", "Bar"), ("underline", "Underline"), ("block_hollow", "Hollow block")],
+                                       selection: $draft.cursor)
                         }
                     }
-                    Section("Input and history") {
-                        Picker("Option as Alt", selection: $draft.option) {
-                            Text("Off").tag("false")
-                            Text("Both keys").tag("true")
-                            Text("Left only").tag("left")
-                            Text("Right only").tag("right")
+                    SettingsSection("Input and history") {
+                        SettingsRow("macos-option-as-alt") {
+                            ChoiceMenu(options: [("false", "Off"), ("true", "Both keys"), ("left", "Left only"), ("right", "Right only")],
+                                       selection: $draft.option)
                         }
-                        TextField("Scrollback bytes", value: $draft.scrollback, format: .number)
-                            .help("Limits retained history in bytes in both the terminal and daemon. Reducing it discards older output.")
+                        SettingsRow("scrollback-limit") {
+                            TextField("", value: $draft.scrollback, format: .number).fieldChrome().frame(width: 120)
+                        }
                     }
                 }
             } else {
+                let shortcuts = model.terminalPage == .shortcuts
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(page == .shortcuts
-                         ? "Use command palette titles; none removes a shortcut. App shortcuts take priority."
-                         : "Use Ghostty key binding syntax, one binding per line.")
-                        .font(.callout).foregroundStyle(.secondary)
-                    Text(page == .shortcuts ? "New Tab = cmd+shift+y\nMove Tab Later = none" : "ctrl+shift+c=copy_to_clipboard")
-                        .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
-                    TextEditor(text: page == .shortcuts ? $draft.shortcuts : $draft.bindings)
-                        .font(.system(.body, design: .monospaced))
+                    SettingLabel(info: SettingsIndex[shortcuts ? "shortcut" : "keybind"],
+                                 caption: shortcuts
+                                 ? "Use command palette titles; none removes a shortcut. App shortcuts take priority."
+                                 : "Use Ghostty key binding syntax, one binding per line.")
+                    Text(shortcuts ? "New Tab = cmd+shift+y\nMove Tab Later = none" : "ctrl+shift+c=copy_to_clipboard")
+                        .font(.system(size: 11, design: .monospaced)).foregroundStyle(.secondary)
+                    let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    TextEditor(text: shortcuts ? $draft.shortcuts : $draft.bindings)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .scrollContentBackground(.hidden)
                         .padding(8)
-                        .background(.background, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-                        .accessibilityLabel(page.rawValue)
-                    Text("Changes apply when you click Save and Apply.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .background(Palette.sidebar, in: shape)
+                        .overlay(shape.strokeBorder(Palette.border))
+                        .accessibilityLabel(model.terminalPage.rawValue)
+                        .id(shortcuts ? "shortcut" : "keybind")
                 }
-                .padding(20)
+                .padding(.horizontal, 32)
+                .padding(.top, 8)
+                .padding(.bottom, 16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
 
-            Divider()
             VStack(alignment: .leading, spacing: 8) {
                 if !message.isEmpty {
                     ScrollView {
-                        Text(message).font(.caption)
-                            .foregroundStyle(failed ? Color.red : Color.secondary)
+                        Text(message).font(.system(size: 11.5))
+                            .foregroundStyle(failed ? Palette.errorText : Palette.text2)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }.frame(height: failed ? 42 : 16)
@@ -229,13 +235,14 @@ struct TerminalSettings: View {
                         do { try draft.save(); failed = false; message = "Applied." }
                         catch { failed = true; message = error.localizedDescription }
                     }
+                    .buttonStyle(LitButtonStyle())
                     .keyboardShortcut("s", modifiers: .command)
                 }
             }
-            .padding(.horizontal, 20).padding(.vertical, 12)
+            .padding(.horizontal, 32).padding(.vertical, 12)
+            .overlay(alignment: .top) { Rectangle().fill(Palette.border).frame(height: 1) }
         }
         // An edit to the config file shows here.
         .onReceive(NotificationCenter.default.publisher(for: TerminalPreferences.didChange)) { _ in draft = TerminalPreferences.current }
-        .settingsPane()
     }
 }

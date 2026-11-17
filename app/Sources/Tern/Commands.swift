@@ -81,9 +81,13 @@ final class CommandRunner: NSObject {
             default: break
             }
         }
-        if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.settings", command.id == "pane.close" {
-            window.performClose(nil)
-            return
+        if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.settings" {
+            switch command.id {
+            case "pane.close": window.performClose(nil); return
+            // Find in Settings searches the settings, not the terminal behind it.
+            case "search.find": NotificationCenter.default.post(name: SettingsModel.find, object: nil); return
+            default: break
+            }
         }
         // Editing a preset must not close a running pane behind its window.
         if let window = NSApp.keyWindow, window.identifier?.rawValue == "tern.workflow" {

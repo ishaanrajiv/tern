@@ -65,7 +65,10 @@ final class TerminalView: NSView, NSTextInputClient {
             }
         }
         // Surfaces start out focused; only the first responder should draw a solid cursor.
-        if let surface { ghostty_surface_set_focus(surface, false) }
+        if let surface {
+            ghostty_surface_set_focus(surface, false)
+            ghostty_surface_set_color_scheme(surface, GhosttyApp.shared.colorScheme)
+        }
         Self.all.add(self)
     }
 

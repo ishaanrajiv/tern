@@ -77,7 +77,7 @@ private struct Figure: View {
         HStack(alignment: .firstTextBaseline, spacing: 2) {
             Text("\(Int(value.rounded()))%")
                 .font(.system(size: 11, weight: .medium).monospacedDigit())
-                .foregroundStyle(value >= 80 ? Palette.amber : Palette.text)
+                .foregroundStyle(value >= 80 ? Palette.amberText : Palette.text)
             Text(unit)
                 .font(.system(size: 10))
                 .foregroundStyle(.tertiary)

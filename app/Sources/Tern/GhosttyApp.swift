@@ -9,7 +9,7 @@ final class GhosttyApp {
     private(set) var app: ghostty_app_t?
     private var config: ghostty_config_t?
     /// The theme the config was built with.
-    private(set) var theme: Theme = .graphite
+    private(set) var theme: Theme = .ternDark
     var themeID: String { theme.id }
     private(set) var diagnostics = ""
 
@@ -55,6 +55,28 @@ final class GhosttyApp {
             fatalError("ghostty_app_new failed")
         }
         self.app = app
+        // Not during init: Ghostty answers a new scheme with a reload action, which reads `shared`.
+        DispatchQueue.main.async { GhosttyApp.shared.updateColorScheme() }
+    }
+
+    /// Light or dark, as programs in the terminal ask for it (and as a Ghostty config's
+    /// `light:…,dark:…` values choose): the theme's, or macOS's for your own Ghostty colours.
+    var colorScheme: ghostty_color_scheme_e {
+        let dark = theme.id == "ghostty" ? ThemeStore.systemIsDark : theme.isDark
+        return dark ? GHOSTTY_COLOR_SCHEME_DARK : GHOSTTY_COLOR_SCHEME_LIGHT
+    }
+
+    /// The scheme last sent. Ghostty reloads the config for a new one, and the reload comes back
+    /// here through `applyTheme`, so only a change is sent.
+    private var sentScheme: ghostty_color_scheme_e?
+
+    func updateColorScheme() {
+        guard let app, sentScheme != colorScheme else { return }
+        sentScheme = colorScheme
+        ghostty_app_set_color_scheme(app, colorScheme)
+        for view in TerminalView.all.allObjects {
+            if let surface = view.surface { ghostty_surface_set_color_scheme(surface, colorScheme) }
+        }
     }
 
     /// Breathing room around the text; Ghostty's own default is 2pt.
@@ -75,7 +97,7 @@ final class GhosttyApp {
     /// defaults, which the user's config overrides, then the theme's colours, which win.
     private func makeConfig() -> ghostty_config_t? {
         let id = ThemeStore.selectedID
-        let chosen = Theme.builtIn.first { $0.id == id }
+        let chosen = Theme.builtIn(id, dark: ThemeStore.systemIsDark)
         let config = ghostty_config_new()
         Self.defaultsFile.path.withCString { ghostty_config_load_file(config, $0) }
         ghostty_config_load_default_files(config)
@@ -119,6 +141,7 @@ final class GhosttyApp {
         }
         // The old config stays allocated: surfaces may still point into it, and a theme change is rare.
         config = new
+        updateColorScheme()
     }
 
     private static func color(_ key: String, in config: ghostty_config_t?) -> NSColor? {

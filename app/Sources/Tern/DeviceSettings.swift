@@ -9,30 +9,30 @@ struct DeviceSettings: View {
     var body: some View {
         let hosts = Prefs.parseRoots(devicesText).filter(Device.validHost)
         let typed = newHost.trimmingCharacters(in: .whitespaces)
-        Form {
-            Section {
+        SettingsPage(pane: .devices, subtitle: "tern signs in with your SSH config, keys and agent, copies its own tern and ternd to ~/.local/share/tern on the device, and runs your sessions there, where they keep running when this Mac sleeps or quits tern. Type a device's name and a colon in \(ShortcutRegistry.label("folder.open")) to open its folders. Linux (x86_64 and ARM) and Apple Silicon Macs.") {
+            SettingsSection {
+                VStack(alignment: .leading, spacing: 10) {
+                    SettingLabel(info: SettingsIndex["device"])
+                    HStack(spacing: 8) {
+                        TextField("", text: $newHost, prompt: Text("SSH alias or user@host"))
+                            .fieldChrome(mono: true)
+                            .onSubmit { add(typed, to: hosts) }
+                        Button("Add") { add(typed, to: hosts) }
+                            .buttonStyle(LitButtonStyle())
+                            .disabled(!Device.validHost(typed) || hosts.contains(typed))
+                    }
+                    if !typed.isEmpty, !Device.validHost(typed) {
+                        Text("Use a Host from ~/.ssh/config, or user@host. Ports, keys and jump hosts go in ~/.ssh/config.")
+                            .font(.system(size: 11.5)).foregroundStyle(Palette.errorText)
+                    }
+                }
+                .settingsRow(id: "device")
                 ForEach(hosts, id: \.self) { host in
                     DeviceRow(host: host) { devicesText = Prefs.joinRoots(hosts.filter { $0 != host }) }
+                        .settingsRow()
                 }
-                HStack {
-                    TextField("Add a device", text: $newHost, prompt: Text("SSH alias or user@host"))
-                        .onSubmit { add(typed, to: hosts) }
-                    Button("Add") { add(typed, to: hosts) }
-                        .disabled(!Device.validHost(typed) || hosts.contains(typed))
-                }
-                if !typed.isEmpty, !Device.validHost(typed) {
-                    Text("Use a Host from ~/.ssh/config, or user@host. Ports, keys and jump hosts go in ~/.ssh/config.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Devices")
-            } footer: {
-                Text("tern signs in with your SSH config, keys and agent, copies its own tern and ternd to ~/.local/share/tern on the device, and runs your sessions there, where they keep running when this Mac sleeps or quits tern. Type a device's name and a colon in \(ShortcutRegistry.label("folder.open")) to open its folders. Linux (x86_64 and ARM) and Apple Silicon Macs.")
-                    .font(.caption).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .settingsPane()
     }
 
     private func add(_ host: String, to hosts: [String]) {
@@ -58,9 +58,9 @@ private struct DeviceRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(host)
+                    Text(host).font(.system(size: 13, design: .monospaced))
                     Text(details(status))
-                        .font(.caption).foregroundStyle(status.failed ? Palette.amber : .secondary)
+                        .font(.system(size: 11.5)).foregroundStyle(status.failed ? Palette.errorText : .secondary)
                         .lineLimit(2)
                         .textSelection(.enabled)
                 }
@@ -73,14 +73,13 @@ private struct DeviceRow: View {
                 } else if !status.connected {
                     Button("Reconnect") { DeviceCenter.shared.reconnect(host) }
                 }
-                Button(action: remove) { Image(systemName: "minus.circle") }
-                    .buttonStyle(.borderless)
+                Button(action: remove) { Image(systemName: "minus").font(.system(size: 10, weight: .semibold)) }
                     .help("Remove \(host). Its folders stay in the sidebar until you close them.")
             }
             if status.connected {
                 HStack(spacing: 8) {
                     Text(hooksSummary)
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
                     Spacer()
                     if let hooks, hooks.contains(where: { $0.available && !$0.installed }) {
                         Button("Set Up Agent Hooks") { setUpHooks() }
@@ -90,7 +89,7 @@ private struct DeviceRow: View {
                 }
             }
             if let problem {
-                Text(problem).font(.caption).foregroundStyle(Palette.failed).textSelection(.enabled)
+                Text(problem).font(.system(size: 11.5)).foregroundStyle(Palette.errorText).textSelection(.enabled)
             }
         }
         .padding(.vertical, 2)

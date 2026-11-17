@@ -130,7 +130,7 @@ private struct StatusCapsule: View {
     var program: String?
 
     var body: some View {
-        let tint: Color? = status == .needsYou ? Palette.amber : status == .failed ? Palette.failed : nil
+        let tint: Color? = status == .needsYou ? Palette.amberText : status == .failed ? Palette.failed : nil
         let label = name.map { "\($0) \(status.label.lowercased())" } ?? status.label
         let facts = [label, progress.map { "\($0)%" } ?? "", tasks > 1 ? "\(tasks) tasks" : "", relativeAge(since, now: now)]
         HStack(spacing: 7) {

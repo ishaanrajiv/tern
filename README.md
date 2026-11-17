@@ -53,6 +53,9 @@ Mac-native, and sessions survive quitting the app.
 - **Splits, Find and links.** ⌘D splits panes, ⌘F searches scrollback, ⌘-click opens URLs. Each
   pane's header shows what runs there and where, with split and close buttons; panes other than the
   focused one are dimmed. Closing a pane focuses the one before it. Transitions are short and become fades with Reduce Motion on.
+- **Themes.** The default, tern, follows macOS's light or dark mode in the colours of tern's icon;
+  Graphite, Midnight, Ember and Paper stay the same in both, and Ghostty uses your Ghostty
+  config's colours. Programs in the terminal are told whether the theme is light or dark.
 - **Quick settings.** ⌘⇧, (tern → Quick Settings…) changes the theme,
   text size, cursor, notifications and more without leaving the keyboard: ←/→ change the selected
   value, and the theme list previews each theme as you move through it (Esc puts yours back).
@@ -292,12 +295,14 @@ one, 5 on a timeout. `run` exits with its command's code.
 Settings live in `~/.config/tern/config` (or `$XDG_CONFIG_HOME/tern/config`), one `key = value`
 a line in Ghostty's style; a `#` starts a comment only at the beginning of a line. Settings writes
 to the file, changing only the lines it needs to, and your own edits apply as soon as you save it.
-A line tern can't use keeps the last good value and is listed in Settings → General, which also
-opens the file. On first launch tern moves the settings you had changed, your terminal settings and
+A line tern can't use keeps the last good value and is listed at the foot of Settings, which also
+opens the file. Each row in Settings shows its key, and Settings' search (⌘F) finds a setting by
+its name or key. On first launch tern moves the settings you had changed, your terminal settings and
 your launch presets there; the old files stay, for an older tern.
 
 ```sh
-# graphite, midnight, ember, paper, or ghostty for your Ghostty config's colours
+# tern (the default, which follows macOS's light or dark mode), graphite, midnight, ember,
+# paper, or ghostty for your Ghostty config's colours
 theme = midnight
 # trailing or turning
 working-indicator = turning
@@ -377,7 +382,7 @@ notify-events = needs-you, done, failed
 away-after = 120
 ```
 
-Only a title is sent, like "Claude Code needs you · api", never what the agent asked or a
+Settings → Agents sets the topic and the away time too. Only a title is sent, like "Claude Code needs you · api", never what the agent asked or a
 command line. Install the ntfy app and subscribe to the same topic. `on-<event>` commands also get
 `TERN_AWAY=1` while you're away, for any other service.
 
