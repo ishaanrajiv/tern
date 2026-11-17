@@ -542,6 +542,7 @@ private struct KeyHint: View {
 /// A small grey label: a branch, a worktree.
 struct Chip: View {
     let text: String
+    @Environment(\.onLit) private var onLit
 
     var body: some View {
         // Long branch names keep their start and end; the chip never squeezes the name beside it.
@@ -552,7 +553,7 @@ struct Chip: View {
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(Palette.chip, in: RoundedRectangle(cornerRadius: 4))
+            .background(onLit ? Palette.onLit.opacity(0.1) : Palette.chip, in: RoundedRectangle(cornerRadius: 4))
             .fixedSize()
             .help(text)
     }

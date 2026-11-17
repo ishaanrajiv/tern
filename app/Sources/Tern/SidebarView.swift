@@ -114,7 +114,7 @@ private struct FolderSection: View {
                 .overlay(alignment: .top) {
                     // Where a dragged folder will land.
                     if dropTarget {
-                        Rectangle().fill(Palette.working).frame(height: 2).offset(y: -12)
+                        Rectangle().fill(Palette.amber).frame(height: 2).offset(y: -12)
                     }
                 }
                 .draggable(project.path) {
@@ -203,7 +203,7 @@ private struct FolderHeader: View {
             if waiting > 0 {
                 Text("\(waiting)")
                     .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(Palette.amber)
+                    .foregroundStyle(Palette.amberText)
                     .help("\(waiting) need\(waiting == 1 ? "s" : "") you")
             }
             if let hint {
@@ -261,7 +261,12 @@ private struct TabRow: View {
 
     var body: some View {
         let status = workspace.status(for: tab, now: now)
+        // The selected tab is lit, and everything in it takes the ink that reads on the lit fill.
         let selected = tab.id == workspace.selectedTabID
+        let amber = selected ? Palette.onLitAmber : Palette.amberText
+        let working = selected ? Palette.onLit.opacity(Ink.mid) : Palette.working
+        let ink = selected ? Palette.onLit : Palette.text
+        let ink2 = selected ? Palette.onLit.opacity(Ink.mid) : Palette.text2
         // Weight is for what wants you; selection shows in the background alone.
         let emphasized = status == .needsYou || status == .failed || status == .doneUnread
         let busy = status == .working || status == .starting
@@ -275,7 +280,7 @@ private struct TabRow: View {
             } else {
                 Text(title)
                     .font(.system(size: 13, weight: emphasized ? .semibold : .regular))
-                    .foregroundStyle(status == .dormant || status == .starting || workspace.hasPlaceholderTitle(tab) ? .secondary : .primary)
+                    .foregroundStyle(status == .dormant || status == .starting || workspace.hasPlaceholderTitle(tab) ? ink2 : ink)
                     .lineLimit(1)
                     // Short names never truncate; long ones give way last.
                     .fixedSize(horizontal: title.count <= 14, vertical: false)
@@ -307,42 +312,48 @@ private struct TabRow: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(.secondary)
                         .frame(width: 18, height: 18)
-                        .background(Palette.selection, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .background(selected ? Palette.onLit.opacity(0.1) : Palette.selection,
+                                    in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                 }
                 .buttonStyle(.plain)
                 .frame(minWidth: 22, alignment: .trailing)
                 .help("Close tab (\(ShortcutRegistry.label("tab.close")))")
             } else if let progress {
-                ProgressRing(progress: progress, color: Palette.working)
+                ProgressRing(progress: progress, color: working)
                     .frame(width: 12, height: 12)
                     .frame(minWidth: 22, alignment: .trailing)
                     .help("\(status.label) · \(progress)%")
             } else if indicator == .trailing, busy {
-                Spinner(color: status == .working ? Palette.working : Palette.ring)
+                Spinner(color: status == .working ? working : selected ? Palette.onLit.opacity(Ink.faint) : Palette.ring)
                     .frame(width: 12, height: 12)
                     .frame(minWidth: 22, alignment: .trailing)
                     .help(status.label)
             } else {
                 Text(relativeAge(workspace.lastActivity(tab), now: now))
                     .font(.system(size: 11, weight: status == .needsYou ? .semibold : .regular).monospacedDigit())
-                    .foregroundStyle(status == .needsYou ? Palette.amber : status == .working ? Palette.working : .secondary)
+                    .foregroundStyle(status == .needsYou ? amber : status == .working ? working : ink2)
                     .frame(minWidth: 22, alignment: .trailing)
             }
         }
-        .padding(.leading, 26)
+        .padding(.leading, 24)
         .padding(.trailing, 8)
         .frame(height: 28)
+        .environment(\.onLit, selected)
+        .foregroundStyle(selected ? AnyShapeStyle(Palette.onLit) : AnyShapeStyle(Palette.text),
+                         selected ? AnyShapeStyle(Palette.onLit.opacity(Ink.mid)) : AnyShapeStyle(Palette.text2),
+                         selected ? AnyShapeStyle(Palette.onLit.opacity(Ink.faint)) : AnyShapeStyle(Palette.text3))
         .background {
             let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
             ZStack {
-                shape.fill(selected ? Palette.selection : hovering ? Palette.hover : .clear)
-                if status == .needsYou { shape.fill(Palette.amber.opacity(0.1)) }
+                shape.fill(selected ? Palette.lit : hovering ? Palette.hover : .clear)
+                if status == .needsYou, !selected { shape.fill(Palette.amber.opacity(0.1)) }
             }
         }
         .overlay(alignment: .leading) {
             // Needs you is the one state that also marks the row's edge.
             if status == .needsYou {
-                RoundedRectangle(cornerRadius: 1.5).fill(Palette.amber).frame(width: 3, height: 16).padding(.leading, 8)
+                RoundedRectangle(cornerRadius: 1.5).fill(selected ? Palette.onLitAmber : Palette.amber)
+                    .frame(width: 3, height: 16).padding(.leading, 8)
             }
         }
         .contentShape(Rectangle())
@@ -379,8 +390,9 @@ private struct RenameField: View {
             .font(.system(size: 13, weight: .medium))
             .padding(.horizontal, 4)
             .frame(height: 22)
+            .foregroundStyle(Palette.text)
             .background(Palette.sidebar, in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.working, lineWidth: 1))
+            .overlay(RoundedRectangle(cornerRadius: 4, style: .continuous).strokeBorder(Palette.amber, lineWidth: 1))
             .focused($focused)
             .onSubmit { end(text) }
             .onExitCommand { end(nil) }
@@ -412,11 +424,12 @@ private struct KeyBadge: View {
     }
 }
 
-/// Session state as one 12pt glyph. Its shape says who: the agent's mark, a rounded square for
-/// another program that reports its own status (OSC 7501), or a circle for a shell. Colour says
-/// what: amber when it needs you, red when it failed, the working colour while it works, text
-/// colour when done and unread, grey when idle, fainter when dormant. Solid means there's
-/// something for you to see.
+/// Session state as one glyph. Its shape says who: the agent's mark on a rounded tile, a small
+/// rounded square for another program that reports its own status (OSC 7501), or the logo's
+/// cursor for a shell. Colour says what: amber when it needs you, critical red when it failed,
+/// the working ink while it works, and the mark's ink ladder for the rest: full when done and
+/// unread, faint when idle, fainter when dormant. Inside the lit (selected) row it takes the
+/// lit fill's inks.
 struct StatusIcon: View {
     let status: SessionStatus
     var agent: String?
@@ -424,39 +437,45 @@ struct StatusIcon: View {
     var program: String?
     /// Turn while working; otherwise the glyph holds still and a Spinner shows elsewhere.
     var turning = false
+    @Environment(\.onLit) private var onLit
 
     var body: some View {
-        let mark = program == nil || agent != nil ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+        let ownStatus = program != nil && agent == nil
         Group {
             if let agent, status != .starting {
                 AgentGlyph(agent: agent, color: color, turning: turning && status == .working)
+                    .frame(width: 11, height: 11)
+                    .frame(width: 16, height: 16)
+                    .background(onLit ? Palette.onLit.opacity(0.1) : Palette.chip,
+                                in: RoundedRectangle(cornerRadius: 4.5, style: .continuous))
             } else {
+                let mark = ownStatus ? AnyShape(RoundedRectangle(cornerRadius: 2, style: .continuous)) : AnyShape(CursorPill())
+                let size = ownStatus ? CGSize(width: 8, height: 8) : CGSize(width: 10, height: 6)
                 switch status {
-                case .needsYou, .failed, .doneUnread:
-                    mark.fill(color).frame(width: 8, height: 8)
                 case .working, .starting:
                     if turning {
-                        Spinner(color: color)
+                        Spinner(color: color).frame(width: 12, height: 12)
                     } else {
-                        mark.stroke(color, lineWidth: 1.5).frame(width: 7, height: 7)
+                        mark.stroke(color, lineWidth: 1.25).frame(width: size.width - 1, height: size.height - 1)
                     }
-                case .idle, .dormant:
-                    mark.stroke(color, lineWidth: 1.25).frame(width: 6.25, height: 6.25)
+                case .needsYou, .failed, .doneUnread, .idle, .dormant:
+                    mark.fill(color).frame(width: size.width, height: size.height)
                 }
             }
         }
-        .frame(width: 12, height: 12)
+        .frame(width: 16, height: 16)
         .help((agent.map(agentName) ?? program).map { "\($0) · \(status.label)" } ?? status.label)
     }
 
     private var color: Color {
+        let ink = onLit ? Palette.onLit : Palette.lit
         switch status {
-        case .needsYou: Palette.amber
-        case .failed: Palette.failed
-        case .working: Palette.working
-        case .doneUnread: Palette.text
-        case .starting, .idle: Palette.ring
-        case .dormant: Palette.ring.opacity(0.45)
+        case .needsYou: return onLit ? Palette.onLitAmber : Palette.amber
+        case .failed: return onLit ? Palette.onLitFailed : Palette.failed
+        case .working: return onLit ? Palette.onLit.opacity(Ink.mid) : Palette.working
+        case .doneUnread: return ink
+        case .starting, .idle: return ink.opacity(Ink.faint)
+        case .dormant: return ink.opacity(Ink.faintest)
         }
     }
 }
@@ -465,10 +484,11 @@ struct StatusIcon: View {
 struct ProgressRing: View {
     let progress: Int
     let color: Color
+    @Environment(\.onLit) private var onLit
 
     var body: some View {
         ZStack {
-            Circle().stroke(Palette.border, lineWidth: 1.5)
+            Circle().stroke(onLit ? Palette.onLit.opacity(0.15) : Palette.border, lineWidth: 1.5)
             Circle().trim(from: 0, to: CGFloat(min(max(progress, 0), 100)) / 100)
                 .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(-90))
@@ -482,10 +502,11 @@ struct ProgressRing: View {
 struct Spinner: View {
     let color: Color
     @State private var turning = false
+    @Environment(\.onLit) private var onLit
 
     var body: some View {
         ZStack {
-            Circle().stroke(Palette.border, lineWidth: 1.5)
+            Circle().stroke(onLit ? Palette.onLit.opacity(0.15) : Palette.border, lineWidth: 1.5)
             Circle().trim(from: 0, to: 0.28)
                 .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                 .rotationEffect(.degrees(turning ? 360 : 0))
@@ -505,9 +526,9 @@ struct DeviceChip: View {
         let status = DeviceCenter.shared.statuses[host] ?? .stopped
         HStack(spacing: 4) {
             if !status.connected {
-                Circle()
+                CursorPill()
                     .fill(status.needsSignIn || status.state == "incompatible" ? Palette.amber : status.failed ? Palette.failed : Palette.ring)
-                    .frame(width: 6, height: 6)
+                    .frame(width: 8, height: 5)
             }
             Text(host)
         }

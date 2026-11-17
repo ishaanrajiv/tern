@@ -116,7 +116,7 @@ final class ConfigStore {
     }
 
     static let settings: [ConfigSetting] = [
-        ConfigSetting(key: "theme", pref: Prefs.theme, kind: .choice(Theme.builtIn.map(\.id) + ["ghostty"])),
+        ConfigSetting(key: "theme", pref: Prefs.theme, kind: .choice(Theme.builtInIDs + ["ghostty"])),
         ConfigSetting(key: "working-indicator", pref: Prefs.workingIndicator, kind: .choice(["trailing", "turning"])),
         ConfigSetting(key: "folder-order", pref: Prefs.folderOrder, kind: .choice(["manual", "recent"])),
         ConfigSetting(key: "repo-root", pref: Prefs.repoRoots, kind: .list),
@@ -153,6 +153,8 @@ final class ConfigStore {
     /// What's wrong with the file as it is, line by line.
     private(set) var problems: [String] = []
     @ObservationIgnored private(set) var config = ConfigText("")
+    /// Counts each time the file is applied, so views that read `config` can follow it.
+    private(set) var revision = 0
     /// Each setting as last copied to or from the file, to tell the app's own changes apart.
     @ObservationIgnored private var applied: [String: [String]] = [:]
     @ObservationIgnored private var flushing = false
@@ -207,6 +209,7 @@ final class ConfigStore {
     // MARK: Applying the file
 
     private func apply() {
+        revision += 1
         var problems = config.invalid.map { "Line \($0) isn't a “key = value” setting." }
         let known = Set(Self.settings.map(\.key) + TerminalPreferences.configKeys + Self.terndKeys)
         for e in config.entries where !known.contains(e.key) {

@@ -423,12 +423,12 @@ private struct MiniSwitch: View {
     let on: Bool
 
     var body: some View {
+        // Settings' switch, which the palette only shows: the accent when on.
         ZStack(alignment: on ? .trailing : .leading) {
-            Capsule().fill(on ? Palette.text2 : Palette.chip)
+            Capsule().fill(on ? Palette.amber : Palette.chip)
             if !on { Capsule().strokeBorder(Palette.border) }
             Circle()
-                .fill(.white)
-                .shadow(color: .black.opacity(0.3), radius: 1, y: 1)
+                .fill(on ? Palette.onAmber : Palette.text2)
                 .padding(2)
         }
         .frame(width: 30, height: 18)

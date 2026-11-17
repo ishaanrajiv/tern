@@ -47,7 +47,7 @@ private struct UpdateRow: View {
                         .lineLimit(2)
                     if let detail = entry.detail { UpdateDetail(entry: entry, detail: detail) }
                     if let note = entry.note {
-                        Text(note).font(.system(size: 11)).foregroundStyle(Palette.amber).lineLimit(3)
+                        Text(note).font(.system(size: 11)).foregroundStyle(Palette.amberText).lineLimit(3)
                     }
                 }
                 .frame(minHeight: 22, alignment: entry.detail == nil ? .center : .top)
@@ -259,11 +259,12 @@ struct UpdateButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 11, weight: .medium))
+            .font(.system(size: 11, weight: kind == .primary ? .semibold : .medium))
             .lineLimit(1)
             .padding(.horizontal, kind == .quiet ? 6 : 9)
             .frame(height: 22)
-            .foregroundStyle(kind == .primary ? Palette.terminal : kind == .quiet ? Palette.text2 : Palette.text)
+            // Primary is the Lit fill, as everywhere.
+            .foregroundStyle(kind == .primary ? Palette.onLit : kind == .quiet ? Palette.text2 : Palette.text)
             .background(background, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .contentShape(Rectangle())
             .opacity(configuration.isPressed ? 0.7 : 1)
@@ -271,7 +272,7 @@ struct UpdateButtonStyle: ButtonStyle {
 
     private var background: Color {
         switch kind {
-        case .primary: Palette.text
+        case .primary: Palette.lit
         case .secondary: Palette.selection
         case .quiet: .clear
         }
@@ -421,8 +422,8 @@ private struct UpdateStatusChip: View {
 
     var body: some View {
         let (text, color): (String, Color) = switch run.phase {
-        case .running: run.waiting ? ("Needs an answer", Palette.amber) : ("Running", Palette.working)
-        case .failed: ("Failed", Palette.amber)
+        case .running: run.waiting ? ("Needs an answer", Palette.amberText) : ("Running", Palette.working)
+        case .failed: ("Failed", Palette.amberText)
         case .succeeded: ("Done", Palette.text2)
         }
         HStack(spacing: 5) {
@@ -450,67 +451,65 @@ struct UpdatesSettings: View {
 
     var body: some View {
         let app = center.app
-        Form {
-            Section("Versions") {
-                VersionRow(symbol: "arrow.down.circle", name: "tern", version: AppUpdates.currentVersion,
-                           status: app.status, state: appState) {
-                    switch app.phase {
-                    case .ready: Button("Restart to Update") { center.perform(.installApp) }
-                    case .idle where app.release != nil, .failed where app.release != nil:
-                        Button("Download") { center.perform(.downloadApp) }
-                    default: if app.busy { ProgressView().controlSize(.small) }
-                    }
-                }
-                VersionRow(symbol: "server.rack", name: "ternd", version: center.daemon?.version ?? "–",
-                           status: daemonStatus, state: daemonState) {
-                    if center.restartWhenIdle {
-                        Button("Cancel") { center.perform(.cancelIdleRestart) }
-                    } else if center.daemon?.running == true, center.daemon?.current == false {
-                        if !center.busy.isEmpty {
-                            Button("When Idle") { center.perform(.restartDaemonWhenIdle) }.disabled(center.restartingDaemon)
+        SettingsPage(pane: .updates) {
+            SettingsSection("Versions") {
+                VStack(spacing: 0) {
+                    VersionRow(symbol: "arrow.down.circle", name: "tern", version: AppUpdates.currentVersion,
+                               status: app.status, state: appState) {
+                        switch app.phase {
+                        case .ready: Button("Restart to Update") { center.perform(.installApp) }.buttonStyle(LitButtonStyle())
+                        case .idle where app.release != nil, .failed where app.release != nil:
+                            Button("Download") { center.perform(.downloadApp) }.buttonStyle(LitButtonStyle())
+                        default: if app.busy { ProgressView().controlSize(.small) }
                         }
-                        Button("Restart") { center.perform(.restartDaemon) }.disabled(center.restartingDaemon)
                     }
+                    .settingsRow(id: "versions")
+                    VersionRow(symbol: "server.rack", name: "ternd", version: center.daemon?.version ?? "–",
+                               status: daemonStatus, state: daemonState) {
+                        if center.restartWhenIdle {
+                            Button("Cancel") { center.perform(.cancelIdleRestart) }
+                        } else if center.daemon?.running == true, center.daemon?.current == false {
+                            if !center.busy.isEmpty {
+                                Button("When Idle") { center.perform(.restartDaemonWhenIdle) }.disabled(center.restartingDaemon)
+                            }
+                            Button("Restart") { center.perform(.restartDaemon) }.disabled(center.restartingDaemon)
+                        }
+                    }
+                    .settingsRow()
+                    ForEach(["claude", "codex"], id: \.self) { agent in agentRow(agent).settingsRow() }
+                    HStack {
+                        Text(checkedText).font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Check Now") { center.checkAll() }.disabled(app.busy || center.agents.checking)
+                    }
+                    .settingsRow()
                 }
-                ForEach(["claude", "codex"], id: \.self) { agent in agentRow(agent) }
             }
             if let release = app.release, !app.notes.isEmpty {
-                Section("What's new in \(release.tag_name)") {
-                    ScrollView {
-                        Text(app.notes).font(.callout).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                SettingsSection("What's new in \(release.tag_name)") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ScrollView {
+                            Text(app.notes).font(.system(size: 12.5)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 120)
+                        Link("View release on GitHub", destination: release.html_url)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Palette.amberText)
                     }
-                    .frame(maxHeight: 120)
-                    Link("View release on GitHub", destination: release.html_url).font(.caption)
+                    .settingsRow()
                 }
             }
-            Section("tern") {
-                Toggle("Check for updates automatically", isOn: $checkAppUpdates)
-                Toggle(isOn: $downloadAppUpdates) {
-                    Text("Download updates in the background")
-                    Text("Checked against its checksum and Developer ID signature before it's offered.")
-                }
-                Toggle(isOn: $installOnQuit) {
-                    Text("Install downloaded updates when tern quits")
-                    Text("Sessions keep running in ternd.")
-                }
-                Toggle("Include alpha prereleases", isOn: $includePrereleases)
+            SettingsSection("tern") {
+                SettingToggle("check-app-updates", isOn: $checkAppUpdates)
+                SettingToggle("download-app-updates", isOn: $downloadAppUpdates)
+                SettingToggle("install-updates-on-quit", isOn: $installOnQuit)
+                SettingToggle("include-prereleases", isOn: $includePrereleases)
                     .onChange(of: includePrereleases) { center.app.check(interactive: false) }
             }
-            Section("Agents") {
-                Toggle(isOn: $offerAgentUpdates) {
-                    Text("Offer Claude Code and Codex updates")
-                    Text("They run out of sight; the console opens if one needs you or fails.")
-                }
-            }
-            Section {
-                HStack {
-                    Text(checkedText).font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Check Now") { center.checkAll() }.disabled(app.busy || center.agents.checking)
-                }
+            SettingsSection("Agents") {
+                SettingToggle("offer-agent-updates", isOn: $offerAgentUpdates)
             }
         }
-        .settingsPane()
     }
 
     private var appState: VersionState {
@@ -560,20 +559,22 @@ struct UpdatesSettings: View {
             if run?.phase == .running {
                 Button("Show Output") { center.perform(.showOutput(agent)) }
             } else if let version, version.behind {
-                Button("Update") { center.runAgent(agent) }.help("Runs `\(version.updateCommand)` in the background")
+                Button("Update") { center.runAgent(agent) }
+                    .buttonStyle(LitButtonStyle())
+                    .help("Runs `\(version.updateCommand)` in the background")
             }
         }
     }
 }
 
-/// A version's state, as its dot shows it: amber needs you, blue is under way.
+/// A version's state, as its mark shows it: amber needs you, the working colour is under way.
 private enum VersionState {
     case current, offer, working, attention
 
     var color: Color {
         switch self {
-        case .current: Color.secondary.opacity(0.5)
-        case .offer: Color.primary
+        case .current: Palette.ring
+        case .offer: Palette.lit
         case .working: Palette.working
         case .attention: Palette.amber
         }
@@ -602,17 +603,17 @@ private struct VersionRow<Trailing: View>: View {
             .frame(width: 18)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
-                    Text(name)
-                    Text(version).foregroundStyle(.secondary).font(.body.monospacedDigit())
+                    Text(name).font(.system(size: 13, weight: .medium))
+                    Text(version).foregroundStyle(.secondary).font(.system(size: 12.5).monospacedDigit())
                 }
                 HStack(spacing: 6) {
-                    Circle().fill(state.color).frame(width: 6, height: 6)
-                    Text(status).font(.caption).foregroundStyle(.secondary)
+                    CursorPill().fill(state.color).frame(width: 8, height: 5)
+                    Text(status).font(.system(size: 11.5)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
                 }
                 if let note {
-                    Text(note).font(.caption).foregroundStyle(Palette.amber)
+                    Text(note).font(.system(size: 11.5)).foregroundStyle(Palette.amberText)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }

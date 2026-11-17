@@ -53,7 +53,7 @@ struct QuickSetting: Identifiable {
 
     /// Theme ids and names, in the order the theme list shows them.
     static var themes: [(id: String, name: String, theme: Theme?)] {
-        Theme.builtIn.map { ($0.id, $0.name, $0) } + [("ghostty", "Ghostty Colours", nil)]
+        Theme.builtIn(dark: ThemeStore.systemIsDark).map { ($0.id, $0.name, $0) } + [("ghostty", "Ghostty Colours", nil)]
     }
 
     /// Everything the palette offers, by section.
